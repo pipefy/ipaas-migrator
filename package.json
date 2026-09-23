@@ -1,0 +1,27 @@
+{
+  "name": "ipaas-migrator",
+  "version": "0.5.4",
+  "private": true,
+  "type": "module",
+  "description": "Traduz receitas Workato para um flow.json importável no Pipefy iPaaS.",
+  "scripts": {
+    "transpile": "tsx engine/run.ts",
+    "diagram": "tsx engine/diagram.ts",
+    "analyze": "tsx engine/analyze.ts",
+    "smoke": "node scripts/transpilar-receita.mjs --recipe examples/smoke.recipe.json --out .tmp/smoke"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "^11.17.0",
+    "adm-zip": "^0.5.12",
+    "tsx": "^4.16.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7"
+  }
+}

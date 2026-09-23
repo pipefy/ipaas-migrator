@@ -1,0 +1,10 @@
+{
+  "instance": "https://ipaas.pipefy.com",
+  "apVersion": "0.87.1",
+  "paths": {
+    "kb": "kb/pieces-kb.slim.json",
+    "baseMap": "mappings/base-map.json",
+    "userMap": "mappings/user-map.json",
+    "output": "output"
+  }
+}

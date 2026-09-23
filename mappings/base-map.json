@@ -1,0 +1,5120 @@
+{
+  "_doc": "Mapa de conversao Workato -> Activepieces. SEPARADO da KB (sobrevive ao regen). Consumido pelo transpiler. Lookup: chave original e depois provider colapsado. Validar com: npm run validate:map.",
+  "version": 1,
+  "instance": "ipaas.pipefy.com",
+  "apVersion": "0.87.1",
+
+  "controlFlow": {
+    "_doc": "keywords de fluxo Workato -> step types built-in do Activepieces (nao sao pieces).",
+    "action": "PIECE",
+    "trigger": "PIECE_TRIGGER",
+    "if": "ROUTER",
+    "else": "ROUTER_BRANCH",
+    "foreach": "LOOP_ON_ITEMS",
+    "repeat": "corpo encadeado + TODO (AP nao tem while)",
+    "while_condition": "saida do repeat (nao vira piece)",
+    "comment": "ignorado (nao vira piece TODO)",
+    "try": "step.errorHandlingOptions.continueOnFailure=true",
+    "catch": "ROUTER_BRANCH (ramo de erro)",
+    "stop": "step terminal (sem nextAction)"
+  },
+
+  "builtins": {
+    "code": { "stepType": "CODE", "_doc": "piece-code nao existe no registry; e step type CODE (JS/TS)." },
+    "router": { "stepType": "ROUTER" },
+    "loop": { "stepType": "LOOP_ON_ITEMS" }
+  },
+
+  "operations": {
+    "slack_bot/post_bot_message": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "send_channel_message", "kind": "action" },
+      "alt": { "piece": "@activepieces/piece-slack", "name": "send_direct_message", "kind": "action", "when": "channel e um user id (DM) -> usar send_direct_message (userId)" },
+      "propMap": { "channel": "channel", "text": "text", "blocks": "blocks" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "attachments/message.color nao tem prop direta; usar blocks (Block Kit) ou custom_api_call."
+    },
+    "slack_bot/get_user_by_email": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "slack-find-user-by-email", "kind": "action" },
+      "propMap": { "email": "email" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/get_user_info": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "find-user-by-id", "kind": "action" },
+      "propMap": { "user": "id" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "new_connector_6_connector_186728_1628717731/update_card": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateCard", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "phase_id": "phaseId", "card_id": "cardId" },
+      "collectRemainingTo": "phaseFields",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "campos com =skip no Workato nao entram em phaseFields."
+    },
+    "new_connector_6_connector_186728_1628717731/move_card": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "moveCard", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "phase_id": "phaseId", "card_id": "cardId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_move": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "cardMoved", "kind": "trigger" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "from_phase_ids": "fromPhaseId", "to_phase_ids": "toPhaseId" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "card_move como TRIGGER (recipe #33) -> trigger cardMoved."
+    },
+    "new_connector_6_connector_186728_1628717731/get_cards_by_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardsByFieldValue", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "field_id": "fieldId", "field_value": "fieldValue" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_cards_by_phase": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardsByPhase", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "phase_id": "phaseId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/create_card": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "createCard", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId" },
+      "collectRemainingTo": "startFormFields",
+      "ignoreSourceProps": ["pipe"],
+      "difficulty": "medium",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_card_by_id": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardById", "kind": "action" },
+      "propMap": { "id": "cardId", "card_id": "cardId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/delete_card": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "deleteCard", "kind": "action" },
+      "propMap": { "card_id": "cardId" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "acao irreversivel - marcar para revisao humana."
+    },
+    "new_connector_6_connector_186728_1628717731/card_create": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "cardCreated", "kind": "trigger" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_field_update": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "cardFieldUpdated", "kind": "trigger" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "field_ids": "fieldIds" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_records_by_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getRecordsByFieldValue", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "table_id": "databaseId", "field_id": "fieldId", "value": "fieldValue" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_record_by_id": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getRecordById", "kind": "action" },
+      "propMap": { "id": "recordId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_cards_by_title": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardsByTitle", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "title": "title" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/update_record": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateRecord", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "table_id": "pipeId", "record_id": "recordId", "id": "recordId" },
+      "collectRemainingTo": "startFormFields",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "database Workato -> updateRecord; table_id cai em pipeId da piece (databaseId nao existe nessa action)."
+    },
+    "new_connector_6_connector_186728_1628717731/record_created": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "recordCreated", "kind": "trigger" },
+      "propMap": { "organization_id": "organizationId", "table_id": "databaseId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_overdue": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "cardOverdue", "kind": "trigger" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "phase_id": "phaseId", "phase_ids": "phaseId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/new_updated_card": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "cardFieldUpdated", "kind": "trigger" },
+      "alt": { "piece": "@activepieces/piece-pipefy", "name": "cardCreated", "kind": "trigger", "when": "o evento Workato filtra so criacao" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "field_ids": "fieldIds" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Workato junta new+updated; AP separa cardCreated e cardFieldUpdated."
+    },
+    "pipefy_connector_186728_1590691380/update_card_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateCard", "kind": "action" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "phase_id": "phaseId", "card_id": "cardId", "id": "cardId" },
+      "collectRemainingTo": "phaseFields",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "update de um campo no conector legado; phaseId e o restante dos fields ficam para revisao."
+    },
+
+    "pipefy_connector_186728_1590691380/custom_api_call": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "custom_api_call", "kind": "action" },
+      "propMap": { "api_call": "body", "url": "url", "method": "method", "headers": "headers", "body": "body" },
+      "fixedProps": {
+        "method": "POST",
+        "url": "/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Workato api_call e o documento GraphQL; vira body {query}. url/method HTTP so existem se a receita ja trouxer."
+    },
+    "pipefy_connector_186728_1590691380/update_array_type_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateListField", "kind": "action" },
+      "propMap": { "Node_Id": "nodeId", "Field_ID": "fieldId", "Value": "fieldValue", "Operation": "operation", "node_id": "nodeId", "field_id": "fieldId", "field_value": "fieldValue", "operation": "operation" },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/get_card_by_id": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardById", "kind": "action" },
+      "propMap": { "card_id": "cardId", "id": "cardId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/upload_attachment": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "uploadAttachment", "kind": "action" },
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
+      "difficulty": "medium",
+      "manual": false
+    },
+
+    "pipefy_legacy_v2_connector_186728_1723750715/custom_api_call": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "custom_api_call", "kind": "action" },
+      "propMap": { "api_call": "body", "url": "url", "method": "method", "headers": "headers", "body": "body" },
+      "fixedProps": {
+        "method": "POST",
+        "url": "/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "mesmo tratamento do conector legado: api_call -> body {query}."
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/upload_attachment": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "uploadAttachment", "kind": "action" },
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/update_array_type_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateListField", "kind": "action" },
+      "propMap": { "Node_Id": "nodeId", "Field_ID": "fieldId", "Value": "fieldValue", "Operation": "operation" },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/update_list_type_field": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "updateListField", "kind": "action" },
+      "propMap": { "Node_Id": "nodeId", "Field_ID": "fieldId", "Value": "fieldValue", "Operation": "operation" },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/get_phase_cards_v2": {
+      "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardsByPhase", "kind": "action" },
+      "propMap": { "phase_id": "phaseId" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "O conector legado fornece apenas phase_id; organizationId/pipeId ficam para revisao na importacao."
+    },
+
+    "rest/make_request_v2": {
+      "target": { "piece": "@activepieces/piece-http", "name": "send_request", "kind": "action" },
+      "propMap": { "request.method": "method", "request.url": "url", "request.body": "body" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "headers/Content-Type e auth (authType/authFields) definir manualmente na piece HTTP."
+    },
+    "file_connector/read_file": {
+      "target": { "piece": "@activepieces/piece-http", "name": "send_request", "kind": "action" },
+      "propMap": { "url": "url" },
+      "fixedProps": {
+        "method": "GET",
+        "authType": "none",
+        "headers": {},
+        "queryParams": {},
+        "response_is_binary": true
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Workato file_connector/read_file baixa por URL. Files Helper read_file so le File ja no flow. base64_encode/is_large ficam no Workato e nao tem prop HTTP."
+    },
+
+    "workato_variable/declare_variable": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem variable store; materializar como step CODE ou inline no template."
+    },
+    "workato_variable/declare_list": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workato_variable/update_variables": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Atualizacao de variaveis Workato vira step CODE; revisar dependencias entre variaveis."
+    },
+    "workato_variable/insert_to_list": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workato_variable/insert_to_list_batch": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workato_list/create_list": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workato_list/accumulate_list_items": {
+      "target": null,
+      "builtin": "loop",
+      "difficulty": "high",
+      "manual": false,
+      "notes": "LOOP_ON_ITEMS + acumulador em step CODE."
+    },
+    "workato_custom_code/invoke_custom_ruby_code": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "high",
+      "manual": true,
+      "notes": "REESCREVER Ruby->JS no step CODE. IA + revisao humana."
+    },
+
+    "workato_webhooks/new_event": {
+      "target": { "piece": "@activepieces/piece-webhook", "name": "catch_webhook", "kind": "trigger" },
+      "propMap": {},
+      "fixedProps": { "authType": "none" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filter.conditions -> ROUTER logo apos o trigger; payload_schema -> parsing no 1o passo."
+    },
+    "clock/scheduled_event": {
+      "target": { "piece": "@activepieces/piece-schedule", "name": "cron_expression", "kind": "trigger" },
+      "propMap": {
+        "cron_expression": "cronExpression",
+        "timezone": "timezone"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "custom_schedule usa cron_expression. days/weeks/hours/minutes/months viram cronExpression no motor (time_unit+trigger_every+trigger_at+days_of_week)."
+    },
+    "clock/wait_for_interval": {
+      "target": { "piece": "@activepieces/piece-delay", "name": "delayFor", "kind": "action" },
+      "propMap": { "interval": "delayFor" },
+      "fixedProps": { "unit": "seconds" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Workato interval e segundos. AP delayFor exige unit + delayFor; sem isso o editor fica vazio."
+    },
+    "clock/wait_until_time": {
+      "target": { "piece": "@activepieces/piece-delay", "name": "delay_until", "kind": "action" },
+      "propMap": {},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/bot_command_v2": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "new_command", "kind": "trigger" },
+      "propMap": {},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "slash command/botao -> trigger new_command; botoes de resposta via request_action_message."
+    },
+    "slack/post_message_to_channel": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "send_channel_message", "kind": "action" },
+      "propMap": { "channel": "channel", "text": "text" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "conector Slack classico (nao Workbot). attachments/parse nao tem prop direta."
+    },
+    "slack/get_user_by_email": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "slack-find-user-by-email", "kind": "action" },
+      "propMap": { "email": "email" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "email/send_mail": {
+      "target": { "piece": "@activepieces/piece-smtp", "name": "send-email", "kind": "action" },
+      "alt": { "piece": "@activepieces/piece-gmail", "name": "send_email", "kind": "action", "when": "conexao e Gmail, nao SMTP generico" },
+      "propMap": {
+        "to": "to",
+        "cc": "cc",
+        "bcc": "bcc",
+        "subject": "subject",
+        "body": "body",
+        "email_type": "body_type",
+        "attachments": "attachments"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Email by Workato e SMTP generico. from/senderName ficam para revisao. to/cc viram ARRAY. Se a conta for Gmail, usar o alt."
+    },
+
+    "google_calendar/update_event": {
+      "target": { "piece": "@activepieces/piece-google-calendar", "name": "update_event", "kind": "action" },
+      "propMap": { "id": "calendar_id", "event_id": "eventId", "guestsCanModify": "guests_can_modify" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "title/start/end/attendees do Workato entram se os nomes baterem; sendNotifications nao tem prop direta."
+    },
+    "google_calendar/updated_event": {
+      "target": { "piece": "@activepieces/piece-google-calendar", "name": "new_or_updated_event", "kind": "trigger" },
+      "propMap": { "id": "calendar_id" },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "include_deleted nao tem equivalente direto."
+    },
+    "google_calendar/add_attendee_to_an_event": {
+      "target": { "piece": "@activepieces/piece-google-calendar", "name": "google-calendar-add-attendees", "kind": "action" },
+      "propMap": { "id": "calendar_id", "event_id": "eventId", "attendees": "attendees" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/get_event_by_id": {
+      "target": { "piece": "@activepieces/piece-google-calendar", "name": "google_calendar_get_event_by_id", "kind": "action" },
+      "propMap": { "id": "calendar_id", "event_id": "event_id" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "google_sheets/add_spreadsheet_row_v4": {
+      "target": { "piece": "@activepieces/piece-google-sheets", "name": "insert_row", "kind": "action" },
+      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "first_row_headers/as_string dependem do formato da planilha na importacao."
+    },
+    "google_sheets/update_row_v4_new": {
+      "target": { "piece": "@activepieces/piece-google-sheets", "name": "update_row", "kind": "action" },
+      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "row_number": "row_id", "data": "values", "team_drives": "includeTeamDrives" },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "google_sheets/search_spreadsheet_rows_v4_new": {
+      "target": { "piece": "@activepieces/piece-google-sheets", "name": "find_rows", "kind": "action" },
+      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "team_drives": "includeTeamDrives", "count": "numberOfRows" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "coluna de busca (columnName) e searchValue nao vem com nomes estaveis no Workato — revisar na importacao."
+    },
+
+    "google_drive/copy_file": {
+      "target": { "piece": "@activepieces/piece-google-drive", "name": "duplicate_file", "kind": "action" },
+      "propMap": { "fileId": "fileId", "name": "name", "parents": "folderId" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/new_file_or_folder": {
+      "target": { "piece": "@activepieces/piece-google-drive", "name": "new_file", "kind": "trigger" },
+      "alt": { "piece": "@activepieces/piece-google-drive", "name": "new_folder", "kind": "trigger", "when": "o evento Workato filtra so pastas" },
+      "propMap": { "folderId": "parentFolder" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "AP separa new_file e new_folder; Workato junta os dois."
+    },
+
+    "salesforce/create_custom_object": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "create_record", "kind": "action" },
+      "propMap": { "sobject_name": "object" },
+      "collectRemainingTo": "data",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "salesforce/update_sobject": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "update_record", "kind": "action" },
+      "propMap": { "sobject_name": "object", "id": "record_id" },
+      "collectRemainingTo": "data",
+      "difficulty": "medium",
+      "manual": false
+    },
+    "salesforce/get_custom_object": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "find_record", "kind": "action" },
+      "propMap": { "sobject_name": "object", "id": "search_value" },
+      "fixedProps": { "field": "Id" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "get by id no Workato; field fixo Id. Revisar se o objeto usa outro identificador."
+    },
+    "salesforce/search_sobjects": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "find_record", "kind": "action" },
+      "propMap": { "sobject_name": "object" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "field + search_value sao dinamicos no Workato; escolher na importacao."
+    },
+    "salesforce/search_sobjects_soql": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "run_query", "kind": "action" },
+      "propMap": { "query": "query" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/updated_custom_object": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "new_or_updated_record", "kind": "trigger" },
+      "propMap": { "sobject_name": "object" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/get_related": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "find_child_records", "kind": "action" },
+      "propMap": { "child_sobject_name": "child_relationship" },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "parent_object/parent_id dependem do sObject; AccountId e outros FKs ficam para revisao."
+    },
+    "salesforce/__adhoc_http_action": {
+      "target": { "piece": "@activepieces/piece-salesforce", "name": "custom_api_call", "kind": "action" },
+      "propMap": { "path": "url", "verb": "method" },
+      "difficulty": "medium",
+      "manual": false
+    },
+
+    "google_big_query/search_rows_using_custom_sql_sync": {
+      "target": { "piece": "@activepieces/piece-google-bigquery", "name": "run_query", "kind": "action" },
+      "propMap": { "project_id": "project_id", "query": "query" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "parameters/output_schema do Workato nao tem prop direta; revisar o SQL."
+    },
+    "google_big_query/run_custom_sql_sync": {
+      "target": { "piece": "@activepieces/piece-google-bigquery", "name": "run_query", "kind": "action" },
+      "propMap": { "project_id": "project_id", "query": "query" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "alias de search_rows_using_custom_sql_sync (mesmo run_query)."
+    },
+    "google_big_query/get_query_job_output": {
+      "target": { "piece": "@activepieces/piece-google-bigquery", "name": "get_rows_for_job", "kind": "action" },
+      "propMap": { "project_id": "project_id", "job_id": "job_id" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "amazon_s3/upload_file": {
+      "target": { "piece": "@activepieces/piece-amazon-s3", "name": "upload-file", "kind": "action" },
+      "propMap": { "file": "file", "object_name": "fileName" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "csv_parser/create_csv_lines": {
+      "target": { "piece": "@activepieces/piece-csv", "name": "convert_json_to_csv", "kind": "action" },
+      "propMap": { "lines": "json_array", "column_separator": "delimiter_type" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Workato gera linhas a partir de lista; column_labels/force_quotes nao tem prop direta."
+    },
+    "open_ai/__adhoc_http_action": {
+      "target": { "piece": "@activepieces/piece-openai", "name": "custom_api_call", "kind": "action" },
+      "propMap": { "path": "url", "verb": "method" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "HTTP ad-hoc do conector OpenAI; body/headers vao em custom_api_call. Revisar path absoluto."
+    },
+    "slack_bot/__adhoc_http_action": {
+      "target": { "piece": "@activepieces/piece-slack", "name": "custom_api_call", "kind": "action" },
+      "propMap": { "path": "url", "verb": "method" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "HTTP ad-hoc do Workbot; useUserToken e path Slack ficam para revisao."
+    },
+    "json_parser/parse_json": {
+      "target": { "piece": "@activepieces/piece-json", "name": "convert_text_to_json", "kind": "action" },
+      "propMap": { "document": "text" },
+      "difficulty": "low",
+      "manual": false
+    },
+    "json_parser/parse_json_v2": {
+      "target": { "piece": "@activepieces/piece-json", "name": "convert_text_to_json", "kind": "action" },
+      "propMap": { "document": "text" },
+      "difficulty": "low",
+      "manual": false
+    },
+
+    "logger/log_message": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "low",
+      "manual": false,
+      "notes": "sem piece de logger; step CODE que devolve message. Pills =_dp(...)['campo'] viram {{step.campo}}, nao TODO_FORMULA."
+    },
+    "py_eval/invoke_custom_py_code": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "high",
+      "manual": true,
+      "notes": "REESCREVER Python->JS no step CODE. IA + revisao humana."
+    },
+
+    "workato_recipe_function/call_recipe_async": {
+      "target": { "piece": "@activepieces/piece-subflows", "name": "callFlow", "kind": "action" },
+      "propMap": { "parameters": "flowProps" },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "flow_id Workato nao e o dropdown de flow do AP; reapontar o subflow na importacao. mode/waitForResponse revisar."
+    },
+    "workato_recipe_function/execute": {
+      "target": { "piece": "@activepieces/piece-subflows", "name": "callableFlow", "kind": "trigger" },
+      "propMap": {},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "receita function vira trigger callableFlow; schema de parametros em exampleData."
+    },
+
+    "workato_api_platform/receive_request": {
+      "target": { "piece": "@activepieces/piece-webhook", "name": "catch_webhook", "kind": "trigger" },
+      "propMap": {},
+      "fixedProps": { "authType": "none" },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "API platform inbound -> catch_webhook. Resposta via return_response no mesmo flow."
+    },
+    "workato_api_platform/return_response": {
+      "target": { "piece": "@activepieces/piece-webhook", "name": "return_response", "kind": "action" },
+      "propMap": {},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "http_status_code/body do Workato -> fields do return_response; conferir responseType."
+    },
+
+    "netsuite/add_object": {
+      "target": { "piece": "@activepieces/piece-netsuite", "name": "custom_api_call", "kind": "action" },
+      "propMap": {},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece NetSuite nao tem add_object; descer para SuiteTalk via custom_api_call."
+    },
+    "netsuite/search_object_v2": {
+      "target": { "piece": "@activepieces/piece-netsuite", "name": "runSuiteQL", "kind": "action" },
+      "propMap": {},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "search Workato -> SuiteQL; reescrever o filtro na importacao."
+    },
+    "netsuite/attach_file_to_object": {
+      "target": { "piece": "@activepieces/piece-netsuite", "name": "custom_api_call", "kind": "action" },
+      "propMap": {},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action nativa de attach; usar custom_api_call."
+    },
+    "_alpha_pipefy_connector_202183_1605207454/get_card_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "_alpha_pipefy_connector_202183_1605207454/get_database_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "_alpha_pipefy_connector_202183_1605207454/new_updated_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; piece não tem cardUpdated genérico"
+    },
+    "_alpha_pipefy_connector_202183_1605207454/update_fields_values": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "abbyy/create_transaction": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (ABBYY Vantage REST)."
+    },
+    "abbyy/monitor_transaction": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (ABBYY Vantage REST)."
+    },
+    "abbyy_vantage_connector_284705_1662735277/create_transaction": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (ABBYY Vantage REST)."
+    },
+    "abbyy_vantage_connector_284705_1662735277/monitor_transaction": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (ABBYY Vantage REST)."
+    },
+    "amazon_s3/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "action custom_api_call nao existe em @activepieces/piece-amazon-s3; migrar de fora via HTTP. original: @activepieces/piece-amazon-s3 / custom_api_call"
+    },
+    "azure_active_directory_connector_186728_1693347237/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "azure_active_directory_connector_186728_1693347237/get_group_members": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_active_directory_connector_186728_1693347237/get_user_custom_attributes": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"get_user_by_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_active_directory_connector_186728_1693347237/new_updated_user": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"new_user","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "azure_ad/get_group_members": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/get_user_by_email": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_users","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filtrar e-mail"
+    },
+    "azure_ad/get_user_by_id": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"get_user_by_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/get_user_by_upn": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_users","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filtrar UPN"
+    },
+    "azure_ad/get_user_custom_attributes": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"get_user_by_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/new_updated_user": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"new_user","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "ceridian_dayforce_connector_186728_1698169372/get_employee_details_by_xrefcode": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
+    },
+    "ceridian_dayforce_connector_186728_1698169372/search_employees": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
+    },
+    "click_up_connector_744758_1661261772/get_object": {
+      "target": {"piece":"@activepieces/piece-clickup","name":"get_task_by_name","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou custom_api_call"
+    },
+    "click_up_connector_744758_1661261772/new_event": {
+      "target": {"piece":"@activepieces/piece-clickup","name":"clickup_trigger_task_created","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou task_updated conforme evento"
+    },
+    "clickup/get_object": {
+      "target": {"piece":"@activepieces/piece-clickup","name":"get_task_by_name","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou custom_api_call"
+    },
+    "clickup/new_event": {
+      "target": {"piece":"@activepieces/piece-clickup","name":"clickup_trigger_task_created","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou task_updated conforme evento"
+    },
+    "clock/get_time": {
+      "target": {"piece":"@activepieces/piece-date-helper","name":"get_current_date","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "clock/timer": {
+      "target": {"piece":"@activepieces/piece-schedule","name":"cron_expression","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "cnh_azure_connector_863224_1757955484/get_user_by_email": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_users","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filtrar e-mail"
+    },
+    "cnh_azure_connector_863224_1757955484/get_user_by_upn": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_users","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filtrar UPN"
+    },
+    "conector_omie_connector_4527074_1741270055/incluir_conta_pagar": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "conector_omie_connector_4527074_1741270055/listar_clientes": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "convert_api_connector_3882679_1720664452/merge_pdf_file": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"mergePdfs","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "convert_api_connector_4290299_1728663557/merge_pdf_file": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"mergePdfs","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "convertapi/merge_pdf_file": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"mergePdfs","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "coupa/get_object_by_id": {
+      "target": {"piece":"@activepieces/piece-coupa","name":"get_object_by_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "coupa/new_or_updated_object": {
+      "target": {"piece":"@activepieces/piece-coupa","name":"new_or_updated_object","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "coupa/search_objects": {
+      "target": {"piece":"@activepieces/piece-coupa","name":"search_objects","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "csv_parser/parse_csv": {
+      "target": {"piece":"@activepieces/piece-csv","name":"convert_csv_to_json","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "custom_jobs/get_job_by_ID": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (conector custom; recriar a API via HTTP)."
+    },
+    "custom_jobs/new_action": {
+      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
+      "fixedProps": {"authType":"none"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem piece custom_jobs no catalogo AP; receber evento via webhook HTTP."
+    },
+    "dayforce/get_employee_details_by_xrefcode": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
+    },
+    "dayforce/search_employees": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
+    },
+    "docusign/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "docusign/create_envelope": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"createAndSendEnvelope","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "docusign/download_document": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"getDocument","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "docusign/get_envelope": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"getEnvelope","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "docusign/list_documents": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"getDocument","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "docusign/new_event": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"envelopeCompleted","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "e demais envelope*/recipient* conforme evento"
+    },
+    "docusign/send_envelope": {
+      "target": {"piece":"@activepieces/piece-docusign","name":"createAndSendEnvelope","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/create_folder": {
+      "target": {"piece":"@activepieces/piece-dropbox","name":"create_new_dropbox_folder","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/move_file": {
+      "target": {"piece":"@activepieces/piece-dropbox","name":"move_dropbox_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/search_folder": {
+      "target": {"piece":"@activepieces/piece-dropbox","name":"search_dropbox","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/upload_file_content_stream": {
+      "target": {"piece":"@activepieces/piece-dropbox","name":"upload_dropbox_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/upload_file_from_url": {
+      "target": {"piece":"@activepieces/piece-dropbox","name":"upload_dropbox_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "excel/add_rows_batch": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"append_multiple_rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/get_range_cells": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"get_range","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/get_table_rows": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"get_table_rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/search_workbooks": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"find-workbook","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/update_row": {
+      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"update_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "facebook_lead_ads/new_lead": {
+      "target": {"piece":"@activepieces/piece-facebook-leads","name":"new_lead","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "file_connector/compress_file": {
+      "target": {"piece":"@activepieces/piece-file-helper","name":"zipFiles","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "file_connector/transform_image": {
+      "target": {"piece":"@activepieces/piece-image-helper","name":"resize_image","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "mapear crop/convert conforme a transformacao Workato."
+    },
+    "file_connector/uncompress_file": {
+      "target": {"piece":"@activepieces/piece-file-helper","name":"unzipFile","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "freshdesk/create_record": {
+      "target": {"piece":"@activepieces/piece-freshdesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk/update_record": {
+      "target": {"piece":"@activepieces/piece-freshdesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk_connector_655187_1738568657/create_record": {
+      "target": {"piece":"@activepieces/piece-freshdesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk_connector_655187_1738568657/update_record": {
+      "target": {"piece":"@activepieces/piece-freshdesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "ftps/get_file_content": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"read_file_content","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "ftps/new_file_in_dir": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"new_file","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "ftps/remove": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"deleteFile","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "ftps/upload": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"upload_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "gmail/download_attachment": {
+      "target": {"piece":"@activepieces/piece-gmail","name":"gmail_get_mail","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "+ download do anexo"
+    },
+    "gmail/new_email": {
+      "target": {"piece":"@activepieces/piece-gmail","name":"gmail_new_email_received","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "gmail/send_mail": {
+      "target": {"piece":"@activepieces/piece-gmail","name":"send_email","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_big_query/insert_row": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"create_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_big_query/search_rows_sync": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"find_one_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_big_query/search_rows_using_custom_sql": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"run_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/get_query_job_output": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"get_rows_for_job","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/insert_row": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"create_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/run_custom_sql_sync": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"run_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/search_rows_sync": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"find_one_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/search_rows_using_custom_sql": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"run_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_bigquery/search_rows_using_custom_sql_sync": {
+      "target": {"piece":"@activepieces/piece-google-bigquery","name":"run_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/create_event": {
+      "target": {"piece":"@activepieces/piece-google-calendar","name":"create_google_calendar_event","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/delete_event": {
+      "target": {"piece":"@activepieces/piece-google-calendar","name":"delete_event","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/search_events": {
+      "target": {"piece":"@activepieces/piece-google-calendar","name":"google_calendar_get_events","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-google-calendar","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "HTTP ad-hoc do conector Calendar. A piece tem Custom API Call (KB 0.10.3). Path/body/headers ficam para revisao — nas Gong isso e POST de evento com colorId/conferenceData."
+    },
+    "google_cloud_storage/download_object": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "action custom_api_call nao existe em @activepieces/piece-google-cloud-storage; migrar de fora via HTTP. original: @activepieces/piece-google-cloud-storage / custom_api_call (download)"
+    },
+    "google_cloud_storage/list_objects": {
+      "target": {"piece":"@activepieces/piece-google-cloud-storage","name":"search_objects","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_cloud_storage/upload_object_streaming": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "action custom_api_call nao existe em @activepieces/piece-google-cloud-storage; migrar de fora via HTTP. original: @activepieces/piece-google-cloud-storage / custom_api_call (upload)"
+    },
+    "google_docs/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "google_docs/create_document_from_template": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_docs/get_doc": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"read_document","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_docs/update_doc": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; update rico via custom_api_call"
+    },
+    "google_docs/update_document": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; update rico via custom_api_call"
+    },
+    "google_docs_connector_186728_1621263423/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "google_docs_connector_186728_1621263423/get_doc": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"read_document","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_docs_connector_186728_1621263423/update_doc": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; update rico via custom_api_call"
+    },
+    "google_docs_connector_4920693_1760972100/update_document": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; update rico via custom_api_call"
+    },
+    "google_docs_connector_655187_1769338407/create_document_from_template": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_docs_connector_769907_1747267785/create_document_from_template": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_document_ai/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Document AI"
+    },
+    "google_document_ai_connector_4798631_1739093489/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Document AI"
+    },
+    "google_drive/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "google_drive/add_permission": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"update_permissions","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/create_folder": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"create_new_gdrive_folder","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/delete_file": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"delete_gdrive_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/download_file_contents": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"read-file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/export_file": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"save_file_as_pdf","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou custom_api_call"
+    },
+    "google_drive/list_permission": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "list permissions"
+    },
+    "google_drive/move_rename_file": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"google-drive-move-file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/remove_permission": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"delete_permissions","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/search_file_or_folder": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"search-folder","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/upload_file": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"upload_gdrive_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/upload_file_stream": {
+      "target": {"piece":"@activepieces/piece-google-drive","name":"upload_gdrive_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_forms/new_response": {
+      "target": {"piece":"@activepieces/piece-google-forms","name":"new_response","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_forms_connector_3237509_1742584356/new_response": {
+      "target": {"piece":"@activepieces/piece-google-forms","name":"new_response","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_people/create_contact": {
+      "target": {"piece":"@activepieces/piece-google-contacts","name":"add_contact","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "google_sheets/add_row_v4_bulk": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-insert-multiple-rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/get_spreadsheet_rows_v4": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"get-many-rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/new_polling_spreadsheet_row_v4": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"googlesheets_new_row_added","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/new_spreadsheet_row_v4": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"googlesheets_new_row_added","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/team_drive_new_spreadsheet_row_v4": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"googlesheets_new_row_added","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/team_drive_updated_spreadsheet_row_v4_2": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-new-or-updated-row","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/update_row_v4_bulk": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"update-multiple-rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/updated_polling_spreadsheet_row_v4_2": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-new-or-updated-row","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/updated_spreadsheet_row_v4_2": {
+      "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-new-or-updated-row","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_translate/text_translate": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Google Cloud Translation)."
+    },
+    "graph_ql_connector_1709329_1704714490/mutation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_1709329_1704714490/query": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_2257312_1706035110/custom_operation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_2695906_1742235664/custom_operation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_2695906_1742235664/mutation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_2695906_1742235664/query": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_2926491_1696603190/query": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_4180711_1778683603/custom_operation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_4225424_1761937066/mutation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graph_ql_connector_4225424_1761937066/query": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graphql/custom_operation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graphql/mutation": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "graphql/query": {
+      "target": {"piece":"@activepieces/piece-graphql","name":"send_request","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "hubspot/create_object": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"create-custome-object","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou create-contact/create-deal conforme objeto"
+    },
+    "hubspot/get_associations": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"find-associations","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "hubspot/get_owner_v3": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "hubspot/get_record": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"get-contact","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou get-deal/get-company conforme objeto"
+    },
+    "hubspot/new_object": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"new-custom-object","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou new-contact/new-deal conforme objeto"
+    },
+    "hubspot/search_record": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"find-contact","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou find-deal/find-company conforme objeto"
+    },
+    "hubspot/update_object": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"update-custome-object","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou update-contact/update-deal conforme objeto"
+    },
+    "hubspot/update_object_batch": {
+      "target": {"piece":"@activepieces/piece-hubspot","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "batch"
+    },
+    "jira/create_issue": {
+      "target": {"piece":"@activepieces/piece-jira-cloud","name":"create_issue","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "js_eval/invoke_custom_js_code": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "step CODE"
+    },
+    "jump_cloud/create_object": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (JumpCloud REST)."
+    },
+    "jump_cloud/search_objects": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (JumpCloud REST)."
+    },
+    "jwt/encode": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "step CODE (JWT)"
+    },
+    "lead/create_lead": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (conector custom; recriar a API via HTTP)."
+    },
+    "legacy_pipefy_connector_5004591_1736948473/update_list_type_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "legacy_pipefy_connector_787611_1695988269/Delete_Card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "legacy_pipefy_connector_787611_1695988269/custom_api_call": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "legacy_pipefy_connector_787611_1695988269/update_list_type_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "lookup_table/add_batch_of_entries": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/add_entry": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/delete_entries": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/delete_entry": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/get_entries": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/get_entry": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-get-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/search_entries": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/truncate": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-clear-table","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "lookup_table/update_entry": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-update-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Lookup Table"
+    },
+    "microsoft_dynamics_crm/create_object": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-dynamics-crm",
+        "name": "dynamics_crm_create_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_dynamics_crm/search_objects": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-dynamics-crm",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem search nativo; Dataverse via custom_api_call."
+    },
+    "microsoft_dynamics_crm/update_object": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-dynamics-crm",
+        "name": "dynamics_crm_update_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_dynamics_crm/updated_webhook": {
+      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
+      "fixedProps": {"authType":"none"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem piece Dynamics CRM; receber o webhook Dataverse/HTTP."
+    },
+    "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/get_group_members": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/get_user_by_id": {
+      "target": {"piece":"@activepieces/piece-azure-ad","name":"get_user_by_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_graph/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Microsoft Graph"
+    },
+    "microsoft_graph/custom_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Microsoft Graph"
+    },
+    "microsoft_graph_api_connector_863224_1675962687/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Microsoft Graph"
+    },
+    "microsoft_graph_api_connector_863224_1675962687/custom_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "Microsoft Graph"
+    },
+    "microsoft_sharepoint/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "microsoft_sharepoint/add_row_in_sharepoint_list": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_create_list_item","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/copy_file": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_copy_item","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/create_folder": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_create_folder","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/delete_file_from_library": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "delete file"
+    },
+    "microsoft_sharepoint/download_file_from_library": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "download file"
+    },
+    "microsoft_sharepoint/get_file_folder": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_get_folder_contents","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/list_files_folders": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_get_folder_contents","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/new_updated_file_in_folder_hierarchy": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"new_file_in_subfolders","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/new_updated_file_in_sharepoint_library": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"new_or_updated_file","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/search_file_by_name": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_find_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/search_list_items_v2": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_search_list_item","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/update_file_in_library": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_upload_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "overwrite"
+    },
+    "microsoft_sharepoint/update_file_metadata": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "microsoft_sharepoint/update_row_in_sharepoint_list": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_update_list_item","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/upload_file_in_library": {
+      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_upload_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "mysql/insert_row": {
+      "target": {"piece":"@activepieces/piece-mysql","name":"insert_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "mysql/new_row_v2": {
+      "target": {"piece":"@activepieces/piece-schedule","name":"cron_expression","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "piece-mysql nao tem trigger; poll com cron + find_rows."
+    },
+    "mysql/search_rows": {
+      "target": {"piece":"@activepieces/piece-mysql","name":"find_rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "mysql/update_rows": {
+      "target": {"piece":"@activepieces/piece-mysql","name":"update_row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "mysql/upsert_rows": {
+      "target": {"piece":"@activepieces/piece-mysql","name":"execute_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "UPSERT"
+    },
+    "netsuite/add_custom_object": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "netsuite/create_record": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "netsuite/execute_suiteql": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"runSuiteQL","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "netsuite/get_standard_object_schema": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "netsuite/search_custom_object": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"runSuiteQL","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "netsuite/search_records": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"runSuiteQL","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "netsuite_rest/create_record": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "netsuite_rest/execute_suiteql": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"runSuiteQL","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "netsuite_rest/search_records": {
+      "target": {"piece":"@activepieces/piece-netsuite","name":"runSuiteQL","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_21_connector_186728_1637676748/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "adhoc HTTP do conector"
+    },
+    "new_connector_21_connector_186728_1637676748/listar_clientes": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "new_connector_21_connector_186728_1637676748/listar_contas": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "new_connector_21_connector_186728_1637676748/listar_departamentos": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "new_connector_22_connector_186728_1643638487/create_lead": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (conector custom; recriar a API via HTTP)."
+    },
+    "new_connector_4_connector_186728_1617038418/get_job_by_ID": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (conector custom; recriar a API via HTTP)."
+    },
+    "new_connector_4_connector_186728_1617038418/new_action": {
+      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
+      "fixedProps": {"authType":"none"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem piece custom_jobs no catalogo AP; receber evento via webhook HTTP."
+    },
+    "new_connector_4_connector_186728_1620754526/create_execution": {
+      "target": {"piece":"@activepieces/piece-whatsapp","name":"sendMessage","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox."
+    },
+    "new_connector_4_connector_186728_1620754526/send_whatsapp_template": {
+      "target": {"piece":"@activepieces/piece-whatsapp","name":"send-template-message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_4_connector_186728_1623952876/createDocument": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_4_connector_186728_1623952876/getDocument": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"extractText","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "fixedProps": {
+        "method": "POST",
+        "url": "https://api.pipefy.com/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_delete": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardDeleted","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_done": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardDone","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/card_late": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardLate","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/create_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/delete_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/get_records": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFilter","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "new_connector_6_connector_186728_1628717731/record_field_update": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "notion/create_record": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "notion/query_database": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "notion/update_record": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "notion_connector_3364098_1751397202/create_record": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "notion_connector_3364098_1751397202/query_database": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "notion_connector_3364098_1751397202/update_record": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
+    },
+    "omie/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "adhoc HTTP do conector"
+    },
+    "omie/incluir_conta_pagar": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "omie/listar_clientes": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "omie/listar_contas": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "omie/listar_departamentos": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "omie/listar_movimentos": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "omie_conector_connector_4920693_1760388930/listar_movimentos": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Omie JSON API)."
+    },
+    "onedrive/delete_file_or_folder": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "delete"
+    },
+    "onedrive/download_file": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"download_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "onedrive/new_event_trigger": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"new_file","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "onedrive/search_files_new": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"list_files","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "onedrive/upload_file": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"upload_onedrive_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "onedrive/upload_file_from_url": {
+      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"upload_onedrive_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "open_ai/chat_completion": {
+      "target": {"piece":"@activepieces/piece-openai","name":"ask_chatgpt","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "outlook/create_event": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook-calendar","name":"create_event","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/get_attachments": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"downloadAttachment","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/new_email": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"newEmail","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/send_mail": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"send-email","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/update_event": {
+      "target": {"piece":"@activepieces/piece-microsoft-outlook-calendar","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem update_event nativo"
+    },
+    "pdf/createDocument": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pdf/generate_document": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "ou piece-google-docs template"
+    },
+    "pdf/getDocument": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"extractText","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pdf_monkey_connector_4204416_1779192759/generate_document": {
+      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "ou piece-google-docs template"
+    },
+    "personio/search_records": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Personio REST)."
+    },
+    "personio_connector_3569156_1710165354/search_records": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (Personio REST)."
+    },
+    "pipedrive/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipedrive/create_deal_v2": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"create-deal","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipedrive/get_record": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipedrive/new_updated_record": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"updated_deal","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou updated_person conforme objeto"
+    },
+    "pipedrive/update_deal_v2": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"update-deal","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipedrive_api_v2__connector_2967900_1765398789/get_record": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipedrive_api_v2__connector_2967900_1765398789/new_updated_record": {
+      "target": {"piece":"@activepieces/piece-pipedrive","name":"updated_deal","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou updated_person conforme objeto"
+    },
+    "pipefy/Delete_Card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "fixedProps": {
+        "method": "POST",
+        "url": "https://api.pipefy.com/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy/attach_app_data": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action attach_app_data em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy/card_create": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardCreated","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_delete": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardDeleted","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_done": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardDone","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_field_update": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","field_ids":"fieldIds"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_late": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardLate","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_move": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardMoved","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","from_phase_ids":"fromPhaseId","to_phase_ids":"toPhaseId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_overdue": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardOverdue","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/create_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId"},
+      "ignoreSourceProps": ["pipe"],
+      "collectRemainingTo": "startFormFields",
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/create_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/custom_api_call": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"url":"url","method":"method","headers":"headers","body":"body"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy/delete_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteCard","kind":"action"},
+      "propMap": {"card_id":"cardId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/delete_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/enable_or_disable_phase_form_link": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"configurePublicPhaseFormLink","kind":"action"},
+      "propMap": {"card_id":"cardId","action":"enable"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/find_cards_by_title": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByTitle","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_app_data": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action get_app_data em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy/get_card_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardById","kind":"action"},
+      "propMap": {"id":"cardId","card_id":"cardId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_cards_by_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByFieldValue","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","field_id":"fieldId","field_value":"fieldValue"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_cards_by_phase": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","phase_id":"phaseId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_cards_by_title": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByTitle","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","title":"title"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_database_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_database_records": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFilter","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_phase_cards": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_phase_cards_v2": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "propMap": {"phase_id":"phaseId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_record_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "propMap": {"id":"recordId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_records": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFilter","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_records_by_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFieldValue","kind":"action"},
+      "propMap": {"organization_id":"organizationId","table_id":"databaseId","field_id":"fieldId","value":"fieldValue"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/import_cards": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action import_cards em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy/invite_user": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"inviteUserToPipe","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/move_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"moveCard","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","phase_id":"phaseId","card_id":"cardId"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/new_updated_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; piece não tem cardUpdated genérico"
+    },
+    "pipefy/new_updated_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; piece não tem recordUpdated genérico"
+    },
+    "pipefy/record_created": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"recordCreated","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/record_field_update": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_array_type_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
+      "propMap": {"Node_Id":"nodeId","Field_ID":"fieldId","Value":"fieldValue","Operation":"operation","node_id":"nodeId","field_id":"fieldId","field_value":"fieldValue","operation":"operation"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","phase_id":"phaseId","card_id":"cardId"},
+      "collectRemainingTo": "phaseFields",
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_card_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_fields_values": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_list_type_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
+      "propMap": {"Node_Id":"nodeId","Field_ID":"fieldId","Value":"fieldValue","Operation":"operation"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/update_record_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/upload_attachment": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "propMap": {"node_ID":"cardId","field_id":"fieldId","file_name":"fileName","file":"attachment","Operation":"operation"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "fixedProps": {
+        "method": "POST",
+        "url": "https://api.pipefy.com/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/attach_app_data": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action attach_app_data em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy_connector_186728_1590691380/create_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/enable_or_disable_phase_form_link": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"configurePublicPhaseFormLink","kind":"action"},
+      "propMap": {"card_id":"cardId","action":"enable"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/find_cards_by_title": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByTitle","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/get_app_data": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action get_app_data em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy_connector_186728_1590691380/get_database_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/get_database_records": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFilter","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/get_phase_cards": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/get_phase_cards_v2": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/import_cards": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action import_cards em piece-pipefy; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy_connector_186728_1590691380/invite_user": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"inviteUserToPipe","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/move_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"moveCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/update_fields_values": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/update_list_type_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_186728_1590691380/update_record_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_193690_1597774089/update_card_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_2971029_1695731726/update_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_3349067_1757704577/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "fixedProps": {
+        "method": "POST",
+        "url": "https://api.pipefy.com/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/card_field_update": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/card_move": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardMoved","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/create_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/create_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/get_card_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/get_cards_by_phase": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/move_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"moveCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/update_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_4204416_1753105808/update_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_436046_1688667264/card_move": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardMoved","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_436046_1688667264/get_card_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_436046_1688667264/get_record_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_566174_1755776406/card_move": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardMoved","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_566174_1755776406/create_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_566174_1755776406/get_cards_by_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByFieldValue","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_connector_566174_1755776406/update_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_identity_propagation_connector_2792069_1773344515/card_field_update": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/Delete_Card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"deleteCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
+      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "fixedProps": {
+        "method": "POST",
+        "url": "https://api.pipefy.com/graphql",
+        "headers": {},
+        "queryParams": {},
+        "body_type": "json"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/create_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/create_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/enable_or_disable_phase_form_link": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"configurePublicPhaseFormLink","kind":"action"},
+      "propMap": {"card_id":"cardId","action":"enable"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/find_cards_by_title": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByTitle","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/get_card_by_id": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/get_database_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordById","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/get_database_records": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getRecordsByFilter","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/get_phase_cards": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/invite_user": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"inviteUserToPipe","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/move_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"moveCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/new_updated_card": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; piece não tem cardUpdated genérico"
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/new_updated_record": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox.; piece não tem recordUpdated genérico"
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/update_card_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/update_fields_values": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy_legacy_v2_connector_186728_1723750715/update_record_field": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/add_line_item_estimate": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/create_customer": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem create_customer nativo; REST via custom_api_call."
+    },
+    "quickbooks/create_estimate_v2": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/create_invoice_v3": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "create_invoice",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/new_invoice": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "new_invoice",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/new_payment": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "payment_received",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/search_customer": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "find_customer",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/search_invoice": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "find_invoice",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/search_item": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/send_invoice_via_email": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/update_customer": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/updated_invoice": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "new_or_updated_invoice",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "rest_secondary/make_request_v2": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/change_data_capture": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"new_or_updated_record","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/composite_create_sobject": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"create_record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "composite via custom_api_call"
+    },
+    "salesforce/composite_update_sobject": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"update_record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "composite via custom_api_call"
+    },
+    "salesforce/delete_sobject": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"delete_record","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/get_combined_attachment": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"get_record_attachments","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/get_sobject_schema": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "salesforce/new_custom_object": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"new_record","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/search_sobjects_soql_v2": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"run_query","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/updated_custom_object_webhook": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"new_or_updated_record","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/upload_file_content": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"add_file_to_record","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/upsert_sobject": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"upsert_by_external_id","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce_secondary/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-salesforce","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "sap_sf_saml2_2_step_o_auth_connector_863224_1764678478/odata_custom_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "se_connector_upload_attachment_connector_955712_1764189910/upload_attachment": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sendgrid/send_email": {
+      "target": {"piece":"@activepieces/piece-sendgrid","name":"send_email","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/search_objects_v2": {
+      "target": {"piece":"@activepieces/piece-service-now","name":"find_record","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/dir": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"listFolderContents","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/download": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"read_file_content","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/get_file_content": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"read_file_content","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/new_file_in_dir": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"new_file","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/remove": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"deleteFile","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/upload": {
+      "target": {"piece":"@activepieces/piece-sftp","name":"upload_file","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "single_tenant_legacy_upload_attachment_connector_955712_1688134977/upload_attachment": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/block_kit_modals": {
+      "target": {"piece":"@activepieces/piece-slack","name":"new-modal-interaction","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "trigger) + request_action_message; kind ajustado para trigger (KB)."
+    },
+    "slack/bot_command_v2": {
+      "target": {"piece":"@activepieces/piece-slack","name":"new_command","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/create_conversation": {
+      "target": {"piece":"@activepieces/piece-slack","name":"slack-create-channel","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/delete_message": {
+      "target": {"piece":"@activepieces/piece-slack","name":"delete-message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/invite_user_to_conversation": {
+      "target": {"piece":"@activepieces/piece-slack","name":"invite-user-to-channel","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/new_event": {
+      "target": {"piece":"@activepieces/piece-slack","name":"new-message","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/post_bot_message": {
+      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "alt": {"piece":"@activepieces/piece-slack","name":"send_direct_message","kind":"action","when":"channel e um user id (DM) -> usar send_direct_message (userId)"},
+      "propMap": {"channel":"channel","text":"text","blocks":"blocks"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/post_bot_reply_v2": {
+      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "thread/reply"
+    },
+    "slack/update_blocks_by_block_id": {
+      "target": {"piece":"@activepieces/piece-slack","name":"updateMessage","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/upload_file": {
+      "target": {"piece":"@activepieces/piece-slack","name":"uploadFile","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/block_kit_modals": {
+      "target": {"piece":"@activepieces/piece-slack","name":"new-modal-interaction","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "trigger) + request_action_message; kind ajustado para trigger (KB)."
+    },
+    "slack_bot/delete_message": {
+      "target": {"piece":"@activepieces/piece-slack","name":"delete-message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/new_event": {
+      "target": {"piece":"@activepieces/piece-slack","name":"new-message","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/post_bot_reply_v2": {
+      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "thread/reply"
+    },
+    "slack_bot/update_blocks_by_block_id": {
+      "target": {"piece":"@activepieces/piece-slack","name":"updateMessage","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_bot/upload_file": {
+      "target": {"piece":"@activepieces/piece-slack","name":"uploadFile","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_secondary/get_user_by_email": {
+      "target": {"piece":"@activepieces/piece-slack","name":"slack-find-user-by-email","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack_secondary/post_message_to_channel": {
+      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "snowflake/insert_row": {
+      "target": {"piece":"@activepieces/piece-snowflake","name":"insert-row","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "snowflake/run_custom_sql": {
+      "target": {"piece":"@activepieces/piece-snowflake","name":"runQuery","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "snowflake/scheduled_select": {
+      "target": {"piece":"@activepieces/piece-snowflake","name":"new_row","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "snowflake/search_rows": {
+      "target": {"piece":"@activepieces/piece-snowflake","name":"search_rows","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "snowflake/search_rows_sql": {
+      "target": {"piece":"@activepieces/piece-snowflake","name":"runQuery","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "success_factors/__adhoc_http_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/advance_search_object": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/get_object": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/get_user_by_identifier": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/get_user_by_name": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/get_user_by_userId": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/get_user_by_username": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/new_updated_object": {
+      "target": {"piece":"@activepieces/piece-schedule","name":"cron_expression","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem piece SAP SuccessFactors; poll OData via HTTP em schedule."
+    },
+    "success_factors/odata_custom_action": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors/search_object": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors_emp_jobs_connector_863224_1757619508/get_user_by_identifier": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors_emp_jobs_connector_863224_1757619508/get_user_by_name": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors_emp_jobs_connector_863224_1757619508/get_user_by_userId": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "success_factors_emp_jobs_connector_863224_1757619508/get_user_by_username": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "teams/bot_command": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"new-channel-message","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox. de bot command"
+    },
+    "teams/get_user_by_principal_name": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_find_team_member","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/post_blocks_message": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_send_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/post_blocks_reply_message": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_reply_to_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams_bot/bot_command": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"new-channel-message","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox. de bot command"
+    },
+    "teams_bot/get_user_by_principal_name": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_find_team_member","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams_bot/post_blocks_message": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_send_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams_bot/post_blocks_reply_message": {
+      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_reply_to_channel_message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "twilio/send_sms": {
+      "target": {"piece":"@activepieces/piece-twilio","name":"send_sms","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "twilio/sms_received": {
+      "target": {"piece":"@activepieces/piece-twilio","name":"new_incoming_sms","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "upload_attchments__connector_863224_1757603094/upload_attachment": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "upload_attchments_connector_3249852_1783608984/upload_attachment": {
+      "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "whatsapp/create_execution": {
+      "target": {"piece":"@activepieces/piece-whatsapp","name":"sendMessage","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox."
+    },
+    "whatsapp/send_whatsapp_template": {
+      "target": {"piece":"@activepieces/piece-whatsapp","name":"send-template-message","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "workato_db_table/add_record": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/create_records_batch": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/delete_records_by_condition": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/get_records": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/new_records_polling": {
+      "target": {"piece":"@activepieces/piece-tables","name":"newRecord","kind":"trigger"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/truncate_table": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-clear-table","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_db_table/update_record": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-update-record","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "recriar Data Table"
+    },
+    "workato_mapper/map": {
+      "target": {"piece":"@activepieces/piece-data-mapper","name":"advanced_mapping","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "workato_pub_sub/publish_to_topic": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "Pub/Sub interno Workato; publicar via HTTP no webhook/subflow do consumidor."
+    },
+    "workato_pub_sub/subscribe_to_topic": {
+      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
+      "fixedProps": {"authType":"none"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Pub/Sub interno Workato; redesenhar o topico como catch_webhook (ou callableFlow)."
+    },
+    "workato_recipe_function/call_recipe": {
+      "target": {"piece":"@activepieces/piece-subflows","name":"callFlow","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "workato_recipe_function/return_result": {
+      "target": {"piece":"@activepieces/piece-subflows","name":"returnResponse","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "workato_recipe_function/wait_for_async_jobs": {
+      "target": {"piece":"@activepieces/piece-delay","name":"delayFor","kind":"action"},
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem wait_for_async nativo; orquestrar subflows + delay."
+    },
+    "workato_service/call_service_async": {
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
+      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "chamar outro flow/webhook"
+    },
+    "workato_service/receive_request": {
+      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
+      "fixedProps": {"authType":"none"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "workato_smart_list/create_list": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox. de Smart List"
+    },
+    "workato_smart_list/create_list_from_csv": {
+      "target": {"piece":"@activepieces/piece-csv","name":"convert_csv_to_json","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "+ piece-tables"
+    },
+    "workato_smart_list/query_list": {
+      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox. de Smart List"
+    },
+    "workato_template/create_document": {
+      "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
+      "difficulty": "low",
+      "manual": false,
+      "notes": "ou piece-pdf"
+    },
+    "workato_variable/clear_list": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "step CODE"
+    },
+    "workato_variable/update_variable": {
+      "target": null,
+      "builtin": "code",
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "step CODE"
+    },
+    "xml/create_xml": {
+      "target": {"piece":"@activepieces/piece-xml","name":"convert-json-to-xml","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "xml/parse_xml": {
+      "target": {"piece":"@activepieces/piece-xml","name":"convert-xml-to-json","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "xml_creator_connector_3349067_1743439260/create_xml": {
+      "target": {"piece":"@activepieces/piece-xml","name":"convert-json-to-xml","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "xml_parser/parse_xml": {
+      "target": {"piece":"@activepieces/piece-xml","name":"convert-xml-to-json","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/create_ticket": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"create-ticket","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/create_upload": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "zendesk/get_ticket_by_id": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"find-tickets","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/get_ticket_comments": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"custom_api_call","kind":"action"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "zendesk/get_user_by_id": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"find-user","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/new_ticket_polling": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"new_ticket","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/new_ticket_webhook": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"new_ticket","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/update_ticket": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"update-ticket","kind":"action"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/updated_ticket_polling": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"updated_ticket","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/updated_ticket_webhook": {
+      "target": {"piece":"@activepieces/piece-zendesk","name":"updated_ticket","kind":"trigger"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "mssql/run_custom_sql": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "run_query",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "mssql/search_rows": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "find_rows",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "mssql/insert_row": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "insert_row",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "mssql/insert_rows_batch": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "insert_row",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "piece-microsoft-sql-server nao tem insert em lote; revisar para N inserts ou run_query."
+    },
+    "mssql/search_rows_sql": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "run_query",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "mssql/upsert_rows": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "run_query",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "UPSERT via SQL."
+    },
+    "mssql/delete_rows": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sql-server",
+        "name": "delete_rows",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "oracle/execute_procedure": {
+      "target": {
+        "piece": "@activepieces/piece-oracle-database",
+        "name": "run_custom_sql",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "procedure Oracle via run_custom_sql / PL/SQL."
+    },
+    "oracle/run_custom_sql": {
+      "target": {
+        "piece": "@activepieces/piece-oracle-database",
+        "name": "run_custom_sql",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "oracle/search_rows_sql": {
+      "target": {
+        "piece": "@activepieces/piece-oracle-database",
+        "name": "run_custom_sql",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "postgresql/insert_row": {
+      "target": {
+        "piece": "@activepieces/piece-postgres",
+        "name": "insert-row",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "postgresql/search_rows": {
+      "target": {
+        "piece": "@activepieces/piece-postgres",
+        "name": "find-rows",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "postgresql/run_custom_sql": {
+      "target": {
+        "piece": "@activepieces/piece-postgres",
+        "name": "run-query",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "mysql/run_custom_sql": {
+      "target": {
+        "piece": "@activepieces/piece-mysql",
+        "name": "execute_query",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/search_user": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "find-user",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "zendesk/create_user": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "create-user",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk/create_organization": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "create-organization",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "zendesk_sunshine/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "zendesk_sunshine/list_custom_record": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Sunshine custom objects via Zendesk custom_api_call."
+    },
+    "zendesk_secondary/create_upload": {
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "jira/search_issues": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "search_issues",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/updated_issue": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "updated_issue",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/find_user": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "find-user",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/get_issue": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "get_issue",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/upload_attachment": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "add_issue_attachment",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "jira/create_comment": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "add_issue_comment",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/update_issue": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "update_issue",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/update_issue_status": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "transition_issue",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/updated_issue_batch": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "updated_issue",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "batch Workato vira o trigger updated_issue."
+    },
+    "jira/new_issue": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "new_issue",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "jira/assign_issue": {
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "assign_issue",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "open_ai/analyse_document": {
+      "target": {
+        "piece": "@activepieces/piece-openai",
+        "name": "extract-structured-data",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Workato analyse_document; revisar se o input e texto ou arquivo (vision_prompt)."
+    },
+    "open_ai/completion": {
+      "target": {
+        "piece": "@activepieces/piece-openai",
+        "name": "ask_chatgpt",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ai/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-azure-openai",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "azure_ai/completion": {
+      "target": {
+        "piece": "@activepieces/piece-azure-openai",
+        "name": "ask_gpt",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/update_user": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "update_user",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/add_member_to_group": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "add_member_to_group",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/remove_member_from_group": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "piece-azure-ad nao tem remove_member_from_group; recriar via Graph em custom_api_call."
+    },
+    "azure_ad/revoke_user_session": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "revoke_sign_in_session",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/create_group": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "create_group",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/delete_group": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "delete_group",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/list_users": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "list_users",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_ad/get_user_by_employeeId": {
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "list_users",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "filtrar employeeId no resultado."
+    },
+    "pipefy/record_done": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "recordDone",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/card_expired": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "cardExpired",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/record_overdue": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "recordOverdue",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/attach_app_card_url": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem action attach_app_card_url; recriar via GraphQL em custom_api_call."
+    },
+    "pipefy/new_comment": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "cardCommentCreated",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/get_card_by_field": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "getCardsByFieldValue",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "propMap": {
+        "organization_id": "organizationId",
+        "pipe_id": "pipeId",
+        "field_id": "fieldId",
+        "field_value": "fieldValue"
+      }
+    },
+    "pipefy/delete_database_record": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "deleteRecord",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipefy/send_whatsapp_template": {
+      "target": {
+        "piece": "@activepieces/piece-whatsapp",
+        "name": "send-template-message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "pipefy_twilio colapsa para pipefy/; a piece e WhatsApp."
+    },
+    "pipefy/get_table_record": {
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "getRecordById",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "propMap": {
+        "id": "recordId"
+      }
+    },
+    "pipefy/send_email_with_attachments": {
+      "target": {
+        "piece": "@activepieces/piece-gmail",
+        "name": "send_email",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "conector e-mail Pipefy; se a conta for SMTP, trocar para piece-smtp."
+    },
+    "workday/get_report": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "get_report",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "workday/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workday/Search_business_object": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "search_business_object_batch",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "workday/get_worker": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "get_business_object_details_batch",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Worker via business object."
+    },
+    "workday_rest/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "workday_rest/get_worker": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "get_business_object_details_batch",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Worker via business object."
+    },
+    "workday_oauth/Search_business_object": {
+      "target": {
+        "piece": "@activepieces/piece-workday",
+        "name": "search_business_object_batch",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_calendar/create_allday_event": {
+      "target": {
+        "piece": "@activepieces/piece-google-calendar",
+        "name": "create_google_calendar_event",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "evento dia inteiro; ajustar start/end."
+    },
+    "google_calendar/new_event": {
+      "target": {
+        "piece": "@activepieces/piece-google-calendar",
+        "name": "new_event",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/updated_spreadsheet_row_v4": {
+      "target": {
+        "piece": "@activepieces/piece-google-sheets",
+        "name": "google-sheets-new-or-updated-row",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_sheets/update_spreadsheet_row_v3_new": {
+      "target": {
+        "piece": "@activepieces/piece-google-sheets",
+        "name": "update_row",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_docs/insert_text": {
+      "target": {
+        "piece": "@activepieces/piece-google-docs",
+        "name": "append_text",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "google_drive/new_csv_file_batch": {
+      "target": {
+        "piece": "@activepieces/piece-google-drive",
+        "name": "new_file",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "batch CSV Workato vira new_file; filtrar mime CSV na importacao."
+    },
+    "google_gemini/analyze_document": {
+      "target": {
+        "piece": "@activepieces/piece-google-gemini",
+        "name": "generate_content_with_filesearch",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/search_files_folders": {
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "listFolderContents",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/streamable_download": {
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "read_file_content",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/mkdir": {
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "createFolder",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "sftp/rename": {
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "renameFileOrFolder",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "service_now/update_object": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "update_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/updated_object_webhook": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "updated_record",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/search_using_query": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "find_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/updated_object": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "updated_record",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "service_now/download_attachment": {
+      "target": {
+        "piece": "@activepieces/piece-service-now",
+        "name": "find_file",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "hubspot/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-hubspot",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "hubspot/new_or_updated_object": {
+      "target": {
+        "piece": "@activepieces/piece-hubspot",
+        "name": "new-or-updated-company",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "revisar o objeto (contact/deal/company)."
+    },
+    "hubspot/new_or_updated_object_batch": {
+      "target": {
+        "piece": "@activepieces/piece-hubspot",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "hubspot/associate_records": {
+      "target": {
+        "piece": "@activepieces/piece-hubspot",
+        "name": "find-associations",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "associar; se for create, usar custom_api_call."
+    },
+    "airtable/create_record": {
+      "target": {
+        "piece": "@activepieces/piece-airtable",
+        "name": "airtable_create_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "airtable/update_record": {
+      "target": {
+        "piece": "@activepieces/piece-airtable",
+        "name": "airtable_update_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "airtable/search_records": {
+      "target": {
+        "piece": "@activepieces/piece-airtable",
+        "name": "airtable_find_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "airtable/list_records": {
+      "target": {
+        "piece": "@activepieces/piece-airtable",
+        "name": "airtable_find_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/post_bot_reply": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams",
+        "name": "microsoft_teams_reply_to_channel_message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/post_simple_message": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams",
+        "name": "microsoft_teams_send_channel_message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/post_bot_message": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams-bot",
+        "name": "microsoft_teams_send_channel_message_as_bot",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/new_message_event": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams",
+        "name": "new-channel-message",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "teams/help_event": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams",
+        "name": "new-channel-message",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "aprox. de help event do bot."
+    },
+    "teams/post_simple_reply": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-teams",
+        "name": "microsoft_teams_reply_to_channel_message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/get_calendar": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-outlook-calendar",
+        "name": "list_events",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/delete_calendar_event": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-outlook-calendar",
+        "name": "delete_event",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "outlook/search_events": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-outlook-calendar",
+        "name": "list_events",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "microsoft_sharepoint/new_updated_row_in_sharepoint_list": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sharepoint",
+        "name": "updated_list_item",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Workato new+updated; piece tem new_list_item e updated_list_item separados."
+    },
+    "smartsheet/get_row_by_id": {
+      "target": {
+        "piece": "@activepieces/piece-smartsheet",
+        "name": "find_rows_by_query",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "smartsheet/new_or_updated_row": {
+      "target": {
+        "piece": "@activepieces/piece-smartsheet",
+        "name": "updated_row",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "smartsheet/create_row": {
+      "target": {
+        "piece": "@activepieces/piece-smartsheet",
+        "name": "add_row_to_sheet",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "sms/send_sms": {
+      "target": {
+        "piece": "@activepieces/piece-twilio",
+        "name": "send_sms",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "SMS Workato via Twilio."
+    },
+    "slack/button_action": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "new-modal-interaction",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/post_button_action_reply": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "slack/dynamic_menu": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "menu dinamico Workbot; recriar via Slack API."
+    },
+    "slack/generate_menu_options": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "options do menu dinamico."
+    },
+    "slack/open_bot_dialog": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "request_action_message",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "slack/message_action": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "new-message",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "slack/help_event": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "new_command",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/new_outbound_message": {
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "new_outbound_message",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "salesforce/submit_process": {
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "soap/create_message": {
+      "target": {
+        "piece": "@activepieces/piece-soap",
+        "name": "call_method",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "soap/parse_soap": {
+      "target": {
+        "piece": "@activepieces/piece-xml",
+        "name": "convert-xml-to-json",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "parse do envelope SOAP."
+    },
+    "box/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "box/search_files": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "box/upload_file_content": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "box/download_file": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "box/delete_file": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "box/move_file": {
+      "target": {
+        "piece": "@activepieces/piece-box",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "dropbox/search_files": {
+      "target": {
+        "piece": "@activepieces/piece-dropbox",
+        "name": "search_dropbox",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/upload_file_content": {
+      "target": {
+        "piece": "@activepieces/piece-dropbox",
+        "name": "upload_dropbox_file",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "dropbox/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-dropbox",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "docusign/resend_envelope": {
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "updateEnvelope",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "resend via updateEnvelope."
+    },
+    "docusign/new_recipient_event": {
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "recipientSent",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "excel/list_tables": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-excel-365",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "excel/list_worksheets": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-excel-365",
+        "name": "get_worksheets",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "gmail/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-gmail",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "zoom/schedule_object": {
+      "target": {
+        "piece": "@activepieces/piece-zoom",
+        "name": "zoom_create_meeting",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "shopify/get_order_by_id": {
+      "target": {
+        "piece": "@activepieces/piece-shopify",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "shopify/add_metafield_to_object": {
+      "target": {
+        "piece": "@activepieces/piece-shopify",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "shopify/update_order": {
+      "target": {
+        "piece": "@activepieces/piece-shopify",
+        "name": "update_order",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "shopify/search_product": {
+      "target": {
+        "piece": "@activepieces/piece-shopify",
+        "name": "get_products",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "shopify/updated_order": {
+      "target": {
+        "piece": "@activepieces/piece-shopify",
+        "name": "new_order",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "piece-shopify nao tem updated_order; mais perto e new_order."
+    },
+    "pipedrive/get_object": {
+      "target": {
+        "piece": "@activepieces/piece-pipedrive",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipedrive/create_activity": {
+      "target": {
+        "piece": "@activepieces/piece-pipedrive",
+        "name": "create-activity",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pipedrive/create_record": {
+      "target": {
+        "piece": "@activepieces/piece-pipedrive",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pipedrive/search_records_by_query": {
+      "target": {
+        "piece": "@activepieces/piece-pipedrive",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "mailchimp/new_subscriber": {
+      "target": {
+        "piece": "@activepieces/piece-mailchimp",
+        "name": "subscribe",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "notion/new_updated_record": {
+      "target": {
+        "piece": "@activepieces/piece-notion",
+        "name": "updated_database_item",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbase/edit_record": {
+      "target": {
+        "piece": "@activepieces/piece-quickbase",
+        "name": "update_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbase/search_records": {
+      "target": {
+        "piece": "@activepieces/piece-quickbase",
+        "name": "find_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbase/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-quickbase",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "word_press/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-wordpress",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "fresh_desk/create_company": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "fresh_desk/create_contact": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "fresh_desk/update_ticket_v2": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk/__adhoc_http_action": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk/get_record": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "get_ticket_status",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "freshdesk/new_updated_record": {
+      "target": {
+        "piece": "@activepieces/piece-freshdesk",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "netsuite_rest/get_record": {
+      "target": {
+        "piece": "@activepieces/piece-netsuite",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "pandadoc/download_document": {
+      "target": {
+        "piece": "@activepieces/piece-pandadoc",
+        "name": "downloadDocument",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_dev_ops/create_record": {
+      "target": {
+        "piece": "@activepieces/piece-azure-devops",
+        "name": "create_work_item",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "azure_dev_ops/search_records": {
+      "target": {
+        "piece": "@activepieces/piece-azure-devops",
+        "name": "list_work_items",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "tableau/download_view_image": {
+      "target": {
+        "piece": "@activepieces/piece-tableau",
+        "name": "download_view",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "bamboohr/create_employee": {
+      "target": {
+        "piece": "@activepieces/piece-bamboohr",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "microsoft_graph/search_record": {
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "Microsoft Graph generico; migrar via HTTP/Graph."
+    },
+    "microsoft_dynamics_crm/get_object_by_id": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-dynamics-crm",
+        "name": "dynamics_crm_get_record",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "pdf_tools/convert_to_pdf": {
+      "target": {
+        "piece": "@activepieces/piece-pdf",
+        "name": "textToPdf",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "ou imageToPdf conforme o input."
+    },
+    "cisco_spark/post_blocks_message": {
+      "target": {
+        "piece": "@activepieces/piece-webex",
+        "name": "createMessage",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "success_factors/upsert_record_object": {
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
+    },
+    "jump_cloud/update_object": {
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "sem piece nativa; migrar de fora via HTTP (JumpCloud REST)."
+    },
+    "quickbooks/search_vendors": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "find_vendor",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/lookup_account": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "find_account",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/search_class": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/create_bill_v2": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "create_bill",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/new_vendor": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "sem trigger new_vendor; poll via custom_api_call ou webhook."
+    },
+    "quickbooks/create_vendor": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "create_vendor",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/lookup_employee": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/search_departments": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/update_invoice_v3": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/update_bill_v2": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/create_expense": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "create_expense",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/update_expense": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/get_estimate": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/create_purchase_order_v2": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/add_line_item_invoice": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/search_payment_method": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "quickbooks/get_invoice": {
+      "target": {
+        "piece": "@activepieces/piece-quickbooks",
+        "name": "find_invoice",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "quickbooks/new_estimate": {
+      "target": {
+        "piece": "@activepieces/piece-webhook",
+        "name": "catch_webhook",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "fixedProps": {
+        "authType": "none"
+      },
+      "notes": "piece-quickbooks nao tem trigger de estimate."
+    },
+    "quickbooks/new_account": {
+      "target": {
+        "piece": "@activepieces/piece-webhook",
+        "name": "catch_webhook",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "fixedProps": {
+        "authType": "none"
+      },
+      "notes": "piece-quickbooks nao tem trigger de account."
+    },
+    "twitter/post_status": {
+      "target": {
+        "piece": "@activepieces/piece-twitter",
+        "name": "create-tweet",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false
+    }
+  }
+}

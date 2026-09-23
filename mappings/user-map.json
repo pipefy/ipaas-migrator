@@ -1,0 +1,5 @@
+{
+  "_doc": "Mapas definidos pelo USUARIO. Tem prioridade sobre o base-map. Criado/atualizado pela skill quando voce define um mapeamento novo. Nao editar a mao a menos que saiba o que faz.",
+  "version": 1,
+  "operations": {}
+}

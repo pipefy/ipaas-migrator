@@ -1,0 +1,25 @@
+{
+  "id": "smoke",
+  "name": "smoke-migrador",
+  "code": {
+    "number": 0,
+    "keyword": "trigger",
+    "provider": "clock",
+    "name": "scheduled_event",
+    "as": "smoke_cron",
+    "input": {
+      "time_unit": "days",
+      "trigger_every": "1",
+      "cron_expression": "0 9 * * *"
+    },
+    "block": []
+  },
+  "config": [
+    {
+      "keyword": "application",
+      "provider": "clock",
+      "name": "clock",
+      "account_id": null
+    }
+  ]
+}
