@@ -32,7 +32,7 @@ O kit não publica o flow, não escolhe o pipe e não autentica OAuth. Sem o id 
 
 ## 1. Instalar
 
-Abra o Cursor, Claude Code ou Codex. Arraste o arquivo `migrador-workato-cliente-navegador-0.5.4.tgz` para o chat e cole:
+Abra o Cursor, Claude Code ou Codex. Arraste o arquivo `migrador-workato-cliente-navegador-0.5.5.tgz` para o chat e cole:
 
 ```
 Instale o migrador com navegador e vamos migrar a receita.

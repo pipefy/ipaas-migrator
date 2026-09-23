@@ -6,12 +6,18 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.4 | `migrador-workato-cliente-navegador-0.5.4.tgz` |
+| Com navegador (vigente) | 0.5.5 | `migrador-workato-cliente-navegador-0.5.5.tgz` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`.
+
+## 0.5.5 — 23 set 2026
+
+O tutor não muda. O diagrama em PNG sai só na máquina (`mmdc` + Chrome). O kit não envia o Mermaid para kroki.io. Sem Chrome ou sem `mmdc`, segue sem PNG.
+
+- `migrador-workato-cliente-navegador-0.5.5.tgz`
 
 ## Descontinuado — kit sem navegador — 23 set 2026
 

@@ -32,7 +32,7 @@ It does not publish the flow, pick the pipe, or finish OAuth. Without a connecti
 
 ## 1. Install
 
-Open Cursor, Claude Code, or Codex. Drop `migrador-workato-cliente-navegador-0.5.4.tgz` into the chat and paste:
+Open Cursor, Claude Code, or Codex. Drop `migrador-workato-cliente-navegador-0.5.5.tgz` into the chat and paste:
 
 ```
 Install the migrator with browser and let's migrate a recipe.

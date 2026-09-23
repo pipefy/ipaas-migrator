@@ -1,6 +1,6 @@
 # com navegador
 
-Tutor **com navegador** (0.5.4). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
+Tutor **com navegador** (0.5.5). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 
@@ -12,7 +12,7 @@ Arquivo gerado não significa flow pronto. Importação, conexões, lógica pend
 
 1. Node.js 18.17 ou mais novo.
 2. Abra o Cursor, Claude Code ou Codex.
-3. Arraste o `.tgz` (`migrador-workato-cliente-navegador-0.5.4.tgz`) para o chat e cole:
+3. Arraste o `.tgz` (`migrador-workato-cliente-navegador-0.5.5.tgz`) para o chat e cole:
 
 ```
 Instale o migrador com navegador e vamos migrar a receita.

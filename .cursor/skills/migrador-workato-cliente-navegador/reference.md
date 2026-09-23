@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.5.4**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente. A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.5.5**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente. A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + smoke → idioma (inferir) → chave ou arquivo → diagnóstico → motor → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → conexões → teste.
 
@@ -54,7 +54,7 @@ Lê o JSON. Não chama Pipefy. Devolve gatilho, cron literal, pipes tocados, fas
 
 ## Motor
 
-`scripts/transpilar-receita.mjs` → `npx tsx engine/run.ts`. Três JSON, um por linha: SHARED → `flow.json`; mermaid; `{status, destination}`. Cópia nomeada: `<slug>.flow.json`. `status.json` (arquivo / importacao / configuracao / logica / teste). PNG com `mmdc` + Chrome local (Kroki se faltar). Mostre o PNG no chat. Sem PNG: siga sem diagrama; não entregue o `.mmd`.
+`scripts/transpilar-receita.mjs` → `npx tsx engine/run.ts`. Três JSON, um por linha: SHARED → `flow.json`; mermaid; `{status, destination}`. Cópia nomeada: `<slug>.flow.json`. `status.json` (arquivo / importacao / configuracao / logica / teste). PNG só com `mmdc` + Chrome local. Não envia o diagrama para fora. Mostre o PNG no chat. Sem PNG: siga sem diagrama; não entregue o `.mmd`.
 
 Cite `files.flowNamed` (absoluto). Nunca `outputs/`.
 
@@ -86,7 +86,7 @@ Tokens “24 horas” na UI da Service Account = validade do token gerado, não 
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.5.4.tgz
+# dist/migrador-workato-cliente-navegador-0.5.5.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

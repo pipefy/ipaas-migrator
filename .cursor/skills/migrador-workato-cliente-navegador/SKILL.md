@@ -77,7 +77,7 @@ Em silêncio, nesta ordem. **Não** diga instalado no meio.
 | Smoke | `node scripts/transpilar-receita.mjs --recipe examples/smoke.recipe.json --out .tmp/smoke`. Se o fixture não estiver em `examples/`, use `docs/cliente/smoke.recipe.json`. Sem `ok: true` e sem `files.flow` no disco: **não** anunciar pronto. |
 
 ```
-kit pronto  (migrador cliente 0.5.4, com navegador)
+kit pronto  (migrador cliente 0.5.5, com navegador)
 
 ------
 

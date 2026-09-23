@@ -184,7 +184,7 @@ async function main() {
         connections: bound,
       png: png.ok
         ? { ok: true, via: png.via, path: png.path, bytes: png.bytes }
-        : { ok: false, reason: png.reason, local: png.local ?? null, kroki: png.kroki ?? null, error: png.error ?? null },
+        : { ok: false, reason: png.reason, error: png.error ?? null },
         files: {
           flow: flowPath,
           flowNamed: flowNamedPath,
