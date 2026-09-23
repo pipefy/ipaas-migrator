@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLIENT_VERSION_URL, versionReport } from './lib/cliente-versao.mjs';
+import { CLIENT_VERSION_URL, decodeVersionBody, versionReport } from './lib/cliente-versao.mjs';
 
 function readLocal(root) {
   const versionFile = join(root, 'VERSION');
@@ -20,10 +20,13 @@ function readLocal(root) {
 async function remoteVersion() {
   const res = await fetch(CLIENT_VERSION_URL, {
     signal: AbortSignal.timeout(8000),
-    headers: { Accept: 'text/plain', 'User-Agent': 'ipaas-migrator' },
+    headers: {
+      Accept: 'application/vnd.github.raw',
+      'User-Agent': 'ipaas-migrator',
+    },
   });
   if (!res.ok) throw new Error(`http_${res.status}`);
-  return (await res.text()).trim();
+  return decodeVersionBody(await res.text());
 }
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');

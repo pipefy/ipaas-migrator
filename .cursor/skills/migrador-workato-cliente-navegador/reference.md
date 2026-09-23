@@ -23,7 +23,7 @@ No início, antes de anunciar o kit pronto:
 node scripts/cliente-versao.mjs
 ```
 
-GET público de `https://raw.githubusercontent.com/pipefy/ipaas-migrator/main/VERSION`. Compara com o `VERSION` local (no helper, `CLIENT_VERSION`).
+GET público de `https://api.github.com/repos/pipefy/ipaas-migrator/contents/VERSION?ref=main`. Compara com o `VERSION` local (no helper, `CLIENT_VERSION`).
 
 | Campo | O que fazer |
 | --- | --- |

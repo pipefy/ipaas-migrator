@@ -2,7 +2,17 @@
 // Avisa. Não baixa e não troca arquivos.
 
 export const CLIENT_REPO_WEB = 'https://github.com/pipefy/ipaas-migrator';
-export const CLIENT_VERSION_URL = 'https://raw.githubusercontent.com/pipefy/ipaas-migrator/main/VERSION';
+export const CLIENT_VERSION_URL = 'https://api.github.com/repos/pipefy/ipaas-migrator/contents/VERSION?ref=main';
+
+export function decodeVersionBody(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+  const body = JSON.parse(trimmed);
+  if (body.encoding === 'base64' && body.content) {
+    return Buffer.from(body.content, 'base64').toString('utf8').trim();
+  }
+  return trimmed;
+}
 
 export function parseVersion(text) {
   const match = String(text ?? '').trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
