@@ -32,13 +32,15 @@ O kit não publica o flow, não escolhe o pipe e não autentica OAuth. Sem o id 
 
 ## 1. Instalar
 
-Abra o Cursor, Claude Code ou Codex. Arraste o arquivo `migrador-workato-cliente-navegador-0.5.5.tgz` para o chat e cole:
+O kit vigente está sempre em [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator), na branch `main`. O número da versão é o arquivo `VERSION` nessa branch. Não use um `.tgz` antigo.
+
+Clone ou baixe esse repositório, abra a pasta no Cursor, Claude Code ou Codex e cole:
 
 ```
 Instale o migrador com navegador e vamos migrar a receita.
 ```
 
-O agente descompacta o pacote, instala o kit e a skill, pergunta o idioma (português, English, español) e depois como você vai entregar a receita. O Chrome do agente só abre se você disser ok. Depois do login, explica o MCP Pipefy e pede outro ok. Sem ok, segue no print de Import.
+No início, o agente compara o `VERSION` da pasta com o do GitHub e avisa se `main` estiver mais novo. A instalação segue mesmo assim. Depois ele instala a skill, pergunta o idioma (português, English, español) e como você vai entregar a receita. O Chrome do agente só abre se você disser ok. Depois do login, explica o MCP Pipefy e pede outro ok. Sem ok, segue no print de Import.
 
 ## 2. Fonte da receita
 

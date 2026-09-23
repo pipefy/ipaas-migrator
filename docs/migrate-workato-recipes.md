@@ -32,13 +32,15 @@ It does not publish the flow, pick the pipe, or finish OAuth. Without a connecti
 
 ## 1. Install
 
-Open Cursor, Claude Code, or Codex. Drop `migrador-workato-cliente-navegador-0.5.5.tgz` into the chat and paste:
+The current kit is always on [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator), branch `main`. The version number is the `VERSION` file on that branch. Do not keep an old `.tgz`.
+
+Clone or download that repository, open the folder in Cursor, Claude Code, or Codex, and paste:
 
 ```
 Install the migrator with browser and let's migrate a recipe.
 ```
 
-The agent unpacks the archive, installs the kit and the skill, asks the language (português, English, español), then how you will provide the recipe. It only opens its Chrome if you say yes. After you sign in, it explains Pipefy MCP and asks again. Without that OK, it stays on the Import screenshot.
+At the start, the agent compares the folder's `VERSION` with GitHub and tells you if `main` is newer. Install continues either way. It then installs the skill, asks the language (português, English, español), and how you will provide the recipe. It only opens its Chrome if you say yes. After you sign in, it explains Pipefy MCP and asks again. Without that OK, it stays on the Import screenshot.
 
 ## 2. Recipe source
 

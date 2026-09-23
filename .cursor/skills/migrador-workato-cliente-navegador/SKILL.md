@@ -16,7 +16,7 @@ Textos: [copy.md](copy.md). Detalhe: [reference.md](reference.md).
 
 Não cria card. Não publica. Não usa OEM. Não cola segredo no chat.
 
-Invocar **autoriza** descompactar o `.tgz`, `npm ci`, `instalar-cliente.mjs --navegador`, smoke do motor, abrir `.env`, GET Workato, ler `.env` (sem imprimir), abrir o navegador do agente depois do ok, e `mcp_auth` em `user-pipefy` depois do ok do MCP.
+Invocar **autoriza** descompactar o `.tgz`, `npm ci`, `instalar-cliente.mjs --navegador`, `cliente-versao.mjs` (GET público do `VERSION` em `github.com/pipefy/ipaas-migrator`), smoke do motor, abrir `.env`, GET Workato, ler `.env` (sem imprimir), abrir o navegador do agente depois do ok, e `mcp_auth` em `user-pipefy` depois do ok do MCP.
 
 ## Tom
 
@@ -55,7 +55,7 @@ Não use “sem bloqueios” / “sem pendências técnicas” como pronto. Cont
 ## Workflow
 
 ```
-- [ ] 1. Instalação + smoke
+- [ ] 1. Instalação + versão no GitHub + smoke
 - [ ] 2. Idioma (inferir; perguntar só se ambíguo)
 - [ ] 3. Fonte, se ainda não veio
 - [ ] 4. Receita + diagnóstico + motor
@@ -70,14 +70,17 @@ Em silêncio, nesta ordem. **Não** diga instalado no meio.
 
 | Probe | Se faltar |
 | --- | --- |
-| Motor: `engine/run.ts` + `scripts/transpilar-receita.mjs` | Procurar `migrador-workato-cliente-navegador*.tgz`. `tar -xzf`. Sem pack: pedir o arquivo. **Parar.** Não clonar GitLab. |
+| Motor: `engine/run.ts` + `scripts/transpilar-receita.mjs` | A pasta tem que ser o kit de `https://github.com/pipefy/ipaas-migrator` (`main`). Se só houver `.tgz`, descompactar. Sem kit: pedir para abrir esse GitHub. **Parar.** Não clonar GitLab. |
 | `node -v` ≥ 18.17 | Pedir Node ou TI. **Parar.** |
 | `node_modules/.bin/tsx` | `npm ci` na raiz do pack. Falhou → **parar.** |
 | Skill | `node scripts/instalar-cliente.mjs --navegador` |
+| Versão | `node scripts/cliente-versao.mjs`. Se `update` é `true`, avisar a versão do GitHub e o link `repo`, e **seguir**. Rede falhou (`ok: false`): uma linha e seguir. Não baixar nem trocar arquivos. |
 | Smoke | `node scripts/transpilar-receita.mjs --recipe examples/smoke.recipe.json --out .tmp/smoke`. Se o fixture não estiver em `examples/`, use `docs/cliente/smoke.recipe.json`. Sem `ok: true` e sem `files.flow` no disco: **não** anunciar pronto. |
 
+Se `update` é `true`, a primeira frase do anúncio é o aviso (versão local, versão no GitHub, link). Depois:
+
 ```
-kit pronto  (migrador cliente 0.5.5, com navegador)
+kit pronto  (migrador cliente <local>, com navegador)
 
 ------
 
@@ -85,6 +88,7 @@ node: <versão>
 dependências: ok
 smoke: ok
 skill: instalada
+github: em dia | há <remote>
 ```
 
 ### 2. Idioma

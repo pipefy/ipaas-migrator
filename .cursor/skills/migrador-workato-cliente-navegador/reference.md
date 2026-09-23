@@ -1,8 +1,8 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.5.5**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente. A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.5.6**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
-Tutor: instalação + smoke → idioma (inferir) → chave ou arquivo → diagnóstico → motor → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → conexões → teste.
+Tutor: instalação + versão no GitHub + smoke → idioma (inferir) → chave ou arquivo → diagnóstico → motor → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → conexões → teste.
 
 ## Pastas
 
@@ -13,7 +13,23 @@ Tutor: instalação + smoke → idioma (inferir) → chave ou arquivo → diagn�
 | Só o `.tgz` | `migrador-workato-cliente-navegador*.tgz` no cwd, anexo ou pasta pai. Descompactar. |
 | Helper interno | `workato_migrator_helper` — não clonar e não publicar |
 
-O cliente **não** clona o GitLab do helper. Paths de saída: `output/` (nunca `outputs/`).
+O cliente **não** clona o GitLab do helper. O kit vigente é sempre o `main` de `github.com/pipefy/ipaas-migrator`. Paths de saída: `output/` (nunca `outputs/`).
+
+## Versão no GitHub
+
+No início, antes de anunciar o kit pronto:
+
+```bash
+node scripts/cliente-versao.mjs
+```
+
+GET público de `https://raw.githubusercontent.com/pipefy/ipaas-migrator/main/VERSION`. Compara com o `VERSION` local (no helper, `CLIENT_VERSION`).
+
+| Campo | O que fazer |
+| --- | --- |
+| `update: true` | Avisar `local`, `remote` e `repo`. Seguir a jornada. Não baixar nem sobrescrever a pasta. |
+| `update: false` e `ok: true` | GitHub em dia. Seguir. |
+| `ok: false` | Uma linha (rede ou versão ilegível). Seguir. |
 
 ## Abrir o `.env`
 
@@ -86,7 +102,7 @@ Tokens “24 horas” na UI da Service Account = validade do token gerado, não 
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.5.5.tgz
+# dist/migrador-workato-cliente-navegador-0.5.6.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

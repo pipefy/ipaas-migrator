@@ -1,6 +1,6 @@
 # Playbook do migrador Workato (cliente, com navegador)
 
-Versão 0.5.5. Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
+Versão 0.5.6. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
 
 O arquivo final é um `*.flow.json` (cópia nomeada ao lado de `flow.json`). O agente não publica.
 
@@ -18,7 +18,7 @@ Arquivo gerado não significa flow pronto. Operações mapeadas não substituem 
 
 ## O que o kit faz
 
-1. Instala o motor e a skill. Só anuncia pronto depois de um smoke do motor.
+1. Instala o motor e a skill. Compara o `VERSION` com o GitHub e avisa se `main` estiver mais novo. Só anuncia pronto depois de um smoke do motor.
 2. Infere o idioma do chat (pergunta só se estiver ambíguo).
 3. Pergunta a fonte se ainda não veio: API client Workato ou JSON.
 4. Diagnostica a receita (gatilho, cron literal, pipes, fases, conexões) e traduz.
@@ -47,7 +47,7 @@ MCP Pipefy só entra depois do login no Chrome do agente e do segundo ok. Sem is
 
 ## Instalar
 
-Arraste o `migrador-workato-cliente-navegador-0.5.5.tgz` para o chat e cole:
+Abra [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`) no chat e cole:
 
 ```
 Instale o migrador com navegador e vamos migrar a receita.

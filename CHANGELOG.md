@@ -6,12 +6,20 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.5 | `migrador-workato-cliente-navegador-0.5.5.tgz` |
+| Com navegador (vigente) | 0.5.6 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
-Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`.
+Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.6 — 23 set 2026
+
+No início, o agente compara o `VERSION` local com o arquivo `VERSION` em `main` no GitHub. Se o GitHub estiver mais novo, avisa e segue. Falha de rede não trava a instalação.
+
+A doc pública (PT e EN) manda abrir esse repositório, sem fixar o nome de um `.tgz`.
+
+- `migrador-workato-cliente-navegador-0.5.6.tgz`
 
 ## 0.5.5 — 23 set 2026
 

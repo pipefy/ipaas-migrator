@@ -1,6 +1,6 @@
 # com navegador
 
-Tutor **com navegador** (0.5.5). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
+Tutor **com navegador** (0.5.6). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 
@@ -12,13 +12,13 @@ Arquivo gerado não significa flow pronto. Importação, conexões, lógica pend
 
 1. Node.js 18.17 ou mais novo.
 2. Abra o Cursor, Claude Code ou Codex.
-3. Arraste o `.tgz` (`migrador-workato-cliente-navegador-0.5.5.tgz`) para o chat e cole:
+3. Abra o kit vigente: [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`). Cole:
 
 ```
 Instale o migrador com navegador e vamos migrar a receita.
 ```
 
-4. O agente instala o kit e só anuncia pronto depois do smoke do motor.
+4. O agente compara o `VERSION` com o GitHub, avisa se houver versão mais nova e só anuncia pronto depois do smoke do motor.
 5. Idioma: infere do chat. Chave do API client (abre o `.env`) ou arquivo JSON.
 6. Diagnóstico da receita (gatilho, pipes, fases) e `*.flow.json` com nome legível.
 7. Depois do arquivo ele explica o navegador e pergunta se pode abrir.
