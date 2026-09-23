@@ -14,6 +14,13 @@ import type {
 } from './types.ts';
 import { collapseOpKey, lookupMap } from './collapse.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
+import {
+  dynamicPropertySettings,
+  resultLabelsFromSchema,
+  shapeCallFlow,
+  shapeCallableFlow,
+  shapeReturnResponse,
+} from './subflow.ts';
 import { resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
 import {
   convertPills,
@@ -95,11 +102,13 @@ interface Ctx {
   pendingCode: any[];
   /** Variaveis Workato da receita e a estrategia escolhida para cada uma. */
   vars: VarIndex;
+  /** Labels do result_schema da recipe function, para o returnResponse. */
+  subflowResultLabels: Map<string, string>;
 }
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW';
   content: string;
   anchorStepName?: string;
 }
@@ -176,6 +185,54 @@ function propertySettings(input: Record<string, any>): Record<string, any> {
   const ps: Record<string, any> = {};
   for (const k of Object.keys(input)) ps[k] = { type: 'MANUAL' };
   return ps;
+}
+
+const SUBFLOW_PIECE = '@activepieces/piece-subflows';
+
+function subflowPropertySettings(actionName: string, input: Record<string, any>): Record<string, any> {
+  const ps = propertySettings(input);
+  if (actionName === 'callFlow' && input.flowProps?.payload && typeof input.flowProps.payload === 'object') {
+    const defaultValue: Record<string, string> = {};
+    for (const key of Object.keys(input.flowProps.payload)) defaultValue[key] = '1234';
+    ps.flowProps = dynamicPropertySettings('flowProps', 'payload', 'Payload', defaultValue);
+  }
+  if (actionName === 'callableFlow') {
+    ps.exampleData = dynamicPropertySettings('exampleData', 'sampleData', 'Sample Data');
+  }
+  if (actionName === 'returnResponse') {
+    ps.response = dynamicPropertySettings('response', 'response', 'Response');
+  }
+  return ps;
+}
+
+function settingsFor(pieceName: string, actionName: string, input: Record<string, any>): Record<string, any> {
+  return pieceName === SUBFLOW_PIECE ? subflowPropertySettings(actionName, input) : propertySettings(input);
+}
+
+function applySubflowAction(
+  opKey: string,
+  actionName: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+  name: string,
+): Record<string, any> | null {
+  if (!opKey.includes('recipe_function/')) return null;
+  if (actionName === 'callFlow') {
+    const asyncCall = opKey.endsWith('/call_recipe_async');
+    const shaped = shapeCallFlow(sourceInput, asyncCall);
+    if (shaped.flowIdNote) {
+      ctx.todos.push(`SUBFLOW (${name}): ${shaped.flowIdNote}`);
+      pushReviewNote(ctx, 'SUBFLOW', shaped.flowIdNote, '', name);
+    }
+    shaped.input.flowProps = resolveFormulas(deepConvert(shaped.input.flowProps, ctx), ctx, name, sourceInput.parameters);
+    return shaped.input;
+  }
+  if (actionName === 'returnResponse') {
+    const shaped = shapeReturnResponse(sourceInput, ctx.subflowResultLabels);
+    shaped.response = resolveFormulas(deepConvert(shaped.response, ctx), ctx, name, sourceInput.result);
+    return shaped;
+  }
+  return null;
 }
 
 /** `input` de if/elsif/while_condition e `filter` do trigger, sem assumir formato. */
@@ -914,6 +971,7 @@ export const REVIEW_STOP_LABEL = 'REVISAR: stop_with_error';
 export const REVIEW_JOB_CONTEXT_LABEL = 'REVISAR: job_context';
 export const REVIEW_SECRET_LABEL = 'REVISAR: token';
 export const REVIEW_FORMULA_LABEL = 'REVISAR: formula';
+export const REVIEW_SUBFLOW_LABEL = 'REVISAR: subflow';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
 
@@ -1069,7 +1127,7 @@ function stepDepth(root: any, name: string | undefined): number | undefined {
 
 function pushReviewNote(
   ctx: Ctx,
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA',
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW',
   message: string,
   lost = '',
   anchorStepName?: string,
@@ -1083,7 +1141,9 @@ function pushReviewNote(
           ? REVIEW_SECRET_LABEL
           : kind === 'FORMULA'
             ? REVIEW_FORMULA_LABEL
-            : REVIEW_JOB_CONTEXT_LABEL;
+            : kind === 'SUBFLOW'
+              ? REVIEW_SUBFLOW_LABEL
+              : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
     kind === 'CATCH'
       ? 'review_catch'
@@ -1093,7 +1153,9 @@ function pushReviewNote(
           ? 'review_secret'
           : kind === 'FORMULA'
             ? 'review_formula'
-            : 'review_job';
+            : kind === 'SUBFLOW'
+              ? 'review_subflow'
+              : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -1332,6 +1394,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   let input = resolveFormulas(convInput(sourceInput, entry, ctx), ctx, name, sourceInput);
   const omie = fillOmieHttp(opKey, t, input, sourceInput, ctx, name);
   if (omie) input = omie;
+  if (t.piece === SUBFLOW_PIECE) {
+    const shaped = applySubflowAction(opKey, t.name, sourceInput, ctx, name);
+    if (shaped) input = shaped;
+  }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
   const missing = missingRequiredProps(ctx, t, input);
   if (missing.length) {
@@ -1363,7 +1429,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       pieceName: t.piece,
       actionName: t.name,
       pieceVersion: pieceVersion(ctx, t.piece),
-      propertySettings: propertySettings(input),
+      propertySettings: settingsFor(t.piece, t.name, input),
       errorHandlingOptions: ERR(),
     },
     displayName: display,
@@ -1888,12 +1954,18 @@ function gateOnTriggerFilter(root: ParsedStep, nextAction: any | undefined, ctx:
 function buildTrigger(root: ParsedStep, ctx: Ctx): any {
   const opKey = root.opKey ?? `${root.provider}/${root.name}`;
   const entry = lookupMap(ctx.merged, opKey);
+  if (String(root.provider ?? '').includes('recipe_function') && root.name === 'execute') {
+    ctx.subflowResultLabels = resultLabelsFromSchema(root.input?.result_schema_json);
+  }
   const nextAction = gateOnTriggerFilter(root, buildChain(root.children, ctx), ctx);
 
   if (entry?.target?.kind === 'trigger') {
     const t = entry.target;
     ctx.piecesUsed.add(t.piece);
-    const input = convInput(root.input, entry, ctx);
+    let input = convInput(root.input, entry, ctx);
+    if (t.piece === SUBFLOW_PIECE && t.name === 'callableFlow') {
+      input = shapeCallableFlow(root.input ?? {});
+    }
     if (opKey === 'clock/scheduled_event' && t.name === 'cron_expression') {
       const cron = workatoScheduleToCron(root.input);
       if (cron) input.cronExpression = cron;
@@ -1912,7 +1984,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
       nextAction,
       type: 'PIECE_TRIGGER',
       settings: {
-        propertySettings: propertySettings(input),
+        propertySettings: settingsFor(t.piece, t.name, input),
         pieceName: t.piece,
         pieceVersion: pieceVersion(ctx, t.piece),
         triggerName: t.name,
@@ -1958,6 +2030,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     counter: { n: 1 },
     pendingCode: [],
     vars: indexVariables(recipe.root),
+    subflowResultLabels: new Map(),
   };
   assignNames(recipe.root, ctx, true);
   // Só `store` é aproximação (round-trip pelo storage); `static`/`linear` sao

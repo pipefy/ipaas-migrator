@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.5.6**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.5.7**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + versão no GitHub + smoke → idioma (inferir) → chave ou arquivo → diagnóstico → motor → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → conexões → teste.
 
@@ -102,7 +102,7 @@ Tokens “24 horas” na UI da Service Account = validade do token gerado, não 
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.5.6.tgz
+# dist/migrador-workato-cliente-navegador-0.5.7.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

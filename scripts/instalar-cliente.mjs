@@ -72,7 +72,7 @@ function openaiYaml(skill) {
       ? '  display_name: "Migrador Workato (cliente, com navegador)"'
       : '  display_name: "Migrador Workato (cliente)"',
     nav
-      ? '  short_description: "Tutor 0.5.6: smoke, versao no GitHub, datapills com colchetes, Chrome e MCP Pipefy"'
+      ? '  short_description: "Tutor 0.5.7: smoke, versao no GitHub, datapills com colchetes, Chrome e MCP Pipefy"'
       : '  short_description: "Tutor: idioma, chave ou JSON, traduz, guia o Import"',
     nav
       ? '  default_prompt: "Instale o migrador com navegador e vamos migrar a receita."'
