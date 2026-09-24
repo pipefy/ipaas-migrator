@@ -1,6 +1,8 @@
 // Recipe function da Workato → piece-subflows em mode simple.
-// O gabarito (subflows 0.6/0.7) exige mode; sem ele o step fica inválido.
+// O gabarito (subflows 0.7.0) exige mode; sem ele o step fica inválido.
 // flowId do callFlow é o externalId do flow no iPaaS. Aqui só cabe o id Workato.
+
+export const SUBFLOW_PIECE_VERSION = '0.7.0';
 
 export interface SchemaField {
   name?: string;

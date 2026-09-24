@@ -6,12 +6,26 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.7 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.8 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.8 — 23 set 2026
+
+O tutor não muda. O motor traduz o que a 1.12.0 fechou no migrador oficial.
+
+- `parse_csv` sai como Code JS com as colunas nomeadas. `create_csv_lines` continua no piece-csv.
+- `piece-pipefy` sai em `0.2.4` e `piece-subflows` em `0.7.0`.
+- `updateFieldsValues` com um `ADD` vira `updateListField`.
+- Variável Workato vai para o Storage, escopo Run. Lista é `add_to_list` de strings JSON.
+- `try/catch` vira um router no fim do bloco. A mensagem aponta para `['error']['message']`.
+- Logger, lista vazia, XLSX lido em Python e busca de card com `include_done` false saem em Code JS puro.
+- HTTP preenche headers, query e auth. Arquivo compactado usa a prop `file`.
+- Fórmula com `#{...}` compila.
+- `migrador-workato-cliente-navegador-0.5.8.tgz`
 
 ## 0.5.7 — 23 set 2026
 

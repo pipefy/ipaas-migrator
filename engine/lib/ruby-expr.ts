@@ -170,6 +170,71 @@ type Token =
 
 const OPERATORS = ['&.', '||', '&&', '<<', '?', ':', '.', ',', '(', ')', '[', ']', '+', '*'];
 
+/** Aspas duplas do Ruby interpolam `#{...}`. Aspas simples não. */
+function scanString(src: string, i: number): { tokens: Token[]; end: number } | null {
+  const quote = src[i]!;
+  let j = i + 1;
+  let literal = '';
+  const tokens: Token[] = [];
+  const pushLiteral = () => {
+    if (!literal) return;
+    if (tokens.length) tokens.push({ kind: 'op', value: '+' });
+    tokens.push({ kind: 'string', value: literal });
+    literal = '';
+  };
+  while (j < src.length) {
+    if (src[j] === '\\') {
+      const next = src[j + 1] ?? '';
+      literal += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+      j += 2;
+      continue;
+    }
+    if (quote === '"' && src.startsWith('#{', j)) {
+      const end = interpolationEnd(src, j + 2);
+      if (end < 0) return null;
+      pushLiteral();
+      const innerSrc = src.slice(j + 2, end).trim();
+      if (innerSrc) {
+        const inner = tokenize(innerSrc);
+        if (!inner) return null;
+        if (tokens.length) tokens.push({ kind: 'op', value: '+' });
+        tokens.push(...inner);
+      }
+      literal = '';
+      j = end + 1;
+      continue;
+    }
+    if (src[j] === quote) {
+      if (!tokens.length) tokens.push({ kind: 'string', value: literal });
+      else pushLiteral();
+      return { tokens, end: j + 1 };
+    }
+    literal += src[j];
+    j++;
+  }
+  return null;
+}
+
+function interpolationEnd(src: string, j: number): number {
+  let depth = 1;
+  while (j < src.length) {
+    const ch = src[j]!;
+    if (ch === '"' || ch === "'") {
+      const scanned = scanString(src, j);
+      if (!scanned) return -1;
+      j = scanned.end;
+      continue;
+    }
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return j;
+    }
+    j++;
+  }
+  return -1;
+}
+
 function tokenize(src: string): Token[] | null {
   const tokens: Token[] = [];
   let i = 0;
@@ -190,23 +255,10 @@ function tokenize(src: string): Token[] | null {
       continue;
     }
     if (ch === '"' || ch === "'") {
-      const quote = ch;
-      let j = i + 1;
-      let value = '';
-      while (j < src.length) {
-        if (src[j] === '\\') {
-          const next = src[j + 1]!;
-          value += next === 'n' ? '\n' : next === 't' ? '\t' : next;
-          j += 2;
-          continue;
-        }
-        if (src[j] === quote) break;
-        value += src[j];
-        j++;
-      }
-      if (j >= src.length) return null;
-      tokens.push({ kind: 'string', value });
-      i = j + 1;
+      const scanned = scanString(src, i);
+      if (!scanned) return null;
+      tokens.push(...scanned.tokens);
+      i = scanned.end;
       continue;
     }
     // regex literal: só onde um valor é esperado (senão `/` é divisão)
@@ -625,6 +677,14 @@ function parseAdditive(s: State): string | null {
   if (left === null) return null;
   for (;;) {
     const token = peek(s);
+    // Literais adjacentes concatenam no Ruby: `"\n"\n"File"`.
+    // Só quando o token anterior também é string — senão o corpo de um `if` cola na condição.
+    if (token?.kind === 'string' && s.tokens[s.pos - 1]?.kind === 'string') {
+      s.pos++;
+      useHelper(s, 'add');
+      left = `add(${left}, ${jsString(token.value)})`;
+      continue;
+    }
     if (token?.kind === 'op' && (token.value === '+' || token.value === '<<')) {
       s.pos++;
       const right = parseMultiplicative(s);

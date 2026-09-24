@@ -14,20 +14,26 @@ import type {
 } from './types.ts';
 import { collapseOpKey, lookupMap } from './collapse.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
+import { csvParseCode, csvParsePlan } from './csv-parse.ts';
+import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvCode } from './xlsx-csv.ts';
+import { PIPEFY_PIECE_VERSION, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
   resultLabelsFromSchema,
   shapeCallFlow,
   shapeCallableFlow,
   shapeReturnResponse,
+  SUBFLOW_PIECE_VERSION,
 } from './subflow.ts';
 import { resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
 import {
   convertPills,
   detectRubyMethods,
+  formatApSegment,
   isRubyExpression,
   parseIncludeFormula,
   peelTrailingCaseMethod,
+  CATCH_ERROR_TOKEN,
   stepBindingName,
   wrapApCase,
   type JobContextHits,
@@ -44,21 +50,23 @@ import {
 } from './ruby-expr.ts';
 import { scheduleCronTodo, workatoScheduleToCron } from './schedule-cron.ts';
 import {
+  firstPill,
   indexVariables,
   parseVarName,
   readsOf,
-  variableOp,
   SOURCE_KEY,
+  variableOp,
   type VarDecl,
   type VarIndex,
 } from './variables.ts';
 import {
-  describeStrategy,
+  listBatchCode,
+  listBatchFields,
+  listItemJson,
+  listReadCode,
   storeGetRef,
-  variableCode,
   writtenFields,
   FIELDS_KEY,
-  PREV_KEY,
   SOURCE_INPUT_KEY,
   STORE_PIECE,
   STORE_SCOPE,
@@ -93,7 +101,6 @@ interface Ctx {
   recipeId?: string;
   jobContextHits: JobContextHits;
   jobContextNoted: JobContextHits;
-  catchMessageHits: { n: number };
   counter: { n: number };
   /**
    * Steps CODE de formula criados para o step que esta sendo montado. Quem
@@ -117,6 +124,7 @@ interface PendingCanvasNote {
 const TODO_PIECE = 'TODO';
 
 const PIPEFY_PIECE = '@activepieces/piece-pipefy';
+const SUBFLOW_PIECE = '@activepieces/piece-subflows';
 const PIPEFY_PAYLOAD_ROOT = 'data';
 const PIPEFY_GET_CARD_PAYLOAD_ROOT = 'data.card';
 
@@ -160,7 +168,6 @@ function pills(input: string, ctx: Ctx, resolve = loopItemResolver(ctx)): string
     recipeName: ctx.recipeName,
     recipeId: ctx.recipeId,
     jobContextHits: ctx.jobContextHits,
-    catchMessageHits: ctx.catchMessageHits,
   });
 }
 
@@ -177,6 +184,8 @@ function isFallibleStep(step: any): boolean {
 let NOW = '1970-01-01T00:00:00.000Z';
 
 function pieceVersion(ctx: Ctx, pieceName: string): string {
+  if (pieceName === PIPEFY_PIECE) return PIPEFY_PIECE_VERSION;
+  if (pieceName === SUBFLOW_PIECE) return SUBFLOW_PIECE_VERSION;
   return ctx.kb.get(pieceName)?.version ?? '~latest';
 }
 
@@ -186,8 +195,6 @@ function propertySettings(input: Record<string, any>): Record<string, any> {
   for (const k of Object.keys(input)) ps[k] = { type: 'MANUAL' };
   return ps;
 }
-
-const SUBFLOW_PIECE = '@activepieces/piece-subflows';
 
 function subflowPropertySettings(actionName: string, input: Record<string, any>): Record<string, any> {
   const ps = propertySettings(input);
@@ -689,9 +696,9 @@ function injectStoreGet(decl: VarDecl, ctx: Ctx): string {
  * `linear` vem do snapshot do pre-pass. `store` precisa de um `get` antes do
  * passo — um por variavel, mesmo que ela apareca varias vezes no input.
  */
-function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, string> | null {
+function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, StepBinding> | null {
   if (!ctx.vars.decls.size) return null;
-  const overlay = new Map<string, string>(step.varSnapshot ?? []);
+  const overlay = new Map<string, StepBinding>(step.varSnapshot ?? []);
 
   const reads = readsOf(step);
   // As condicoes de `elsif` sao avaliadas no proprio router, mas moram nos
@@ -702,19 +709,21 @@ function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, string> | null
       for (const as of readsOf(child)) reads.add(as);
     }
   }
-  // Escrita precisa do valor anterior para o merge.
+  // Update de escalar copia os campos que esta escrita nao mexe.
   const written = step.skip ? undefined : writtenVariable(step, ctx);
-  if (written && variableOp(step) !== 'declare') reads.add(written.as);
+  const op = variableOp(step);
+  if (written?.kind === 'scalar' && op && op !== 'declare') reads.add(written.as);
 
   for (const as of reads) {
     const decl = ctx.vars.decls.get(as);
-    if (decl?.strategy !== 'store') continue;
-    overlay.set(as, storeGetRef(injectStoreGet(decl, ctx)));
+    if (!decl) continue;
+    const getName = storeGetRef(injectStoreGet(decl, ctx));
+    overlay.set(as, decl.kind === 'list' ? { name: getName, stripHead: 'list_items' } : getName);
   }
   return overlay.size ? overlay : null;
 }
 
-function withOverlay<T>(ctx: Ctx, overlay: Map<string, string> | null, build: () => T): T {
+function withOverlay<T>(ctx: Ctx, overlay: Map<string, StepBinding> | null, build: () => T): T {
   if (!overlay) return build();
   const saved = new Map<string, StepBinding | undefined>();
   for (const [as, name] of overlay) {
@@ -949,12 +958,18 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
   return replaced;
 }
 
-function codeStep(name: string, displayName: string, input: Record<string, any>, code: string): any {
+function codeStep(
+  name: string,
+  displayName: string,
+  input: Record<string, any>,
+  code: string,
+  valid = false,
+): any {
   return {
     name,
     skip: false,
     type: 'CODE',
-    valid: false,
+    valid,
     settings: {
       input,
       sourceCode: { code, packageJson: '{}' },
@@ -1214,14 +1229,62 @@ function todoPieceStep(name: string, displayName: string, input: Record<string, 
   };
 }
 
+function storeActionStep(
+  name: string,
+  actionName: string,
+  input: Record<string, any>,
+  displayName: string,
+  valid: boolean,
+  skip: boolean,
+  ctx: Ctx,
+): any {
+  ctx.piecesUsed.add(STORE_PIECE);
+  return {
+    name,
+    skip,
+    type: 'PIECE',
+    valid,
+    settings: {
+      input,
+      pieceName: STORE_PIECE,
+      actionName,
+      pieceVersion: pieceVersion(ctx, STORE_PIECE),
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName,
+    lastUpdatedDate: NOW,
+  };
+}
+
+function resolvedWrite(
+  step: ParsedStep,
+  op: NonNullable<ReturnType<typeof variableOp>>,
+  decl: VarDecl,
+  ctx: Ctx,
+  name: string,
+): { fields: Record<string, any>; valid: boolean } {
+  const fields = resolveFormulas(convInput(writtenFields(step, op), undefined, ctx), ctx, name);
+  const ruby: string[] = [];
+  collectResidualRubyMethods(fields, '', ruby);
+  if (ruby.length) {
+    ctx.todos.push(
+      `FORMULA (${name}): a escrita de "${decl.label}" carrega formula Workato sem equivalente ` +
+        `em template AP: ${ruby.join(', ')}. Traduzir para JS dentro do step.`,
+    );
+  }
+  return { fields, valid: !ruby.length && !hasTodoMarker(fields) };
+}
+
 /**
- * Materializa uma operacao `workato_variable/*`.
+ * Variavel Workato vira piece-store, escopo RUN.
  *
- * `static`/`linear`: um step CODE cujo OUTPUT e o valor da variavel — as pills
- * de leitura ja foram reapontadas para ele pelo overlay.
+ * Escalar: `put` do objeto `{campo: valor}`. Update copia do `get` os campos
+ * que esta escrita nao mexe.
  *
- * `store`: o mesmo CODE calcula o novo valor e um `store/put` o persiste, para
- * que a proxima iteracao do loop (ou o passo depois do ramo) consiga le-lo.
+ * Lista: `put` de `[]` no declare vazio e no clear. Insert e `add_to_list`
+ * com um array de strings JSON. Lote com `current_item` calcula as strings
+ * num Code e o Storage grava o array.
  */
 function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null {
   const op = variableOp(step);
@@ -1231,28 +1294,127 @@ function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null {
   if (!op || !decl) return null;
 
   const name = stepName(step, ctx);
-  const kindLabel = decl.kind === 'list' ? 'Lista' : 'Variavel';
-  const display = step.comment || `${kindLabel} "${decl.label}" (${op})`;
+  const skip = step.skip === true;
+  const display =
+    step.comment ||
+    (decl.kind === 'list' ? `Gravar lista "${decl.label}"` : `Gravar variavel "${decl.label}"`);
 
-  const fields = convInput(writtenFields(step, op), undefined, ctx);
-  const body = variableCode(decl, op, step, Object.keys(fields).length > 0);
+  if (decl.kind === 'scalar') return buildScalarStore(step, op, decl, ctx, name, display, skip);
+  return buildListStore(step, op, decl, ctx, name, display, skip);
+}
 
+function buildScalarStore(
+  step: ParsedStep,
+  op: NonNullable<ReturnType<typeof variableOp>>,
+  decl: VarDecl,
+  ctx: Ctx,
+  name: string,
+  display: string,
+  skip: boolean,
+): any {
+  const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
+  const previous = op === 'declare' ? undefined : stepBindingName(ctx.asToName.get(decl.as));
+  const keys = [...new Set([...decl.fields, ...Object.keys(fields)])];
+  const value: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(fields, key)) value[key] = fields[key];
+    else if (previous) value[key] = `{{${previous}${formatApSegment(key)}}}`;
+    else value[key] = null;
+  }
+  return storeActionStep(
+    name,
+    'put',
+    { key: decl.storeKey, value, store_scope: STORE_SCOPE },
+    display,
+    valid,
+    skip,
+    ctx,
+  );
+}
+
+function buildListStore(
+  step: ParsedStep,
+  op: NonNullable<ReturnType<typeof variableOp>>,
+  decl: VarDecl,
+  ctx: Ctx,
+  name: string,
+  display: string,
+  skip: boolean,
+): any {
+  if (String(step.input?.location ?? 'end') === 'start') {
+    ctx.todos.push(
+      `LISTA (${name}): insert no inicio da lista "${decl.label}". O Storage add_to_list so acrescenta no fim.`,
+    );
+  }
+
+  const batch = op === 'insert_batch' || op === 'declare' ? listBatchFields(step) : [];
+  const hasSource = Boolean(step.input?.list_items?.[SOURCE_KEY]);
+  if (hasSource && batch.length >= 0 && (op === 'insert_batch' || op === 'declare')) {
+    return buildListBatch(step, op, decl, ctx, name, display, skip, batch);
+  }
+
+  if (op === 'clear' || op === 'declare') {
+    const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
+    if (op === 'clear' || !Object.keys(fields).length) {
+      return storeActionStep(
+        name,
+        'put',
+        { key: decl.storeKey, value: '[]', store_scope: STORE_SCOPE },
+        display,
+        valid,
+        skip,
+        ctx,
+      );
+    }
+    return storeActionStep(
+      name,
+      'add_to_list',
+      {
+        key: decl.storeKey,
+        value: [listItemJson(fields)],
+        ignore_if_exists: false,
+        store_scope: STORE_SCOPE,
+      },
+      display,
+      valid,
+      skip,
+      ctx,
+    );
+  }
+
+  const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
+  return storeActionStep(
+    name,
+    'add_to_list',
+    {
+      key: decl.storeKey,
+      value: [listItemJson(fields)],
+      ignore_if_exists: false,
+      store_scope: STORE_SCOPE,
+    },
+    display,
+    valid,
+    skip,
+    ctx,
+  );
+}
+
+function buildListBatch(
+  step: ParsedStep,
+  op: NonNullable<ReturnType<typeof variableOp>>,
+  decl: VarDecl,
+  ctx: Ctx,
+  name: string,
+  display: string,
+  skip: boolean,
+  batch: ReturnType<typeof listBatchFields>,
+): any {
+  const codeName = nextName('var_items');
   const input: Record<string, any> = {};
-  if (body.needsPrev) {
-    const previous = stepBindingName(ctx.asToName.get(decl.as));
-    // Sem escritor anterior (update antes do declare, receita inconsistente) o
-    // codigo cai no objeto vazio — melhor que referenciar um step inexistente.
-    if (previous) input[PREV_KEY] = `{{${previous}}}`;
-  }
+  const fields = convInput(writtenFields(step, op), undefined, ctx);
   if (Object.keys(fields).length) input[FIELDS_KEY] = fields;
-  if (body.needsSource) {
-    input[SOURCE_INPUT_KEY] = deepConvert(step.input?.list_items?.[SOURCE_KEY], ctx);
-  }
-
-  const resolved = resolveFormulas(input, ctx, name);
-
-  // Ruby que o compilador de formulas nao cobriu chega ate aqui como texto. Sem
-  // marcar, o step sairia `valid: true` carregando codigo que nao roda.
+  input[SOURCE_INPUT_KEY] = deepConvert(step.input?.list_items?.[SOURCE_KEY], ctx);
+  const resolved = resolveFormulas(input, ctx, codeName);
   const ruby: string[] = [];
   collectResidualRubyMethods(resolved, '', ruby);
   if (ruby.length) {
@@ -1261,42 +1423,23 @@ function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null {
         `em template AP: ${ruby.join(', ')}. Traduzir para JS dentro do step.`,
     );
   }
-
-  const skip = step.skip === true;
-  const code = {
+  const valid = !ruby.length && !hasTodoMarker(resolved);
+  const code = codeStep(codeName, `Itens JSON "${decl.label}"`, resolved, listBatchCode(batch), valid);
+  code.skip = skip;
+  code.nextAction = storeActionStep(
     name,
-    skip,
-    type: 'CODE',
-    valid: !ruby.length && !hasTodoMarker(resolved),
-    settings: {
-      input: resolved,
-      sourceCode: { code: body.code, packageJson: '{}' },
-      errorHandlingOptions: ERR(),
+    'add_to_list',
+    {
+      key: decl.storeKey,
+      value: `{{${codeName}}}`,
+      ignore_if_exists: false,
+      store_scope: STORE_SCOPE,
     },
-    displayName: display,
-    lastUpdatedDate: NOW,
-  } as any;
-
-  if (decl.strategy !== 'store') return code;
-
-  const putInput = { key: decl.storeKey, value: `{{${name}}}`, store_scope: STORE_SCOPE };
-  ctx.piecesUsed.add(STORE_PIECE);
-  code.nextAction = {
-    name: nextName('var_put'),
+    display,
+    valid,
     skip,
-    type: 'PIECE',
-    valid: true,
-    settings: {
-      input: putInput,
-      pieceName: STORE_PIECE,
-      actionName: 'put',
-      pieceVersion: pieceVersion(ctx, STORE_PIECE),
-      propertySettings: propertySettings(putInput),
-      errorHandlingOptions: ERR(),
-    },
-    displayName: `Gravar ${kindLabel.toLowerCase()} "${decl.label}"`,
-    lastUpdatedDate: NOW,
-  };
+    ctx,
+  );
   return code;
 }
 
@@ -1341,6 +1484,139 @@ function fillOmieHttp(
   return filled;
 }
 
+function convertedField(value: unknown, ctx: Ctx, owner: string, fallback: string): any {
+  if (typeof value !== 'string') return value == null || value === '' ? fallback : value;
+  const converted = resolveFormulas(pills(value, ctx), ctx, owner, value);
+  return converted === '' ? fallback : converted;
+}
+
+/** parse_csv não usa piece-csv: o Code devolve { lines } com as colunas da receita. */
+function buildParseCsv(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  const plan = csvParsePlan(sourceInput);
+  const input = {
+    csv: convertedField(sourceInput.csv_content, ctx, name, ''),
+    separator: convertedField(sourceInput.col_sep, ctx, name, plan.separator),
+    quote: convertedField(sourceInput.quote_char, ctx, name, plan.quote),
+    skipFirstLine: plan.skipFirstLine,
+  };
+  return codeStep(name, display, input, csvParseCode(plan.columns), true);
+}
+
+function includeDoneIsFalse(input: Record<string, any>): boolean {
+  const raw = input.include_done ?? input.includeDone;
+  return raw === false || raw === 0 || /^(false|no|0)$/i.test(String(raw ?? '').trim());
+}
+
+function buildLogger(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
+  const message = resolveFormulas(pills(String(sourceInput.message ?? ''), ctx), ctx, name, sourceInput.message);
+  const code = [
+    'export const code = async (inputs) => {',
+    '  return { message: inputs.message };',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, { message }, code, !hasTodoMarker({ message }));
+}
+
+function buildCreateList(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const key = `wl_${step.as || name}`;
+  return storeActionStep(
+    name,
+    'put',
+    { key, value: '[]', store_scope: STORE_SCOPE },
+    display,
+    true,
+    false,
+    ctx,
+  );
+}
+
+function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  const sheet = xlsxSheetName(String(step.input?.code ?? ''));
+  return codeStep(name, display, input, xlsxToCsvCode(sheet), !hasTodoMarker(input));
+}
+
+function buildOpenCardsSearch(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
+  const input = {
+    pipeId: convertedField(sourceInput.pipe_id, ctx, name, ''),
+    fieldId: convertedField(sourceInput.field_id, ctx, name, ''),
+    fieldValue: convertedField(sourceInput.field_value, ctx, name, ''),
+  };
+  const code = [
+    'export const code = async (inputs) => {',
+    '  const query = `query ($pipeId: ID!, $after: String) {',
+    '    cards(pipe_id: $pipeId, first: 50, after: $after, search: { include_done: false }) {',
+    '      pageInfo { hasNextPage endCursor }',
+    '      edges { node { id title done finished_at fields { name value field { id } } } }',
+    '    }',
+    '  }`;',
+    '  const cards = [];',
+    '  let after = null;',
+    '  for (let page = 0; page < 20; page++) {',
+    '    const response = await fetch("https://api.pipefy.com/graphql", {',
+    '      method: "POST",',
+    '      headers: { "Content-Type": "application/json", Authorization: inputs.authorization || "" },',
+    '      body: JSON.stringify({ query, variables: { pipeId: inputs.pipeId, after } }),',
+    '    });',
+    '    const payload = await response.json();',
+    '    const block = payload && payload.data && payload.data.cards;',
+    '    for (const edge of (block && block.edges) || []) {',
+    '      if (edge && edge.node) cards.push(edge.node);',
+    '    }',
+    '    if (!block || !block.pageInfo || !block.pageInfo.hasNextPage) break;',
+    '    after = block.pageInfo.endCursor;',
+    '  }',
+    '  const fieldId = String(inputs.fieldId == null ? "" : inputs.fieldId);',
+    '  const fieldValue = String(inputs.fieldValue == null ? "" : inputs.fieldValue);',
+    '  const open = cards.filter((card) => {',
+    '    if (!card || card.done === true || card.finished_at) return false;',
+    '    return (card.fields || []).some((field) => {',
+    '      const id = field && field.field ? field.field.id : "";',
+    '      const name = field && field.name ? field.name : "";',
+    '      return (id === fieldId || name === fieldId) && String(field.value == null ? "" : field.value) === fieldValue;',
+    '    });',
+    '  });',
+    '  return { cards: open };',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, { ...input, authorization: '' }, code, !hasTodoMarker(input));
+}
+
+function workatoHeaders(raw: unknown, ctx: Ctx): Record<string, any> {
+  if (!Array.isArray(raw)) return {};
+  const headers: Record<string, any> = {};
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const key = String((item as any).header ?? (item as any).name ?? '').trim();
+    if (!key) continue;
+    headers[key] = deepConvert((item as any).value, ctx);
+  }
+  return headers;
+}
+
+function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, any>, ctx: Ctx): Record<string, any> {
+  const request = sourceInput.request && typeof sourceInput.request === 'object' ? sourceInput.request : sourceInput;
+  if (input.headers == null || (typeof input.headers === 'object' && !Object.keys(input.headers).length)) {
+    input.headers = workatoHeaders(request.headers, ctx);
+  }
+  const contentType = request.content_type;
+  if (contentType && contentType !== '=skip' && input.headers['Content-Type'] == null) {
+    input.headers['Content-Type'] = deepConvert(contentType, ctx);
+  }
+  if (input.queryParams == null) input.queryParams = {};
+  if (input.authType == null) input.authType = 'none';
+  if (input.body && typeof input.body === 'object' && typeof input.body.data === 'string') {
+    input.body_type = 'raw';
+  }
+  return input;
+}
+
 function buildAction(step: ParsedStep, ctx: Ctx): any {
   const variable = buildVariableStep(step, ctx);
   if (variable) return variable;
@@ -1366,6 +1642,22 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     step.comment ||
     (collapseOpKey(opKey) === 'file_connector/read_file' ? 'Get file from URL' : step.name) ||
     opKey;
+
+  if (collapseOpKey(opKey) === 'csv_parser/parse_csv') {
+    return buildParseCsv(name, display, sourceInput, ctx);
+  }
+  if (collapseOpKey(opKey) === 'logger/log_message') {
+    return buildLogger(name, display, sourceInput, ctx);
+  }
+  if (collapseOpKey(opKey) === 'workato_list/create_list') {
+    return buildCreateList(name, display, step, ctx);
+  }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isXlsxToCsvPython(String(step.input?.code ?? ''))) {
+    return buildXlsxPython(name, display, step, ctx);
+  }
+  if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
+    return buildOpenCardsSearch(name, display, sourceInput, ctx);
+  }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
   if (!rubySleep && (entry?.manual || entry?.builtin || opKey.endsWith('/invoke_custom_ruby_code'))) {
@@ -1398,6 +1690,17 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const shaped = applySubflowAction(opKey, t.name, sourceInput, ctx, name);
     if (shaped) input = shaped;
   }
+  if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
+  if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
+    input = fillHttpSend(input, sourceInput, ctx);
+  }
+  if (collapseOpKey(opKey) === 'file_connector/uncompress_file') {
+    if (input.file == null && input.file_contents != null) {
+      input.file = input.file_contents;
+      delete input.file_contents;
+    }
+    delete input.compression_format;
+  }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
   const missing = missingRequiredProps(ctx, t, input);
   if (missing.length) {
@@ -1418,6 +1721,28 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     ctx.todos.push(
       `PILL (${name}): referencia que nao resolve no AP em ${unresolved.join(', ')} — revisar.`,
     );
+  }
+  const listAdd = t.name === 'custom_api_call' || t.name === 'send_request' ? updateListFieldFromGraphql(input) : null;
+  if (listAdd) {
+    ctx.piecesUsed.add(PIPEFY_PIECE);
+    const listTarget: MapTarget = { piece: PIPEFY_PIECE, name: 'updateListField', kind: 'action' };
+    const listMissing = missingRequiredProps(ctx, listTarget, listAdd);
+    return {
+      name,
+      skip: false,
+      type: 'PIECE',
+      valid: listMissing.length === 0 && !JSON.stringify(listAdd).includes('TODO'),
+      settings: {
+        input: listAdd,
+        pieceName: PIPEFY_PIECE,
+        actionName: 'updateListField',
+        pieceVersion: pieceVersion(ctx, PIPEFY_PIECE),
+        propertySettings: propertySettings(listAdd),
+        errorHandlingOptions: ERR(),
+      },
+      displayName: display,
+      lastUpdatedDate: NOW,
+    };
   }
   return {
     name,
@@ -1672,13 +1997,27 @@ function buildRouter(step: ParsedStep, ctx: Ctx): any {
   };
 }
 
+function listDeclFromSource(source: unknown, ctx: Ctx): VarDecl | undefined {
+  const pill = firstPill(source);
+  if (!pill?.line) return undefined;
+  const decl = ctx.vars.decls.get(String(pill.line));
+  return decl?.kind === 'list' ? decl : undefined;
+}
+
 function buildLoop(step: ParsedStep, ctx: Ctx): any {
   const name = step.apName || nextName('loop');
   // A colecao e avaliada no escopo de FORA: o source de um loop aninhado
   // referencia o item do loop externo, nao o proprio.
-  const items = step.source
+  let items = step.source
     ? resolveFormulas(pills(step.source, ctx), ctx, name)
     : '{{TODO_lista}}';
+  const listDecl = listDeclFromSource(step.source, ctx);
+  if (listDecl && !items.includes('TODO')) {
+    const parsed = nextName('var_list');
+    const code = codeStep(parsed, `Ler lista "${listDecl.label}"`, { list: items }, listReadCode(), true);
+    ctx.pendingCode.push(code);
+    items = `{{${parsed}}}`;
+  }
   if (!step.source || items.includes('TODO')) {
     ctx.todos.push(`LOOP (${name}): definir a lista de itens (items).`);
   }
@@ -1804,42 +2143,87 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   };
 }
 
-/**
- * O AP v20 nao tem try/catch. O corpo do try segue com `continueOnFailure`.
- * O corpo do catch vira `onFailureAction` de cada passo falivel do try (o
- * iPaaS executa esse ramo quando o passo falha). Catch vazio nao gera ramo.
- */
-function cloneCatch(head: any, copy: number): any {
-  const clone = structuredClone(head);
-  const names: string[] = [];
-  const collect = (node: any) => {
-    if (!node || typeof node !== 'object') return;
-    if (typeof node.name === 'string' && node.type) names.push(node.name);
-    collect(node.nextAction);
-    collect(node.firstLoopAction);
-    collect(node.onFailureAction);
-    for (const child of node.children ?? []) collect(child);
-  };
-  collect(clone);
-  let raw = JSON.stringify(clone);
-  for (const from of [...new Set(names)].sort((a, b) => b.length - a.length)) {
-    const to = `${from}_err${copy}`;
-    raw = raw.split(`"${from}"`).join(`"${to}"`).split(`{{${from}`).join(`{{${to}`);
-  }
-  return JSON.parse(raw);
-}
+/** Router no fim de cada bloco monitor. O verificador reconhece pelo displayName. */
+const CATCH_ROUTER_LABEL = 'Catch do monitor';
 
-function visitBuilt(step: any, visit: (node: any) => void): void {
+const claimedByCatch = new WeakSet<object>();
+
+/**
+ * Passos falíveis deste try. Um monitor de dentro já reivindicou os seus:
+ * a falha deles dispara o router interno, não o de fora.
+ */
+function claimCatchBody(head: any): string[] {
+  const names: string[] = [];
   const seen = new Set<any>();
   const walk = (node: any) => {
     if (!node || seen.has(node)) return;
     seen.add(node);
-    visit(node);
+    if (node.type === 'ROUTER' && node.displayName === CATCH_ROUTER_LABEL) {
+      walk(node.nextAction);
+      return;
+    }
+    if (isFallibleStep(node) && !claimedByCatch.has(node)) {
+      claimedByCatch.add(node);
+      if (node.settings?.errorHandlingOptions) {
+        node.settings.errorHandlingOptions.continueOnFailure = { value: true };
+      }
+      names.push(node.name);
+    }
     walk(node.nextAction);
     walk(node.firstLoopAction);
     for (const child of node.children ?? []) walk(child);
   };
-  walk(step);
+  walk(head);
+  return names;
+}
+
+function bindCatchMessage(head: any, messagePill: string): any {
+  const raw = JSON.stringify(head).split(CATCH_ERROR_TOKEN).join(messagePill);
+  return JSON.parse(raw);
+}
+
+function catchMessageStep(owners: string[]): any {
+  const name = nextName('catch_msg');
+  const input: Record<string, string> = {};
+  owners.forEach((owner, index) => {
+    input[`e${index}`] = `{{${owner}['error']['message']}}`;
+  });
+  const reads = owners.map((_, index) => `inputs.e${index}`).join(', ');
+  const code = [
+    'export const code = async (inputs) => {',
+    `  const messages = [${reads}];`,
+    "  const message = messages.find((item) => item !== undefined && item !== null && String(item) !== '') ?? '';",
+    '  return { message };',
+    '};',
+  ].join('\n');
+  return codeStep(name, 'Mensagem do catch', input, code, true);
+}
+
+function catchRouter(owners: string[], handler: any): any {
+  const message = catchMessageStep(owners);
+  const branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
+  return {
+    name: nextName('catch'),
+    skip: false,
+    type: 'ROUTER',
+    valid: true,
+    settings: {
+      branches: [
+        {
+          branchName: 'Falhou',
+          branchType: 'CONDITION',
+          conditions: owners.map((owner) => [
+            { operator: 'EXISTS', firstValue: `{{${owner}['error']['message']}}` },
+          ]),
+        },
+        { branchName: 'Seguiu', branchType: 'FALLBACK' },
+      ],
+      executionType: 'EXECUTE_FIRST_MATCH',
+    },
+    children: [branch, null],
+    displayName: CATCH_ROUTER_LABEL,
+    lastUpdatedDate: NOW,
+  };
 }
 
 function buildTry(step: ParsedStep, ctx: Ctx): any | null {
@@ -1850,47 +2234,33 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     step.children.filter((c) => c.keyword !== 'catch'),
     ctx,
   );
-  visitBuilt(first, (s) => {
-    if (isFallibleStep(s)) s.settings.errorHandlingOptions.continueOnFailure = { value: true };
-  });
+  const owners = claimCatchBody(first);
 
   if (!handlers.length) return first ?? null;
 
   const anchor = lastStepName(first);
   const handlerHead = buildChain(handlers, ctx);
-  if (handlerHead) {
-    let copy = 0;
-    visitBuilt(first, (s) => {
-      if (!isFallibleStep(s) || s.onFailureAction) return;
-      s.onFailureAction = cloneCatch(handlerHead, ++copy);
-    });
-  }
+  const routed = handlerHead && owners.length ? appendToChain(first, catchRouter(owners, handlerHead)) : first;
 
   if (handlerHead || handlers.some((handler) => handler.keyword === 'stop')) {
     const lost = describeLostHandlers(handlers);
     const where = step.comment || `try passo ${step.number ?? '?'}`;
     ctx.todos.push(
       `CATCH (${where}): o AP nao tem try/catch. ` +
-        'O corpo do try segue com continueOnFailure e o catch foi para ' +
-        `onFailureAction: ${lost}.`,
+        'Os passos do bloco seguem com continueOnFailure e o catch virou um router no fim: ' +
+        `${lost}.`,
     );
 
     pushReviewNote(
       ctx,
       'CATCH',
-      `O AP nao tem try/catch. O corpo do try segue com continueOnFailure. ` +
-        `O catch foi para onFailureAction: ${lost}.`,
+      `O AP nao tem try/catch. Os passos do bloco seguem com continueOnFailure. ` +
+        `O catch virou um router no fim do bloco: ${lost}.`,
       lost,
       anchor,
     );
   }
   notePendingJobContext(ctx, anchor);
-  if (ctx.catchMessageHits.n > 0) {
-    const catchNote = [...ctx.canvasNotes].reverse().find((note) => note.kind === 'CATCH');
-    const sentence =
-      'Mensagem do catch ficou o texto erro. O iPaaS le o erro em step[\'error\'][\'message\'], mas o import do schema 20 coloca [\'output\'] na frente.';
-    if (catchNote && !catchNote.content.includes(sentence)) catchNote.content += `\n\n${sentence}`;
-  }
   for (const handler of handlers) {
     if (handler.keyword !== 'stop' || String(handler.input?.stop_with_error) !== 'true') continue;
     ctx.todos.push('STOP: stop_with_error — AP nao tem equivalente; revisar (erro explicito).');
@@ -1903,7 +2273,7 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     );
   }
 
-  return first ?? null;
+  return routed ?? null;
 }
 
 function describeFilter(filter: WorkatoConditionsInput | undefined): string {
@@ -2026,19 +2396,12 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     recipeId: recipe.workatoId,
     jobContextHits: emptyHits(),
     jobContextNoted: emptyHits(),
-    catchMessageHits: { n: 0 },
     counter: { n: 1 },
     pendingCode: [],
     vars: indexVariables(recipe.root),
     subflowResultLabels: new Map(),
   };
   assignNames(recipe.root, ctx, true);
-  // Só `store` é aproximação (round-trip pelo storage); `static`/`linear` sao
-  // traducao fiel e nao devem invalidar o flow.
-  for (const decl of ctx.vars.decls.values()) {
-    const note = describeStrategy(decl);
-    if (note) ctx.todos.push(note);
-  }
   const trigger = buildTrigger(recipe.root, ctx);
   notePendingJobContext(ctx, lastStepName(trigger));
 

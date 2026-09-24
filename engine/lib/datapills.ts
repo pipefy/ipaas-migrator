@@ -402,12 +402,30 @@ export type PillOptions = {
   recipeName?: string;
   recipeId?: string;
   jobContextHits?: JobContextHits;
-  /** Pills `provider: catch` trocadas pelo texto `erro`. */
-  catchMessageHits?: { n: number };
 };
 
 /** Marcador interno. `convertPills` tira do texto antes de devolver. */
 const FLOW_LINK = '\u0000flow-link\u0000';
+
+/**
+ * A pill de mensagem do catch. O clone do `onFailureAction` troca pelo step
+ * que falhou: `{{step_N['error']['message']}}`.
+ */
+export const CATCH_ERROR_TOKEN = '{{__catch_error__}}';
+
+/** O erro do iPaaS não tem `type`. Some antes de gravar o campo. */
+const CATCH_TYPE_TOKEN = '\u0000catch-type\u0000';
+
+function tidyCatch(text: string): string {
+  if (!text.includes(CATCH_TYPE_TOKEN) && !text.includes(CATCH_ERROR_TOKEN)) return text;
+  return text
+    .split(`${CATCH_TYPE_TOKEN}: ${CATCH_ERROR_TOKEN}`)
+    .join(CATCH_ERROR_TOKEN)
+    .split(`${CATCH_TYPE_TOKEN}:${CATCH_ERROR_TOKEN}`)
+    .join(CATCH_ERROR_TOKEN)
+    .split(CATCH_TYPE_TOKEN)
+    .join('');
+}
 
 function renderJobContext(key: string | undefined, options: PillOptions | undefined): string | null {
   const hits = options?.jobContextHits;
@@ -427,6 +445,7 @@ function renderJobContext(key: string | undefined, options: PillOptions | undefi
 }
 
 function tidyJobContext(text: string): string {
+  text = tidyCatch(text);
   if (!text.includes(FLOW_LINK)) return text;
   return text
     .split(FLOW_LINK)
@@ -446,7 +465,7 @@ function tidyJobContext(text: string): string {
  * (release 0.85.4). O iPaaS prefixa `['output']` no import de um flow v20.
  * Gravando `output` no template, a migracao vira `['output'].output...`.
  */
-export type StepBinding = string | { name: string; outputRoot?: string };
+export type StepBinding = string | { name: string; outputRoot?: string; stripHead?: string };
 
 export type StepNameMap = Map<string, StepBinding>;
 
@@ -458,6 +477,13 @@ export function stepBindingName(binding: StepBinding | undefined): string | unde
 export function stepOutputRoot(binding: StepBinding | undefined): string | undefined {
   if (!binding || typeof binding === 'string') return undefined;
   return binding.outputRoot;
+}
+
+/** O Storage guarda a lista crua. A pill Workato ainda diz `list_items`. */
+export function withoutStripHead(binding: StepBinding | undefined, segments: string[]): string[] {
+  const head = !binding || typeof binding === 'string' ? undefined : binding.stripHead;
+  if (head && segments[0] === head) return segments.slice(1);
+  return segments;
 }
 
 /** Segmentos do envelope da piece. Evita `data.card.card` se o path Workato ja comeca com `card`. */
@@ -540,14 +566,12 @@ function renderDataPill(
   const mapped = asToName.get(line);
   const mappedName = stepBindingName(mapped);
 
-  // O catch do Workato nao vira passo. O iPaaS le o erro em step['error']['message'],
-  // mas o import do schema 20 insere ['output'] em toda pill e essa referencia nao resolve.
+  // O catch do Workato nao vira passo. A mensagem aponta para o step que falhou,
+  // em ['error']['message'] (irmao de output). O `type` nao existe no iPaaS.
   if (dp.provider === 'catch' && path.every((element) => typeof element !== 'object')) {
     const key = path.filter((element) => typeof element === 'string').join('.');
-    if (key === 'message' || key === '') {
-      if (options?.catchMessageHits) options.catchMessageHits.n += 1;
-      return 'erro';
-    }
+    if (key === 'message' || key === '') return CATCH_ERROR_TOKEN;
+    if (key === 'type') return CATCH_TYPE_TOKEN;
   }
 
   // `line` e o `as` do passo de origem. Sem entrada no mapa, a pill aponta para
@@ -586,7 +610,7 @@ function renderDataPill(
     }
     return '{{TODO_pill}}';
   }
-  return render();
+  return renderApTemplate(base, withoutStripHead(mapped, segments));
 }
 
 function extraHashPath(brackets: string): string {
@@ -649,14 +673,67 @@ function renderDataRef(ref: string, asToName: StepNameMap): string {
     return `{{${loop}.${path}}}`;
   }
   const pathHead = path.split('.')[0];
-  const segs = outputRootSegments(binding, pathHead);
-  return renderApTemplate(mapped, [...segs, ...path.split('.').filter(Boolean)]);
+  const segs = withoutStripHead(binding, [
+    ...outputRootSegments(binding, pathHead),
+    ...path.split('.').filter(Boolean),
+  ]);
+  return renderApTemplate(mapped, segs);
 }
 
 /**
  * Converte pills SIMPLES para template AP. Nao resolve formulas com metodo Ruby
  * (essas viram step CODE). asToName: mapa do `as` do Workato -> nome do step AP.
  */
+function replaceBareInterpolation(src: string): string {
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    if (!src.startsWith('#{', i)) {
+      out += src[i];
+      continue;
+    }
+    const end = rubyInterpolationEnd(src, i + 2);
+    if (end < 0) {
+      out += src[i];
+      continue;
+    }
+    const inner = src.slice(i + 2, end);
+    const keep = inner.includes('{{') || /\.[A-Za-z_]/.test(inner);
+    out += keep ? src.slice(i, end + 1) : '{{TODO_formula}}';
+    i = end;
+  }
+  return out;
+}
+
+function rubyInterpolationEnd(src: string, j: number): number {
+  let depth = 1;
+  while (j < src.length) {
+    const ch = src[j]!;
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      j++;
+      while (j < src.length && src[j] !== quote) {
+        if (src[j] === '\\') j += 2;
+        else j++;
+      }
+      j++;
+      continue;
+    }
+    if (src.startsWith('{{', j)) {
+      const end = src.indexOf('}}', j + 2);
+      if (end < 0) return -1;
+      j = end + 2;
+      continue;
+    }
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return j;
+    }
+    j++;
+  }
+  return -1;
+}
+
 export function convertPills(
   input: string,
   asToName: StepNameMap,
@@ -693,8 +770,9 @@ export function convertPills(
     renderDataRef(ref, asToName),
   );
 
-  // 3) qualquer #{...} restante -> TODO
-  out = out.replace(/#\{[^}]*\}/g, '{{TODO_formula}}');
+  // 3) #{...} que sobrou sem pill. Interpolação com {{pill}} ou método fica
+  // para o compilador Ruby; `}` de dentro do pill não fecha a interpolação.
+  out = replaceBareInterpolation(out);
 
   // 4) {{step}}['a']['b'] residual (formula mista) -> {{step.a.b}}
   out = out.replace(/\{\{([^{}]+)\}\}((?:\[['"]\w+['"]\])+)/g, (_m, inner, brackets) => {

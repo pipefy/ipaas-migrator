@@ -1,9 +1,7 @@
-// Geracao dos steps que materializam uma variavel Workato no Activepieces.
+// Steps do piece-store para variavel Workato.
 //
-// O formato do valor e o MESMO nas tres estrategias, para que a pill de leitura
-// nao mude de forma: escalar vira `{campo: valor}` e lista vira
-// `{list_items: [...]}`. Assim `data.workato_variable.<as>.<campo>` continua
-// resolvendo como `<step>.<campo>` e a pill de lista como `<step>.list_items`.
+// Escalar fica `{campo: valor}` no `put`. Lista fica um array de strings JSON
+// no `add_to_list`. A pill de leitura aponta para o `get`.
 import type { ParsedStep } from './types.ts';
 import { SOURCE_KEY, itemSuffix, type VarDecl, type VarOp } from './variables.ts';
 
@@ -166,14 +164,73 @@ export function writtenFields(step: ParsedStep, op: VarOp): Record<string, unkno
   return out;
 }
 
-export function describeStrategy(decl: VarDecl): string {
-  if (decl.strategy === 'store') {
-    return (
-      `VARIAVEL (${decl.label}): ha escrita dentro de loop ou ramo, onde o output de um step ` +
-      `nao sobrevive a iteracao. Migrada para o Storage do Activepieces na chave "${decl.storeKey}" ` +
-      `com escopo ${STORE_SCOPE} (isola execucoes concorrentes). Cada leitura passa por um step ` +
-      'de "get" — conferir se o round-trip preserva os tipos.'
-    );
+/** Um item da lista, no formato que o `add_to_list` guarda: string JSON. */
+export function listItemJson(fields: Record<string, unknown>): string {
+  const parts = Object.entries(fields).map(([key, value]) => `${JSON.stringify(key)}:${jsonLiteral(value)}`);
+  return `{${parts.join(',')}}`;
+}
+
+function jsonLiteral(value: unknown): string {
+  if (value == null) return 'null';
+  if (typeof value === 'number' || typeof value === 'boolean') return JSON.stringify(value);
+  return JSON.stringify(String(value));
+}
+
+export interface ListBatchField {
+  field: string;
+  path: string[];
+}
+
+/** Campos do lote que dependem de `current_item`. O resto vai pronto em `__campos`. */
+export function listBatchFields(step: ParsedStep): ListBatchField[] {
+  const raw = (step.input?.list_items ?? {}) as Record<string, unknown>;
+  const out: ListBatchField[] = [];
+  for (const [field, value] of Object.entries(raw)) {
+    if (field === SOURCE_KEY) continue;
+    const suffix = itemSuffix(value);
+    if (suffix) out.push({ field, path: suffix });
   }
-  return '';
+  return out;
+}
+
+/**
+ * Code que devolve `string[]` para o `add_to_list`. Nao usa o cabecalho de
+ * variavel em CODE: o passo que casa com a receita e o Storage.
+ */
+export function listBatchCode(fields: ListBatchField[]): string {
+  const lines = [
+    '/**',
+    ' * Strings JSON de um insert em lote. O passo seguinte grava no Storage.',
+    ' */',
+    'export const code = async (inputs) => {',
+    '  const fonte = Array.isArray(inputs.__fonte) ? inputs.__fonte : [];',
+    '  const fixos = inputs.__campos ?? {};',
+    '  return fonte.map((item) => JSON.stringify({',
+    '    ...fixos,',
+  ];
+  for (const field of fields) {
+    lines.push(`    ${jsKey(field.field)}: ${jsItemAccess(field.path)},`);
+  }
+  lines.push('  }));', '};');
+  return lines.join('\n');
+}
+
+/** O get da lista devolve array (ou o JSON desse array). O loop precisa de objeto. */
+export function listReadCode(): string {
+  return [
+    '/**',
+    ' * O Storage guarda cada item como string JSON. O loop le o objeto.',
+    ' */',
+    'export const code = async (inputs) => {',
+    '  let list = inputs.list;',
+    "  if (typeof list === 'string') {",
+    '    try { list = JSON.parse(list); } catch { return []; }',
+    '  }',
+    '  if (!Array.isArray(list)) return [];',
+    '  return list.map((item) => {',
+    "    if (typeof item !== 'string') return item;",
+    '    try { return JSON.parse(item); } catch { return item; }',
+    '  });',
+    '};',
+  ].join('\n');
 }

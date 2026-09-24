@@ -853,7 +853,8 @@
     "csv_parser/parse_csv": {
       "target": {"piece":"@activepieces/piece-csv","name":"convert_csv_to_json","kind":"action"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "O builder ignora o piece e emite Code JS. piece-csv nao declara header_schema; column_value_by index vira column_N em lines[]."
     },
     "custom_jobs/get_job_by_ID": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},

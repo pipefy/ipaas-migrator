@@ -1,16 +1,9 @@
-// Variaveis Workato: indexa declare/update/list e escolhe como materializa-las.
+// Variaveis Workato: indexa declare/update/list.
 //
-// No Workato a variavel vive no job e e MUTAVEL: a pill criada no `declare`
-// passa a valer o ultimo valor escrito. No Activepieces o output de um step e
-// imutavel depois que ele roda, entao nao existe traducao 1:1 — a escolha
-// depende de ONDE a escrita acontece:
-//
-//  - sem escrita depois do declare  -> `static`: um step CODE, leituras nele.
-//  - escrita so na cadeia reta      -> `linear`: um step CODE por escrita, e a
-//    leitura passa a apontar para a ULTIMA escrita anterior a ela.
-//  - escrita dentro de loop/ramo    -> `store`: o output de um step dentro de
-//    loop nao e legivel na iteracao seguinte nem fora do loop, entao o valor
-//    precisa de storage de verdade (piece-store, escopo RUN).
+// No Workato a variavel vive no job e e MUTAVEL. No Activepieces o output de
+// um step nao muda depois que ele roda, entao toda variavel vai para o
+// piece-store com escopo RUN (isola a execucao). Lista entra por add_to_list
+// como array de strings JSON.
 import type { ParsedStep } from './types.ts';
 
 export type VarStrategy = 'static' | 'linear' | 'store';
@@ -24,7 +17,7 @@ export interface VarDecl {
   label: string;
   fields: string[];
   strategy: VarStrategy;
-  /** Chave no storage do AP quando `strategy === 'store'`. */
+  /** Chave no storage do AP. Toda variavel usa o piece-store. */
   storeKey: string;
 }
 
@@ -149,7 +142,7 @@ export function indexVariables(root: ParsedStep): VarIndex {
         kind,
         label: declLabel(step, kind),
         fields: declFields(step),
-        strategy: 'static',
+        strategy: 'store',
         storeKey: `wv_${step.as}`,
       });
       if (!step.skip) writes.push({ declareAs: step.as, step, op, contained });
@@ -162,19 +155,6 @@ export function indexVariables(root: ParsedStep): VarIndex {
     step.children.forEach((child) => walk(child, inner));
   };
   walk(root, false);
-
-  for (const decl of decls.values()) {
-    const own = writes.filter((w) => w.declareAs === decl.as);
-    const mutations = own.filter((w) => w.op !== 'declare');
-    if (!mutations.length) {
-      decl.strategy = 'static';
-      continue;
-    }
-    // Declare dentro de container com escrita depois: o output do declare pode
-    // nem existir no ponto da escrita. Storage tambem.
-    const anyContained = own.some((w) => w.contained);
-    decl.strategy = anyContained ? 'store' : 'linear';
-  }
 
   return { decls, writes };
 }
