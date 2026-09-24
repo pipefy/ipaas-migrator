@@ -80,13 +80,13 @@ export function updateListFieldFromGraphql(input: Record<string, any>): UpdateLi
   if (fields.length !== 1) return null;
   const node = query.match(/nodeId:\s*(\{\{[\s\S]*?\}\}|[^,\s]+)/);
   const item = query.match(
-    /fieldId:\s*"([^"]+)"\s*,\s*value:\s*"([\s\S]*?)"\s*,\s*operation:\s*"?ADD"?\b/,
+    /fieldId:\s*"([^"]+)"\s*,?\s*value:\s*(?:"([\s\S]*?)"|(\{\{[\s\S]*?\}\}))\s*,?\s*operation:\s*"?ADD"?\b/,
   );
   if (!node || !item) return null;
   return {
     nodeId: node[1]!.trim(),
     fieldId: item[1]!,
-    fieldValue: item[2]!,
+    fieldValue: (item[2] ?? item[3])!,
     operation: 'ADD',
   };
 }

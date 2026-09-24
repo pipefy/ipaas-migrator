@@ -1,6 +1,7 @@
 // 1 receita Workato -> stdout: flow Activepieces + diagrama Mermaid + roteamento.
 // Sem --force: operacao nao mapeada, JSON invalido, arquivo ausente
 // ou gatilho sem piece (receita em branco) vao para manual_revision.
+// Email/SMS by Workato: flow real + aviso, destino manual_revision (nao para o canvas).
 // ROUTER/Ruby com TODO ainda e ipaas_ready.
 // O diagrama sai mesmo quando a transpilacao bloqueia.
 //
@@ -13,6 +14,7 @@ import { loadConfig, loadKb, loadMergedMap, ROOT } from './lib/load.ts';
 import { ingest } from './lib/ingest.ts';
 import { isEmptyWorkatoTrigger, parseRecipe } from './lib/parse-recipe.ts';
 import { classifyOps } from './lib/classify.ts';
+import { collapseOpKey } from './lib/collapse.ts';
 import { buildFlow } from './lib/flow-builder.ts';
 import { emptyDiagram, recipeToDiagram, type RecipeDiagram } from './lib/diagram.ts';
 import type { OpClassification, ParsedRecipe, ParsedStep } from './lib/types.ts';
@@ -153,8 +155,14 @@ async function main(): Promise<void> {
   const { kb } = await loadKb(cfg);
   const { merged } = await loadMergedMap(cfg);
   const ops = classifyOps(recipe.opCounts, merged, kb);
+  const blockedChannels = ops.filter((o) => {
+    const provider = collapseOpKey(o.opKey).split('/')[0];
+    return provider === 'email' || provider === 'sms';
+  });
+  const blockedKeys = new Set(blockedChannels.map((o) => o.opKey));
+  const mapped = ops.filter((o) => o.status === 'mapped' && !blockedKeys.has(o.opKey)).length;
+
   const unmapped = ops.filter((o) => o.status === 'unmapped');
-  const mapped = ops.filter((o) => o.status === 'mapped').length;
 
   if (unmapped.length) {
     const block = formatUnmappedBlock(unmapped);
@@ -189,6 +197,23 @@ async function main(): Promise<void> {
   }
 
   const { flow, todos } = buildFlow(recipe, merged, kb);
+  if (blockedChannels.length) {
+    const listed = blockedChannels.map((o) => `${o.opKey} (${o.count}x)`).join('; ');
+    const reason = `Email by Workato e SMS by Workato nao migram (nao viram SMTP nem Twilio). ${listed}.`;
+    emit(flow, diagram, {
+      status: 'ERROR',
+      destination: 'manual_revision',
+      blocked_reason: reason,
+      mapped_operations: mapped,
+      unmapped_operations: blockedChannels.length,
+      unmapped_ops: blockedChannels.map((o) => o.opKey),
+      has_router: hasKeyword(recipe.root, 'if'),
+      has_code_ruby: recipe.hasRuby,
+      todos: todos.length,
+    });
+    return;
+  }
+
   emit(flow, diagram, {
     status: 'OK',
     destination: 'ipaas_ready',

@@ -6,12 +6,26 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.8 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.9 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.9 — 24 set 2026
+
+O tutor não muda. O motor traduz o que a 1.12.1 fechou no migrador oficial.
+
+- Email by Workato e SMS by Workato não viram SMTP, Gmail nem Twilio. Nota no canvas. O transpile termina em revisão manual.
+- Base Pipefy (`create_record`, `record_field_update`) manda o id da tabela e os campos soltos. Lookup table do Workato não é essa base.
+- PipeSign `getDocument` é POST GraphQL na Autentique, com nota `REVISAR: pipesign`.
+- `js_eval` com `exports.main` e o Python de ids de nós saem em Code JS.
+- Planilha com `is_top_left` e `col_N` sem cabeçalho sai com `first_row_headers` false.
+- Data com `.days`, `.months` e `.years` entra no catálogo. `%` desconhecido (ex. `%03`) continua fórmula para revisar.
+- `present?` e documento `mutation` / `query` compilam. Repeat while pelo índice da lista vira loop. Lista vazia não entra.
+- Passo desligado não entra no canvas. `stop` encerra o ramo. `valid` do passo mapeado segue só a prop obrigatória. `ADD` de lista aceita pill no valor.
+- `migrador-workato-cliente-navegador-0.5.9.tgz`
 
 ## 0.5.8 — 23 set 2026
 

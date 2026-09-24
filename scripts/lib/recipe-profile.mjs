@@ -137,6 +137,7 @@ export function parseRecipeProfile(json) {
   const readCount = new Map();
   const hiddenPipes = new Set();
   const tables = new Set();
+  const lookupTables = new Set();
   let trigger = null;
   let triggerPipe = null;
   let customApiCalls = 0;
@@ -146,6 +147,7 @@ export function parseRecipeProfile(json) {
 
   walk(code, (n) => {
     const provider = n.provider ? String(n.provider) : null;
+    if (provider === 'lookup_table') lookupTables.add(String(n.name ?? 'lookup_table'));
     if (n.keyword === 'trigger' && provider && !trigger) {
       trigger = `${provider}/${n.name ?? ''}`;
       if (n.input?.pipe_id != null) triggerPipe = String(n.input.pipe_id);
@@ -199,6 +201,7 @@ export function parseRecipeProfile(json) {
     customApiCalls,
     customApiMutates,
     tables: [...tables],
+    lookupTables: [...lookupTables],
     touched,
   };
 }

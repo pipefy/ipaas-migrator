@@ -48,7 +48,8 @@ async function main() {
   }
   const profile = parseRecipeProfile(recipe);
   const tables = (profile.tables ?? []).filter((t) => t && t !== 'table');
-  const hasTable = (profile.tables ?? []).length > 0;
+  const lookupTables = profile.lookupTables ?? [];
+  const hasTable = lookupTables.length > 0;
 
   mkdirSync(outDir, { recursive: true });
   const tsx = resolve(root, 'node_modules/.bin/tsx');
@@ -180,6 +181,7 @@ async function main() {
         triggerValid: flow.flows?.[0]?.trigger?.valid ?? null,
         hasTable,
         tables,
+        lookupTables,
         migrateTo: hasTable ? 'table' : 'pipe',
         connections: bound,
       png: png.ok

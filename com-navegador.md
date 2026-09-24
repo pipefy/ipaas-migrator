@@ -1,6 +1,6 @@
 # com navegador
 
-Tutor **com navegador** (0.5.8). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
+Tutor **com navegador** (0.5.9). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 

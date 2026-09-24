@@ -370,20 +370,10 @@
     },
 
     "email/send_mail": {
-      "target": { "piece": "@activepieces/piece-smtp", "name": "send-email", "kind": "action" },
-      "alt": { "piece": "@activepieces/piece-gmail", "name": "send_email", "kind": "action", "when": "conexao e Gmail, nao SMTP generico" },
-      "propMap": {
-        "to": "to",
-        "cc": "cc",
-        "bcc": "bcc",
-        "subject": "subject",
-        "body": "body",
-        "email_type": "body_type",
-        "attachments": "attachments"
-      },
-      "difficulty": "medium",
+      "target": null,
+      "difficulty": "high",
       "manual": false,
-      "notes": "Email by Workato e SMTP generico. from/senderName ficam para revisao. to/cc viram ARRAY. Se a conta for Gmail, usar o alt."
+      "notes": "Email by Workato nao migra. Nao usar piece-smtp nem Gmail. Avisar no cliente e seguir o canvas."
     },
 
     "google_calendar/update_event": {
@@ -1869,9 +1859,10 @@
       "manual": false
     },
     "new_connector_4_connector_186728_1623952876/getDocument": {
-      "target": {"piece":"@activepieces/piece-pdf","name":"extractText","kind":"action"},
+      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "PipeSign getDocument. O motor emite POST GraphQL na Autentique (files.signed). Nao usar piece-pdf extractText."
     },
     "new_connector_6_connector_186728_1628717731/__adhoc_http_action": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
@@ -1903,8 +1894,11 @@
     },
     "new_connector_6_connector_186728_1628717731/create_record": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "propMap": {"organization_id":"organizationId","table_id":"pipeId"},
+      "collectRemainingTo": "startFormFields",
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "base Pipefy: table_id cai em pipeId; campos soltos vao para startFormFields."
     },
     "new_connector_6_connector_186728_1628717731/delete_record": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"deleteRecord","kind":"action"},
@@ -1918,8 +1912,11 @@
     },
     "new_connector_6_connector_186728_1628717731/record_field_update": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","table_id":"databaseId","field_ids":"fieldIds"},
+      "ignoreSourceProps": ["filter"],
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "filter yes/no do Workato nao existe na piece."
     },
     "notion/create_record": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
@@ -2224,8 +2221,11 @@
     },
     "pipefy/create_record": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"createRecord","kind":"action"},
+      "propMap": {"organization_id":"organizationId","table_id":"pipeId"},
+      "collectRemainingTo": "startFormFields",
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "base Pipefy: table_id cai em pipeId; campos soltos vao para startFormFields."
     },
     "pipefy/custom_api_call": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
@@ -2359,8 +2359,11 @@
     },
     "pipefy/record_field_update": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","table_id":"databaseId","field_ids":"fieldIds"},
+      "ignoreSourceProps": ["filter"],
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "filter yes/no do Workato nao existe na piece."
     },
     "pipefy/update_array_type_field": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
@@ -4364,14 +4367,10 @@
       "manual": false
     },
     "sms/send_sms": {
-      "target": {
-        "piece": "@activepieces/piece-twilio",
-        "name": "send_sms",
-        "kind": "action"
-      },
-      "difficulty": "low",
+      "target": null,
+      "difficulty": "high",
       "manual": false,
-      "notes": "SMS Workato via Twilio."
+      "notes": "SMS by Workato nao migra. Nao usar piece-twilio. Avisar no cliente e seguir o canvas."
     },
     "slack/button_action": {
       "target": {

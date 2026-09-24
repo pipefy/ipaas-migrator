@@ -15,6 +15,7 @@ import type {
 import { collapseOpKey, lookupMap } from './collapse.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
+import { wrapJsEvalMain } from './js-eval.ts';
 import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvCode } from './xlsx-csv.ts';
 import { PIPEFY_PIECE_VERSION, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
 import {
@@ -88,6 +89,8 @@ interface Ctx {
   merged: Record<string, MapEntry>;
   kb: Map<string, SlimPiece>;
   asToName: StepNameMap;
+  /** `as` de passos `skip: true` — convertPills nao emite pill para eles. */
+  skippedAs: Set<string>;
   /**
    * Foreach abertos no ponto atual da construcao, de fora para dentro. Pills de
    * "item atual" resolvem contra o mais interno que itera aquela colecao.
@@ -115,7 +118,7 @@ interface Ctx {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS';
   content: string;
   anchorStepName?: string;
 }
@@ -168,6 +171,7 @@ function pills(input: string, ctx: Ctx, resolve = loopItemResolver(ctx)): string
     recipeName: ctx.recipeName,
     recipeId: ctx.recipeId,
     jobContextHits: ctx.jobContextHits,
+    skippedAs: ctx.skippedAs,
   });
 }
 
@@ -272,6 +276,8 @@ function assignNames(
   isRoot: boolean,
   varState: Map<string, string> = new Map(),
 ): void {
+  if (step.skip && step.as) ctx.skippedAs.add(step.as);
+
   if (isRoot) {
     step.apName = 'trigger';
     bindAs(ctx, step.as, 'trigger', step);
@@ -556,6 +562,10 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     const mark = ctx.pendingCode.length;
     const rawBuilt = buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
+    // `stop` encerra este bloco: os irmaos seguintes nao rodam no Workato.
+    // A nota (se stop_with_error) ja foi emitida em buildStep.
+    if (child.keyword === 'stop' && !child.skip) break;
+
     if (!built) continue;
     steps.push(built);
 
@@ -620,8 +630,8 @@ function collectResidualRubyMethods(value: unknown, path: string, out: string[])
 
 /**
  * Marcadores TODO_ que sobraram no input convertido (pill sem equivalente,
- * formula nao traduzida). Sem isso o step sairia `valid: true` carregando um
- * template que nao resolve em runtime.
+ * formula nao traduzida). Geram todo/nota; `valid` do step PIECE mapeado
+ * segue so as props obrigatorias da piece (mesmo nome).
  */
 function collectTodoMarkers(value: unknown, path: string, out: string[]): void {
   if (typeof value === 'string') {
@@ -643,8 +653,9 @@ function collectTodoMarkers(value: unknown, path: string, out: string[]): void {
  * Passo desativado na receita (`skip: true`). Nao executa no Workato, e migrar
  * como ativo faria o flow rodar justamente o que o autor desligou.
  *
- * Acao solta sai como step com `skip: true`. Bloco de controle desativado sai
- * inteiro: `skip` no AP nao esta definido para ROUTER/LOOP.
+ * Nao emite o step. `skip` no AP nao desliga de verdade: o passo ainda entra
+ * no canvas (HTTP send_request sem url, valid:false). Bloco de controle
+ * desativado sai inteiro, com TODO DESATIVADO.
  */
 const CONTROL_FLOW_KEYWORDS = new Set([
   'if', 'elsif', 'elseif', 'else', 'foreach', 'repeat', 'while_condition', 'try', 'catch',
@@ -656,14 +667,8 @@ function buildSkipped(step: ParsedStep, ctx: Ctx): any | null {
       `DESATIVADO (${step.comment || step.keyword}): bloco \`${step.keyword}\` estava ` +
         'desligado na receita e nao foi migrado.',
     );
-    return null;
   }
-
-  if (step.keyword === 'stop') return null;
-
-  const built = buildAction(step, ctx);
-  if (built) built.skip = true;
-  return built;
+  return null;
 }
 
 /** Step `store/get`, encadeado ANTES do passo que le a variavel. */
@@ -987,6 +992,9 @@ export const REVIEW_JOB_CONTEXT_LABEL = 'REVISAR: job_context';
 export const REVIEW_SECRET_LABEL = 'REVISAR: token';
 export const REVIEW_FORMULA_LABEL = 'REVISAR: formula';
 export const REVIEW_SUBFLOW_LABEL = 'REVISAR: subflow';
+export const REVIEW_EMAIL_LABEL = 'REVISAR: email';
+export const REVIEW_SMS_LABEL = 'REVISAR: sms';
+const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
 
@@ -1142,7 +1150,7 @@ function stepDepth(root: any, name: string | undefined): number | undefined {
 
 function pushReviewNote(
   ctx: Ctx,
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW',
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS',
   message: string,
   lost = '',
   anchorStepName?: string,
@@ -1158,7 +1166,11 @@ function pushReviewNote(
             ? REVIEW_FORMULA_LABEL
             : kind === 'SUBFLOW'
               ? REVIEW_SUBFLOW_LABEL
-              : REVIEW_JOB_CONTEXT_LABEL;
+              : kind === 'EMAIL'
+                ? REVIEW_EMAIL_LABEL
+                : kind === 'SMS'
+                  ? REVIEW_SMS_LABEL
+                  : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
     kind === 'CATCH'
       ? 'review_catch'
@@ -1170,7 +1182,11 @@ function pushReviewNote(
             ? 'review_formula'
             : kind === 'SUBFLOW'
               ? 'review_subflow'
-              : 'review_job';
+              : kind === 'EMAIL'
+                ? 'review_email'
+                : kind === 'SMS'
+                  ? 'review_sms'
+                  : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -1444,6 +1460,45 @@ function buildListBatch(
 }
 
 const HTTP_PIECE = '@activepieces/piece-http';
+const HTTP_SEND_TARGET: MapTarget = { piece: HTTP_PIECE, name: 'send_request', kind: 'action' };
+const AUTENTIQUE_GRAPHQL_URL = 'https://api.autentique.com.br/v2/graphql';
+
+/** PipeSign getDocument: POST GraphQL na Autentique. extractText exige file e so recebe id. */
+function buildPipesignGetDocument(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  ctx.piecesUsed.add(HTTP_PIECE);
+  const id = convertedField(sourceInput.id, ctx, name, '');
+  const input: Record<string, any> = {
+    method: 'POST',
+    url: AUTENTIQUE_GRAPHQL_URL,
+    headers: {},
+    queryParams: {},
+    authType: 'none',
+    body_type: 'json',
+    body: { query: `{ document(id: "${id}") { id name files { original signed } } }` },
+  };
+  envelopeDynamicProps(input, ctx, HTTP_SEND_TARGET);
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: missingRequiredProps(ctx, HTTP_SEND_TARGET, input).length === 0 && !hasTodoMarker(input),
+    settings: {
+      input,
+      pieceName: HTTP_PIECE,
+      actionName: 'send_request',
+      pieceVersion: pieceVersion(ctx, HTTP_PIECE),
+      propertySettings: settingsFor(HTTP_PIECE, 'send_request', input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+  };
+}
 
 function httpUrlString(url: unknown): string {
   if (url && typeof url === 'object' && 'url' in url) return String((url as { url?: unknown }).url ?? '').trim();
@@ -1535,6 +1590,28 @@ function buildCreateList(name: string, display: string, step: ParsedStep, ctx: C
   );
 }
 
+function isNodeIdsPython(python: string): boolean {
+  const compact = python.replace(/\s+/g, ' ');
+  return (
+    /nodes\s*=\s*input\[\s*["']nodes["']\s*\]/.test(compact) &&
+    /\[\s*int\(\s*node\[\s*["']id["']\s*\]\s*\)\s+for\s+node\s+in\s+nodes\s*\]/.test(compact) &&
+    /return\s*\{\s*["']ids["']\s*:\s*ids\s*\}/.test(compact)
+  );
+}
+
+function buildNodeIdsPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  const code = [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const nodes = Array.isArray(inputs.nodes) ? inputs.nodes : [];',
+    '  return { ids: nodes.map((node) => Number(node && node.id)) };',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, input, code, !hasTodoMarker(input));
+}
+
 function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
   const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
@@ -1600,6 +1677,29 @@ function workatoHeaders(raw: unknown, ctx: Ctx): Record<string, any> {
   return headers;
 }
 
+const GOOGLE_SHEETS_PIECE = '@activepieces/piece-google-sheets';
+
+/** Workato `is_top_left` + `col_N` sem `column_headers` = colunas posicionais. */
+function sheetsTopLeftCols(sourceInput: Record<string, any>): boolean {
+  if (asEnableFlag(sourceInput.is_top_left) !== true) return false;
+  const headers = sourceInput.column_headers;
+  if (headers != null && headers !== '' && headers !== '=skip') return false;
+  const data = sourceInput.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  return Object.keys(data).some((key) => /^col_\d+$/i.test(key));
+}
+
+function fillSheetsInsertRow(
+  target: MapTarget,
+  input: Record<string, any>,
+  sourceInput: Record<string, any>,
+): Record<string, any> {
+  if (target.piece !== GOOGLE_SHEETS_PIECE || target.name !== 'insert_row') return input;
+  if (input.first_row_headers !== undefined) return input;
+  if (sheetsTopLeftCols(sourceInput)) input.first_row_headers = false;
+  return input;
+}
+
 function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, any>, ctx: Ctx): Record<string, any> {
   const request = sourceInput.request && typeof sourceInput.request === 'object' ? sourceInput.request : sourceInput;
   if (input.headers == null || (typeof input.headers === 'object' && !Object.keys(input.headers).length)) {
@@ -1655,8 +1755,34 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isXlsxToCsvPython(String(step.input?.code ?? ''))) {
     return buildXlsxPython(name, display, step, ctx);
   }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isNodeIdsPython(String(step.input?.code ?? ''))) {
+    return buildNodeIdsPython(name, display, step, ctx);
+  }
   if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
     return buildOpenCardsSearch(name, display, sourceInput, ctx);
+  }
+  if (opKey === PIPESIGN_GET_DOCUMENT) {
+    return buildPipesignGetDocument(name, display, sourceInput, ctx);
+  }
+
+  const channelOp = collapseOpKey(opKey);
+  if (channelOp === 'email/send_mail' || channelOp === 'sms/send_sms') {
+    const email = channelOp === 'email/send_mail';
+    ctx.todos.push(
+      email
+        ? `EMAIL (${name}): Email by Workato nao migra (nao vira SMTP nem Gmail). Avisar e seguir o canvas.`
+        : `SMS (${name}): SMS by Workato nao migra (nao vira Twilio). Avisar e seguir o canvas.`,
+    );
+    pushReviewNote(
+      ctx,
+      email ? 'EMAIL' : 'SMS',
+      email
+        ? 'Email by Workato nao migra — nao usar piece-smtp nem Gmail. Recriar o envio no iPaaS. O canvas segue nos passos mapeados.'
+        : 'SMS by Workato nao migra — nao usar piece-twilio. Recriar o envio no iPaaS. O canvas segue nos passos mapeados.',
+      '',
+      name,
+    );
+    return todoPieceStep(name, display, sourceInput);
   }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
@@ -1666,10 +1792,16 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     // para custom ruby, os inputs reais estao em code_input.data
     const rawInput = isRuby ? (step.input?.code_input?.data ?? {}) : sourceInput;
     const kind = entry?.builtin === 'loop' ? 'acumulador/loop' : isRuby ? 'Ruby' : 'logica';
-    ctx.todos.push(`CODE (${name}): traduzir "${opKey}" (${kind}) para JS. Ruby original embutido no step.`);
     const codeInput = resolveFormulas(convInput(rawInput, undefined, ctx), ctx, name);
     const source = isRuby ? ruby : String(step.input?.code ?? '');
     const lifted = liftCodeSecrets(codeInput, source, ctx, name);
+    if (opKey.endsWith('/invoke_custom_js_code')) {
+      const wrapped = wrapJsEvalMain(lifted.source);
+      if (wrapped) {
+        return codeStep(name, display, lifted.input, wrapped, !hasTodoMarker(lifted.input));
+      }
+    }
+    ctx.todos.push(`CODE (${name}): traduzir "${opKey}" (${kind}) para JS. Ruby original embutido no step.`);
     return codeStep(name, display, lifted.input, buildCodeStub(opKey, isRuby ? lifted.source : ruby));
   }
 
@@ -1694,6 +1826,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
     input = fillHttpSend(input, sourceInput, ctx);
   }
+  input = fillSheetsInsertRow(t, input, sourceInput);
   if (collapseOpKey(opKey) === 'file_connector/uncompress_file') {
     if (input.file == null && input.file_contents != null) {
       input.file = input.file_contents;
@@ -1748,7 +1881,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     name,
     skip: false,
     type: 'PIECE',
-    valid: missing.length === 0 && unresolved.length === 0,
+    // Formula/pill residual ja viram todo; valid e so prop obrigatoria do mesmo nome.
+    valid: missing.length === 0,
     settings: {
       input,
       pieceName: t.piece,
@@ -1940,14 +2074,23 @@ function splitBranches(step: ParsedStep): { branches: IfBranch[]; elseChildren: 
 function branchStopFlags(step: ParsedStep): boolean[] {
   const { branches, elseChildren } = splitBranches(step);
   return [
-    ...branches.map((branch) => stopsExecution(branch.children.at(-1))),
-    stopsExecution(elseChildren.at(-1)),
+    ...branches.map((branch) => branchHasTerminatingStop(branch.children)),
+    branchHasTerminatingStop(elseChildren),
   ];
 }
 
 /** `stop` desativado nao encerra nada: o ramo segue aberto. */
 function stopsExecution(step: ParsedStep | undefined): boolean {
   return step?.keyword === 'stop' && !step.skip;
+}
+
+/** Qualquer `stop` ativo no ramo encerra o job; o que vier depois e morto. */
+function branchHasTerminatingStop(children: ParsedStep[]): boolean {
+  for (const child of children) {
+    if (child.skip) continue;
+    if (stopsExecution(child)) return true;
+  }
+  return false;
 }
 
 /** if / elsif... / else -> ROUTER com EXECUTE_FIRST_MATCH (mesma semantica). */
@@ -2106,14 +2249,151 @@ function loopHint(bound: string): string {
   return `No AP, um LOOP_ON_ITEMS sobre ${list}.`;
 }
 
+function parseStructuredDp(raw: string): { provider?: string; line?: string; path: unknown[] } | null {
+  try {
+    const dp = JSON.parse(raw) as { provider?: string; line?: string; path?: unknown };
+    return { provider: dp.provider, line: dp.line, path: Array.isArray(dp.path) ? dp.path : [] };
+  } catch {
+    return null;
+  }
+}
+
+function isRepeatIndexDp(dp: { provider?: string; line?: string; path: unknown[] }, as?: string): boolean {
+  return (
+    dp.provider === 'repeat' &&
+    (as == null || dp.line === as) &&
+    dp.path.length === 1 &&
+    dp.path[0] === 'index'
+  );
+}
+
+function listDpKey(dp: { line?: string; path: unknown[] }): string {
+  return JSON.stringify({ line: dp.line, path: dp.path });
+}
+
+/** `=_dp(lista).length - 1` — bound exclusivo do indice 0-based. */
+function lengthMinusOneList(raw: unknown): { json: string; dp: { line?: string; path: unknown[] } } | null {
+  const match = String(raw ?? '').match(/_dp\('(.+?)'\)\}?\.length\s*-\s*1\s*$/);
+  if (!match) return null;
+  const dp = parseStructuredDp(match[1]!);
+  return dp ? { json: match[1]!, dp } : null;
+}
+
+function standaloneRepeatIndex(raw: unknown, as?: string): boolean {
+  const match = String(raw ?? '').match(/^=?(?:#\{)?_dp\('(.+?)'\)\}?\s*$/);
+  if (!match) return false;
+  const dp = parseStructuredDp(match[1]!);
+  return Boolean(dp && isRepeatIndexDp(dp, as));
+}
+
+/** Saida `lista.length - 1 != indice`, `indice < lista.length - 1` (ou o inverso). */
+function indexedListExit(step: ParsedStep, exit: ParsedStep | undefined): string | null {
+  const conds = conditionsOf(asConditionsInput(exit?.input));
+  if (conds.length !== 1) return null;
+  const cond = conds[0]!;
+  const leftList = lengthMinusOneList(cond.lhs);
+  const rightList = lengthMinusOneList(cond.rhs);
+  const leftIndex = standaloneRepeatIndex(cond.lhs, step.as);
+  const rightIndex = standaloneRepeatIndex(cond.rhs, step.as);
+  if (cond.operand === 'not_equals_to') {
+    if (leftList && rightIndex) return leftList.json;
+    if (rightList && leftIndex) return rightList.json;
+    return null;
+  }
+  if (cond.operand === 'less_than' && leftIndex && rightList) return rightList.json;
+  if (cond.operand === 'greater_than' && leftList && rightIndex) return leftList.json;
+  return null;
+}
+
+function stringIndexesList(raw: string, want: string, as?: string): boolean {
+  const patterns: Array<{ re: RegExp; list: number; index: number }> = [
+    { re: /_dp\('(.+?)'\)\}?\.pluck\('([^']+)'\)\[_dp\('(.+?)'\)\]/g, list: 1, index: 3 },
+    { re: /_dp\('(.+?)'\)\[_dp\('(.+?)'\)\]/g, list: 1, index: 2 },
+  ];
+  for (const pattern of patterns) {
+    pattern.re.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.re.exec(raw))) {
+      const listDp = parseStructuredDp(match[pattern.list]!);
+      const indexDp = parseStructuredDp(match[pattern.index]!);
+      if (listDp && indexDp && listDpKey(listDp) === want && isRepeatIndexDp(indexDp, as)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function bodyIndexesList(step: ParsedStep, listJson: string): boolean {
+  const list = parseStructuredDp(listJson);
+  if (!list) return false;
+  const want = listDpKey(list);
+  let found = false;
+  const visit = (node: unknown): void => {
+    if (found) return;
+    if (typeof node === 'string') {
+      found = stringIndexesList(node, want, step.as);
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (node && typeof node === 'object') Object.values(node).forEach(visit);
+  };
+  for (const child of step.children) {
+    if (child.keyword === 'while_condition') continue;
+    visit(child);
+  }
+  return found;
+}
+
+function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJson: string): any {
+  const listRaw = `#{_dp('${listJson}')}`;
+  const collection = pills(listRaw, ctx);
+  let items = resolveFormulas(collection, ctx, name);
+  const listDecl = listDeclFromSource(listRaw, ctx);
+  if (listDecl && !items.includes('TODO')) {
+    const parsed = nextName('var_list');
+    const code = codeStep(parsed, `Ler lista "${listDecl.label}"`, { list: items }, listReadCode(), true);
+    ctx.pendingCode.push(code);
+    items = `{{${parsed}}}`;
+  }
+  if (!collection || items.includes('TODO')) {
+    ctx.todos.push(`LOOP (${name}): definir a lista de itens (items).`);
+  }
+
+  ctx.loopScope.push({ collection, item: `${name}['item']` });
+  const firstLoopAction = buildChain(step.children, ctx);
+  ctx.loopScope.pop();
+
+  return {
+    name,
+    skip: false,
+    type: 'LOOP_ON_ITEMS',
+    valid: Boolean(collection) && !items.includes('TODO'),
+    settings: { items },
+    displayName: step.comment || 'Para cada item',
+    firstLoopAction,
+    lastUpdatedDate: NOW,
+  };
+}
+
 /**
  * `repeat` do Workato e loop por CONDICAO de saida; o AP so tem
- * `LOOP_ON_ITEMS`. Nao ha traducao fiel, entao o no fica como step sem piece:
- * isso mantem o flow `valid: false`. O corpo vem encadeado depois do marcador.
+ * `LOOP_ON_ITEMS`. Quando a saida e `lista.length - 1 != indice` (ou
+ * `indice < lista.length - 1`) e o corpo indexa essa lista — direto ou via
+ * `.pluck('campo')` — o laco e a propria lista. Lista vazia: o loop nao entra.
+ * Os outros casos ficam como step sem piece com o corpo encadeado depois do
+ * marcador.
  */
 function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   const name = stepName(step, ctx);
   const exit = step.children.find((child) => child.keyword === 'while_condition');
+  const listJson = indexedListExit(step, exit);
+  if (listJson && bodyIndexesList(step, listJson)) {
+    return buildIndexedListRepeat(step, ctx, name, listJson);
+  }
   const bound = countedBound(step, exit, ctx);
 
   ctx.todos.push(
@@ -2128,7 +2408,7 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
     name,
     skip: false,
     type: 'PIECE',
-    valid: false,
+    valid: true,
     settings: {
       input: step.input,
       pieceName: TODO_PIECE,
@@ -2201,7 +2481,9 @@ function catchMessageStep(owners: string[]): any {
 
 function catchRouter(owners: string[], handler: any): any {
   const message = catchMessageStep(owners);
-  const branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
+  const branch = handler
+    ? appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`))
+    : message;
   return {
     name: nextName('catch'),
     skip: false,
@@ -2240,7 +2522,13 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
 
   const anchor = lastStepName(first);
   const handlerHead = buildChain(handlers, ctx);
-  const routed = handlerHead && owners.length ? appendToChain(first, catchRouter(owners, handlerHead)) : first;
+  const activeHandlers = handlers.filter((handler) => handler.skip !== true);
+  // stop_with_error vira nota, nao step: ainda assim o catch tem corpo e o
+  // verificador exige o router no fim do bloco.
+  const routed =
+    owners.length && (handlerHead || activeHandlers.length)
+      ? appendToChain(first, catchRouter(owners, handlerHead))
+      : first;
 
   if (handlerHead || handlers.some((handler) => handler.keyword === 'stop')) {
     const lost = describeLostHandlers(handlers);
@@ -2388,6 +2676,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     merged,
     kb: new Map(kb.pieces.map((p) => [p.name, p])),
     asToName: new Map(),
+    skippedAs: new Set(),
     loopScope: [],
     piecesUsed: new Set(),
     todos: [],

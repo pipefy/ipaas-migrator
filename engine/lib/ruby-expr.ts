@@ -102,6 +102,46 @@ const HELPERS: Record<string, string> = {
   flatten: `const flatten = (v) => list(v).flat(Infinity);`,
   len: `const len = (v) => (Array.isArray(v) || typeof v === 'string' ? v.length : blank(v) ? 0 : Object.keys(v).length);`,
   add: `const add = (left, right) => (typeof left === 'number' ? left + Number(right) : String(left ?? '') + String(right ?? ''));`,
+  addCal: `const addCal = (v, n, unit) => {
+  const raw = String(v ?? '');
+  const iso = raw.match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[T\\s](\\d{2}):(\\d{2}):(\\d{2}))?/);
+  let y;
+  let m;
+  let day;
+  let hh = 0;
+  let mm = 0;
+  let ss = 0;
+  if (iso) {
+    y = Number(iso[1]);
+    m = Number(iso[2]);
+    day = Number(iso[3]);
+    hh = Number(iso[4] ?? 0);
+    mm = Number(iso[5] ?? 0);
+    ss = Number(iso[6] ?? 0);
+  } else {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return '';
+    y = d.getFullYear();
+    m = d.getMonth() + 1;
+    day = d.getDate();
+    hh = d.getHours();
+    mm = d.getMinutes();
+    ss = d.getSeconds();
+  }
+  const p = (x) => String(x).padStart(2, '0');
+  const amount = Number(n);
+  if (unit === 'days') {
+    const d = new Date(y, m - 1, day + amount, hh, mm, ss);
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  const months = unit === 'years' ? amount * 12 : amount;
+  const zero = y * 12 + (m - 1) + months;
+  y = Math.floor(zero / 12);
+  m = zero - y * 12 + 1;
+  const last = new Date(y, m, 0).getDate();
+  day = Math.min(day, last);
+  return y + '-' + p(m) + '-' + p(day) + 'T' + p(hh) + ':' + p(mm) + ':' + p(ss);
+};`,
   mul: `const mul = (left, right) => Number(left) * Number(right);`,
   toCurrency: `const toCurrency = (value, unit, precision, separator) => {
   const num = Number(value);
@@ -168,7 +208,7 @@ type Token =
   | { kind: 'ident'; value: string }
   | { kind: 'op'; value: string };
 
-const OPERATORS = ['&.', '||', '&&', '<<', '?', ':', '.', ',', '(', ')', '[', ']', '+', '*'];
+const OPERATORS = ['&.', '||', '&&', '<<', '?', ':', '.', ',', '(', ')', '[', ']', '+', '-', '*'];
 
 /** Aspas duplas do Ruby interpolam `#{...}`. Aspas simples não. */
 function scanString(src: string, i: number): { tokens: Token[]; end: number } | null {
@@ -354,6 +394,36 @@ function jsString(value: string): string {
   return JSON.stringify(value);
 }
 
+/** Recusa `%03` e qualquer diretiva fora de `%d %m %Y %y %H %M %S`. */
+function strftimeFormatKnown(fmtJs: string): boolean {
+  let format: string;
+  try {
+    format = JSON.parse(fmtJs);
+  } catch {
+    return false;
+  }
+  if (typeof format !== 'string') return false;
+  for (let i = 0; i < format.length; i++) {
+    if (format[i] !== '%') continue;
+    const token = format.slice(i, i + 2);
+    if (!['%d', '%m', '%Y', '%y', '%H', '%M', '%S'].includes(token)) return false;
+    i++;
+  }
+  return true;
+}
+
+function calendarUnit(name: string): 'days' | 'months' | 'years' | null {
+  if (name === 'day' || name === 'days') return 'days';
+  if (name === 'month' || name === 'months') return 'months';
+  if (name === 'year' || name === 'years') return 'years';
+  return null;
+}
+
+function parseCalDuration(js: string): { unit: string; n: string } | null {
+  const m = js.match(/^__cal\('(\w+)',\s*(.+)\)$/s);
+  return m ? { unit: m[1]!, n: m[2]! } : null;
+}
+
 /** Metodos sem argumento. */
 const NULLARY: Record<string, (target: string, s: State) => string> = {
   to_s: (t, s) => (useHelper(s, 'toS'), `toS(${t})`),
@@ -436,6 +506,7 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
     }
     case 'strftime': {
       if (plain.length !== 1) return null;
+      if (!strftimeFormatKnown(plain[0]!)) return null;
       useHelper(s, 'strftime');
       return `strftime(${target}, ${plain[0]})`;
     }
@@ -636,6 +707,11 @@ function parsePostfix(s: State): string | null {
         target = guard(applied);
         continue;
       }
+      const cal = calendarUnit(name.value);
+      if (cal) {
+        target = `__cal('${cal}', ${target})`;
+        continue;
+      }
       const nullary = NULLARY[name.value];
       if (!nullary) return null;
       target = guard(nullary(target, s));
@@ -685,10 +761,18 @@ function parseAdditive(s: State): string | null {
       left = `add(${left}, ${jsString(token.value)})`;
       continue;
     }
-    if (token?.kind === 'op' && (token.value === '+' || token.value === '<<')) {
+    if (token?.kind === 'op' && (token.value === '+' || token.value === '-' || token.value === '<<')) {
       s.pos++;
       const right = parseMultiplicative(s);
       if (right === null) return null;
+      const dur = parseCalDuration(right);
+      if (dur && token.value !== '<<') {
+        useHelper(s, 'addCal');
+        const n = token.value === '-' ? `-(${dur.n})` : dur.n;
+        left = `addCal(${left}, ${n}, '${dur.unit}')`;
+        continue;
+      }
+      if (token.value === '-') return null;
       // Um helper so: aninhar `String(left)+String(right)` duplica `left` a cada `+`
       // e estoura a memoria numa mensagem longa.
       if (token.value === '<<') useHelper(s, 'append');
