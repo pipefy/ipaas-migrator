@@ -1,6 +1,6 @@
 # Playbook do migrador Workato (cliente, com navegador)
 
-Versão 0.5.10. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
+Versão 0.5.11. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
 
 O arquivo final é um `*.flow.json` (cópia nomeada ao lado de `flow.json`). O agente não publica.
 

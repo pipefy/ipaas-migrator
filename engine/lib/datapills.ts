@@ -26,6 +26,14 @@ const LITERAL_FORMULA = /^=\s*(['"])((?:\\.|(?!\1)[^\\])*)\1\s*$/;
 const SIMPLE_PILL = /^(?:#\{)?_(?:dp)?\('[^']*'\)\}?(?:\[['"]\w+['"]\])*$/;
 
 /**
+ * Formula que e so um indice literal: `_dp(...)[0]`, `#{_dp(...)}[1]['campo']`.
+ * O `[n]` entra na datapill. Nao e Ruby e nao vira step Code.
+ * `}` opcional entre o pill e o indice cobre `#{_dp('...')}[0]`.
+ */
+const INDEX_PILL =
+  /^=?\s*(?:#\{)?_dp\('([^']*)'\)\}?((?:\[\d+\])+)((?:\[['"][^'"]*['"]\])*)\}?\s*$/;
+
+/**
  * Formula Workato (`=...`) que nao e apenas uma data pill. Ex.: `=now + 24.hours`.
  * Nao ha equivalente direto em template AP, entao vira revisao humana.
  */
@@ -35,6 +43,7 @@ export function isRubyExpression(s: string): boolean {
   if (isGraphqlFormula(s)) return false;
   const body = s.slice(1).trim();
   if (SIMPLE_PILL.test(body)) return false;
+  if (INDEX_PILL.test(s.trim())) return false;
   if (parseIncludeFormula(s)) return false;
   const peeled = peelTrailingCaseMethod(s);
   if (peeled) {
@@ -598,6 +607,10 @@ function tidyCatch(text: string): string {
     .join(CATCH_ERROR_TOKEN)
     .split(`${CATCH_TYPE_TOKEN}:${CATCH_ERROR_TOKEN}`)
     .join(CATCH_ERROR_TOKEN)
+    .split(`${CATCH_TYPE_TOKEN} - ${CATCH_ERROR_TOKEN}`)
+    .join(CATCH_ERROR_TOKEN)
+    .split(`${CATCH_TYPE_TOKEN}-${CATCH_ERROR_TOKEN}`)
+    .join(CATCH_ERROR_TOKEN)
     .split(CATCH_TYPE_TOKEN)
     .join('');
 }
@@ -862,6 +875,24 @@ function replaceListIndexAccess(
   return { out, replaced };
 }
 
+/** `_dp(...)[0]` / `#{_dp(...)}[0]['campo']` → indice dentro da datapill. */
+function convertIndexPathFormula(
+  input: string,
+  asToName: StepNameMap,
+  resolveLoopItem?: LoopItemResolver,
+  options?: PillOptions,
+): string | null {
+  const m = input.trim().match(INDEX_PILL);
+  if (!m) return null;
+  const rendered = renderDataPill(m[1]!, asToName, resolveLoopItem, options);
+  if (!rendered) return '';
+  if (!/^\{\{[^{}]+\}\}$/.test(rendered) || rendered.includes('TODO_')) return null;
+  const keys = [...(m[3] ?? '').matchAll(/\[['"]([^'"]*)['"]\]/g)].map((hit) =>
+    formatApSegment(hit[1]!),
+  );
+  return `{{${rendered.slice(2, -2)}${m[2]}${keys.join('')}}}`;
+}
+
 /** `_dp(...)['a']['b']` → `{{step.a.b}}`. */
 function convertHashPathFormula(
   input: string,
@@ -989,6 +1020,8 @@ export function convertPills(
   if (whereList) return tidyJobContext(whereList);
   const hashPath = convertHashPathFormula(input, asToName, resolveLoopItem, options);
   if (hashPath) return tidyJobContext(hashPath);
+  const indexPath = convertIndexPathFormula(input, asToName, resolveLoopItem, options);
+  if (indexPath) return tidyJobContext(indexPath);
 
   let out = input;
   // Formula Ruby (=now + 24.hours): sem equivalente em template AP. Marca de

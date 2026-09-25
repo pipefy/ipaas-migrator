@@ -6,12 +6,21 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.10 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.11 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.11 — 25 set 2026
+
+O tutor não muda. O motor traduz o que a 1.12.3 fechou no migrador oficial.
+
+- Índice de lista (`pill[0]`, `pill[0]['campo']`) fica na datapill. Não vira Code JS.
+- IFs irmãos viram um router que entra em todos os que casam. if / elsif / else entra só no primeiro.
+- Catch que só para o job com erro: a continuação fica no Success do passo e o erro no Failure (`failFlow`). Catch que atualiza card, manda e-mail ou avisa no Slack continua no router do fim.
+- `migrador-workato-cliente-navegador-0.5.11.tgz`
 
 ## 0.5.10 — 25 set 2026
 

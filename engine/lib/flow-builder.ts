@@ -180,6 +180,8 @@ const ERR = () => ({
   continueOnFailure: { value: false },
 });
 
+const FLOW_HELPER_PIECE = '@activepieces/piece-flow-helper';
+
 function isFallibleStep(step: any): boolean {
   return step?.type === 'PIECE' || step?.type === 'CODE';
 }
@@ -559,6 +561,17 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
   const steps: any[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i]!;
+    if (isMergeableSiblingIf(child)) {
+      let end = i + 1;
+      while (end < children.length && isMergeableSiblingIf(children[end]!)) end++;
+      if (end > i + 1) {
+        const mark = ctx.pendingCode.length;
+        const rawBuilt = buildSiblingRouter(children.slice(i, end), ctx);
+        steps.push(prependPendingCode(rawBuilt, ctx, mark));
+        i = end - 1;
+        continue;
+      }
+    }
     const mark = ctx.pendingCode.length;
     const rawBuilt = buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
@@ -2093,6 +2106,68 @@ function branchHasTerminatingStop(children: ParsedStep[]): boolean {
   return false;
 }
 
+/**
+ * IF irmao: sem elsif/else e sem stop. Dois ou mais seguidos viram um router
+ * so, EXECUTE_ALL_MATCH. if/elsif/else e if com stop continuam separados.
+ */
+function isMergeableSiblingIf(step: ParsedStep): boolean {
+  if (step.keyword !== 'if' || step.skip) return false;
+  if (
+    step.children.some(
+      (child) => child.keyword === 'elsif' || child.keyword === 'elseif' || child.keyword === 'else',
+    )
+  ) {
+    return false;
+  }
+  return !branchHasTerminatingStop(step.children);
+}
+
+/** IFs irmaos -> um ROUTER com EXECUTE_ALL_MATCH. O passo seguinte fica no nextAction. */
+function buildSiblingRouter(steps: ParsedStep[], ctx: Ctx): any {
+  const name = steps[0]!.apName || nextName('router');
+  const parts = steps.map((step) =>
+    withOverlay(ctx, variableOverlay(step, ctx), () => ({
+      built: buildConditionGroups(asConditionsInput(step.input), ctx),
+      children: buildChain(step.children, ctx) ?? null,
+      comment: step.comment,
+    })),
+  );
+  const groups = resolveFormulas(
+    parts.map((part) => part.built.groups),
+    ctx,
+    name,
+  ) as any[][][];
+  const review = parts.some((part) => part.built.review) || hasTodoMarker(groups);
+
+  if (review) {
+    ctx.todos.push(`ROUTER (${name}): revisar condicoes dos ifs irmaos.`);
+  }
+  ctx.todos.push(
+    `ROUTER (${name}): ${steps.length} ifs irmaos viraram ramos do mesmo router (all match).`,
+  );
+
+  return {
+    name,
+    skip: false,
+    type: 'ROUTER',
+    valid: !review,
+    settings: {
+      branches: [
+        ...parts.map((part, index) => ({
+          branchName: part.comment || `Se verdadeiro (${index + 1})`,
+          branchType: 'CONDITION' as const,
+          conditions: groups[index],
+        })),
+        { branchName: 'Senao', branchType: 'FALLBACK' as const },
+      ],
+      executionType: 'EXECUTE_ALL_MATCH',
+    },
+    children: [...parts.map((part) => part.children), null],
+    displayName: 'Condicao',
+    lastUpdatedDate: NOW,
+  };
+}
+
 /** if / elsif... / else -> ROUTER com EXECUTE_FIRST_MATCH (mesma semantica). */
 function buildRouter(step: ParsedStep, ctx: Ctx): any {
   const name = step.apName || nextName('router');
@@ -2508,21 +2583,100 @@ function catchRouter(owners: string[], handler: any): any {
   };
 }
 
+function isStopOnlyCatch(handlers: ParsedStep[]): boolean {
+  return (
+    handlers.length === 1 &&
+    handlers[0]!.keyword === 'stop' &&
+    String(handlers[0]!.input?.stop_with_error) === 'true'
+  );
+}
+
+/** Mensagem do failFlow. Pill do catch vira o erro deste step. */
+function bindFailMessage(reason: string, stepName: string): string {
+  const pill = `{{${stepName}['error']['message']}}`;
+  if (!reason.includes(CATCH_ERROR_TOKEN)) return reason.trim() || pill;
+  return reason.split(CATCH_ERROR_TOKEN).join(pill);
+}
+
+function failFlowStep(message: string, ctx: Ctx): any {
+  const name = nextName('fail');
+  const input = { message };
+  ctx.piecesUsed.add(FLOW_HELPER_PIECE);
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: true,
+    settings: {
+      input,
+      pieceName: FLOW_HELPER_PIECE,
+      actionName: 'failFlow',
+      pieceVersion: pieceVersion(ctx, FLOW_HELPER_PIECE),
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: 'Falhou',
+    lastUpdatedDate: NOW,
+  };
+}
+
+/**
+ * Catch que só para o job. Cada Piece/Code do bloco ganha os ramos do step:
+ * Success segue a cadeia, Failure chama failFlow. `nextAction` do passo fica
+ * vazio — o motor executa o ramo e depois ainda anda o `nextAction`.
+ * Router e loop não têm ramo; os passos de dentro sim. Passo já reivindicado
+ * por outro catch (router no fim, ou este mesmo tratamento) fica como está.
+ */
+function rewireStopOnFailure(step: any, reason: string, ctx: Ctx): any {
+  if (!step) return step;
+  if (step.type === 'ROUTER' && step.displayName === CATCH_ROUTER_LABEL) {
+    step.nextAction = rewireStopOnFailure(step.nextAction, reason, ctx);
+    return step;
+  }
+  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
+    step.nextAction = rewireStopOnFailure(step.nextAction, reason, ctx);
+    return step;
+  }
+  if (step.firstLoopAction) step.firstLoopAction = rewireStopOnFailure(step.firstLoopAction, reason, ctx);
+  if (Array.isArray(step.children)) {
+    step.children = step.children.map((child: any) => rewireStopOnFailure(child, reason, ctx));
+  }
+  const rest = step.nextAction ? rewireStopOnFailure(step.nextAction, reason, ctx) : undefined;
+  if (!isFallibleStep(step)) {
+    step.nextAction = rest;
+    return step;
+  }
+  step.nextAction = undefined;
+  if (step.settings?.errorHandlingOptions) {
+    step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+  }
+  const failure = failFlowStep(bindFailMessage(reason, step.name), ctx);
+  step.continueOnFailureBranches = rest ? { onSuccess: rest, onFailure: failure } : { onFailure: failure };
+  claimedByCatch.add(step);
+  return step;
+}
+
 function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   const catchNode = step.children.find((c) => c.keyword === 'catch');
   const handlers = (catchNode?.children ?? []).filter((c) => c.keyword !== 'catch');
+  const activeHandlers = handlers.filter((handler) => handler.skip !== true);
 
   const first = buildChain(
     step.children.filter((c) => c.keyword !== 'catch'),
     ctx,
   );
+
+  if (isStopOnlyCatch(activeHandlers)) {
+    const reason = pills(String(activeHandlers[0]!.input?.stop_reason ?? ''), ctx);
+    return rewireStopOnFailure(first, reason, ctx) ?? null;
+  }
+
   const owners = claimCatchBody(first);
 
   if (!handlers.length) return first ?? null;
 
   const anchor = lastStepName(first);
   const handlerHead = buildChain(handlers, ctx);
-  const activeHandlers = handlers.filter((handler) => handler.skip !== true);
   // stop_with_error vira nota, nao step: ainda assim o catch tem corpo e o
   // verificador exige o router no fim do bloco.
   const routed =

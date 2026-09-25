@@ -38,6 +38,7 @@ export const NO_AUTH_PIECES = new Set([
   '@activepieces/piece-file-helper',
   '@activepieces/piece-math-helper',
   '@activepieces/piece-code',
+  '@activepieces/piece-flow-helper',
 ]);
 
 const CHILD_KEYS = ['nextAction', 'firstLoopAction', 'onFailureAction'];
@@ -72,6 +73,11 @@ export function walkPieceSteps(node, acc = []) {
   if (!node || typeof node !== 'object') return acc;
   if (node.type === 'PIECE' || node.type === 'PIECE_TRIGGER') acc.push(node);
   for (const k of CHILD_KEYS) if (node[k]) walkPieceSteps(node[k], acc);
+  const branches = node.continueOnFailureBranches;
+  if (branches) {
+    walkPieceSteps(branches.onSuccess, acc);
+    walkPieceSteps(branches.onFailure, acc);
+  }
   if (Array.isArray(node.children)) {
     for (const child of node.children) walkPieceSteps(child, acc);
   }
