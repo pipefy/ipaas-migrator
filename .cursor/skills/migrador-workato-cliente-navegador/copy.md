@@ -1,12 +1,10 @@
 # Copy do tutor (pt / en / es)
 
-Use o bloco do idioma gravado na sessão. Nomes de UI (`Integrations`, `Import`) ficam em inglês, como na tela.
+Use o bloco do idioma da sessão. Nomes de botão (`Integrations`, `Import`) ficam como na tela. Uma pergunta por bloco. Sem peça, datapill, schema, auth ou destino interno.
 
 ## Idioma (antes de escolher)
 
 ```
-Which language for this session?
-¿En qué idioma seguimos?
 Em qual idioma seguimos?
 
 1. Português
@@ -19,140 +17,106 @@ Em qual idioma seguimos?
 ### fonte
 
 ```
-Para traduzir, preciso do JSON da receita Workato (objeto com o campo `code`).
-Você escolhe uma fonte.
+Como você quer trazer a receita?
 
-1. Chave do API client Workato
-   Token Bearer do seu workspace (Workspace admin → API clients),
-   com leitura de recipes. Vai no `.env` (`WORKATO_API_KEY`).
-   Eu abro o arquivo no editor. Você cola a chave lá. Não cole a chave neste chat.
+1. Chave do Workato — eu abro um arquivo, você cola a chave lá. Não cole neste chat.
+2. Arquivo da receita — me passe o caminho no disco, ou arraste o arquivo.
 
-2. Arquivo JSON da receita
-   O export ou a resposta de GET /api/recipes/:id.
-   Pode mandar um ou vários `.json`.
-
-Qual você quer usar agora: chave ou arquivo?
+Chave ou arquivo?
 ```
 
 ### env
 
 ```
-Abri o `.env` no editor de texto (<editor>).
+Abri o arquivo da chave no editor (<editor>).
 
-Cole o token em WORKATO_API_KEY=  (sem aspas, sem a palavra Bearer).
-Salve e feche.
+Cole depois de WORKATO_API_KEY=  (sem aspas).
+Salve e volte dizendo: chave pronta
 
-Workspace na Europa: descomente
-WORKATO_API_BASE=https://app.eu.workato.com/api
-
-Quando terminar, volte e diga: chave pronta
+Conta na Europa: descomente a linha WORKATO_API_BASE da Europa.
 ```
 
 ### arquivo
 
 ```
-Pode enviar os arquivos da receita.
+Me passe o caminho do arquivo da receita, ou arraste o arquivo aqui.
 
-Arraste os `.json` para este chat, ou me passe o caminho no disco.
-Aceito um arquivo ou vários.
-
-Se for .zip do Workato, extraia e mande o .json que tem o campo `code`
-(não o connection.json).
+Se vier um .zip, use o arquivo da receita, não o das conexões.
 ```
 
 ### importar
 
 ```
-como importar o flow.json
-
-(1) Abra no Pipefy o pipe onde a automação deve viver (você precisa ser admin; Integrações na org).
-(2) Clique em Integrations.
-(3) Em Build a Flow, clique em Import e escolha o flow.json.
-Revise o canvas e as conexões. Não publique até conferir.
+No Pipefy, abra o pipe da automação (você precisa ser admin).
+Integrations → Import → o arquivo desta receita.
+Confira e teste antes de publicar.
 ```
 
 ### navegador
 
 ```
-O próximo passo é no Pipefy: abrir o pipe, Integrations, Import do flow.json.
+O próximo passo é importar no Pipefy.
 
-Posso abrir o navegador deste agente e ir com você?
-Você entra com a sua conta nessa janela (SSO/2FA é com você).
-Eu não publico o flow e não peço senha neste chat.
+Posso abrir o navegador e ir com você? O login é seu. Eu não publico.
 
-Se preferir, seguimos só daqui: eu mando o print e você clica.
+Se preferir, eu mando o print e você clica.
 
-Pode abrir o navegador?
+Pode abrir?
 ```
 
 ### conexoes
 
 ```
-No flow, ligue as conexões no painel.
+No painel da automação, ligue as contas (Pipefy, Slack, planilha).
+A chave da conta fica no painel, não neste chat.
 
-Pipefy: Service Account (Client ID e Client Secret) no painel, não neste chat.
-Outros (Slack, Google Sheets): Connect e complete o OAuth na janela.
-HTTP Request: autentique de novo neste flow (não reutiliza).
-
-Se a conexão iPaaS já existe, pode colar o id em vez de clicar Connect:
+Se a conexão já existe, cole:
 
 Conexão: <id>
 
-Quando terminar, diga: conexões prontas
+Quando terminar: conexões prontas
 ```
 
 ### conexoes-dadas
 
 ```
-Liguei as conexões que você passou no flow.json:
+Incluí o ID da conexão no rascunho. Confirme essa conexão no Pipefy antes de testar.
 
-Conexão: <id>
+Importe no mesmo pipe dessa conexão.
+O que faltou, ligue no painel.
 
-Importe no mesmo pipe onde essa conexão já existe.
-O que não veio no prompt ainda precisa do painel (Connect / Service Account).
-HTTP Request autentica de novo neste flow.
-
-Quando terminar, diga: conexões prontas
+Quando terminar: conexões prontas
 ```
 
 ### teste
 
 ```
-Teste o gatilho com um evento de verdade no pipe (criar ou mover card, mudar campo).
-Sem isso o teste não carrega os dados.
-Não publique até conferir.
+Faça um teste de verdade: crie ou mova um card, ou mude um campo.
+Não publique antes de conferir.
 ```
 
 ### handoff-import
 
 ```
-Clique em Import e escolha o arquivo .flow.json desta receita.
-Quando o canvas abrir, volte aqui. Eu confirmo o título antes de seguir.
+Clique em Import e escolha o arquivo desta receita.
+Quando a tela abrir, volte aqui.
 ```
 
 ### mcp-pipefy
 
 ```
-Você já entrou no Pipefy nesta janela. Dá para ligar o MCP Pipefy neste agente.
+Você já entrou no Pipefy. Posso consultar seus pipes e conexões daqui, para conferir o destino sem você procurar na tela.
 
-O que é: uma ponte entre o chat e a sua conta Pipefy (os pipes e as conexões que você já vê no app).
+Não publico e não peço senha. Se não quiser, seguimos pelo print.
 
-Como ajuda nesta migração:
-- Confiro o pipe de destino e as fases reais (ex. se a receita move para BackLog e este pipe só tem Inbox/Doing/Done).
-- Vejo se já existe conexão / Service Account utilizável, em vez de te mandar criar outra.
-- Depois do Import, confirmo o que entrou no pipe sem você caçar o flow sozinho.
-
-Não publica o flow. Não pede senha neste chat (o login é o que você já fez no Chrome). Sem isso, seguimos no clique e no print.
-
-Pode ligar o MCP Pipefy?
+Pode ligar?
 ```
 
 ### sa-24h
 
 ```
-O aviso de 24 horas na tela vale para o token gerado naquele momento.
-A Service Account continua existindo depois disso. Gere outro token se o atual expirou.
-Não é o prazo da conta.
+As 24 horas valem para a chave gerada agora, não para a conta.
+Se expirou, gere outra.
 ```
 
 ## en
@@ -160,140 +124,106 @@ Não é o prazo da conta.
 ### fonte
 
 ```
-To translate, I need the Workato recipe JSON (the object with a `code` field).
-Pick one source.
+How should I get the recipe?
 
-1. Workato API client key
-   Bearer token from your workspace (Workspace admin → API clients),
-   with recipe read access. It goes in `.env` (`WORKATO_API_KEY`).
-   I open the file in your editor. Paste the key there. Do not paste it in this chat.
+1. Workato key — I open a file, you paste the key there. Do not paste it in this chat.
+2. Recipe file — give me the path, or drop the file here.
 
-2. Recipe JSON file
-   The export or the GET /api/recipes/:id payload.
-   You can send one file or several.
-
-Which do you want to use: key or file?
+Key or file?
 ```
 
 ### env
 
 ```
-I opened `.env` in your text editor (<editor>).
+I opened the key file in your editor (<editor>).
 
-Paste the token into WORKATO_API_KEY=  (no quotes, no Bearer prefix).
-Save and close.
+Paste it after WORKATO_API_KEY=  (no quotes).
+Save and come back: key ready
 
-EU workspace: uncomment
-WORKATO_API_BASE=https://app.eu.workato.com/api
-
-When you are done, come back and say: key ready
+EU account: uncomment the Europe WORKATO_API_BASE line.
 ```
 
 ### arquivo
 
 ```
-You can send the recipe files now.
+Give me the path to the recipe file, or drop the file here.
 
-Drop the `.json` files into this chat, or give me the path on disk.
-One file or several is fine.
-
-If you have a Workato .zip, extract it and send the .json that has `code`
-(not connection.json).
+If you have a .zip, use the recipe file, not the connections file.
 ```
 
 ### importar
 
 ```
-how to import flow.json
-
-(1) In Pipefy, open the pipe for this automation (you must be an admin; Integrations on the org).
-(2) Click Integrations.
-(3) Under Build a Flow, click Import and choose flow.json.
-Review the canvas and connections. Do not publish until you have tested.
+In Pipefy, open the pipe for this automation (you need to be an admin).
+Integrations → Import → this recipe's file.
+Check it and test before you publish.
 ```
 
 ### navegador
 
 ```
-The next step is in Pipefy: open the pipe, Integrations, Import of flow.json.
+Next step is to import in Pipefy.
 
-Can I open this agent's browser and walk through it with you?
-You sign in in that window (SSO/2FA is on you).
-I will not publish the flow and I will not ask for a password in this chat.
+Can I open the browser and go with you? You sign in. I will not publish.
 
-If you prefer, we stay here: I send the screenshot and you click.
+If you prefer, I send the screenshot and you click.
 
-Open the browser?
+Open it?
 ```
 
 ### conexoes
 
 ```
-In the flow, connect the accounts in the panel.
+In the automation panel, connect the accounts (Pipefy, Slack, spreadsheet).
+The account key stays in the panel, not in this chat.
 
-Pipefy: Service Account (Client ID and Client Secret) in the panel, not in this chat.
-Others (Slack, Google Sheets): Connect and finish OAuth in the window.
-HTTP Request: authenticate again in this flow (it does not reuse credentials).
-
-If the iPaaS connection already exists, paste the id instead of clicking Connect:
+If the connection already exists, paste:
 
 Connection: <id>
 
-When you are done, say: connections ready
+When you are done: connections ready
 ```
 
 ### conexoes-dadas
 
 ```
-I wired the connections you gave into flow.json:
+I added the connection ID to the draft. Confirm that connection in Pipefy before you test.
 
-Connection: <id>
+Import into the same pipe as that connection.
+Connect anything missing in the panel.
 
-Import into the same pipe where that connection already exists.
-Anything missing from the prompt still needs the panel (Connect / Service Account).
-HTTP Request authenticates again in this flow.
-
-When you are done, say: connections ready
+When you are done: connections ready
 ```
 
 ### teste
 
 ```
-Test the trigger with a real event in the pipe (create or move a card, change a field).
-Without that, the test does not load card data.
+Run a real test: create or move a card, or change a field.
 Do not publish until you have checked.
 ```
 
 ### handoff-import
 
 ```
-Click Import and pick the .flow.json for this recipe.
-When the canvas opens, come back here. I will confirm the title before we continue.
+Click Import and pick this recipe's file.
+When the screen opens, come back here.
 ```
 
 ### mcp-pipefy
 
 ```
-You already signed into Pipefy in this window. We can turn on Pipefy MCP in this agent.
+You are already in Pipefy. I can look up your pipes and connections from here, so we can check the destination without you hunting on screen.
 
-What it is: a bridge between this chat and your Pipefy account (the pipes and connections you already see in the app).
+I will not publish and I will not ask for a password. If you skip this, we stay with the screenshot.
 
-How it helps this migration:
-- I check the destination pipe and the real phases (for example if the recipe moves a card to BackLog and this pipe only has Inbox/Doing/Done).
-- I see whether a connection / Service Account already exists, instead of asking you to create another one.
-- After Import, I confirm what landed in the pipe so you do not have to hunt for the flow.
-
-It does not publish the flow. It does not ask for a password in this chat (sign-in is what you already did in Chrome). Without it, we stay on clicks and the screenshot.
-
-Turn on Pipefy MCP?
+Turn it on?
 ```
 
 ### sa-24h
 
 ```
-The 24-hour notice on screen is the lifetime of the token generated at that moment.
-The Service Account itself remains. Generate a new token if this one expired.
-It is not the lifetime of the account.
+The 24 hours apply to the key generated just now, not to the account.
+If it expired, generate another one.
 ```
 
 ## es
@@ -301,138 +231,104 @@ It is not the lifetime of the account.
 ### fonte
 
 ```
-Para traducir, necesito el JSON de la receta Workato (el objeto con el campo `code`).
-Elige una fuente.
+¿Cómo traemos la receta?
 
-1. Clave del API client de Workato
-   Token Bearer de tu workspace (Workspace admin → API clients),
-   con lectura de recipes. Va en `.env` (`WORKATO_API_KEY`).
-   Abro el archivo en el editor. Pegas la clave ahí. No la pegues en este chat.
+1. Clave de Workato — abro un archivo, pegas la clave ahí. No la pegues en este chat.
+2. Archivo de la receta — pásame la ruta, o arrastra el archivo.
 
-2. Archivo JSON de la receta
-   El export o la respuesta de GET /api/recipes/:id.
-   Puedes enviar uno o varios `.json`.
-
-¿Cuál quieres usar ahora: clave o archivo?
+¿Clave o archivo?
 ```
 
 ### env
 
 ```
-Abrí el `.env` en el editor de texto (<editor>).
+Abrí el archivo de la clave en el editor (<editor>).
 
-Pega el token en WORKATO_API_KEY=  (sin comillas, sin la palabra Bearer).
-Guarda y cierra.
+Pégala después de WORKATO_API_KEY=  (sin comillas).
+Guarda y vuelve: clave lista
 
-Workspace en Europa: descomenta
-WORKATO_API_BASE=https://app.eu.workato.com/api
-
-Cuando termines, vuelve y di: clave lista
+Cuenta en Europa: descomenta la línea WORKATO_API_BASE de Europa.
 ```
 
 ### arquivo
 
 ```
-Puedes enviar los archivos de la receta.
+Pásame la ruta del archivo de la receta, o arrástralo aquí.
 
-Arrastra los `.json` a este chat, o pásame la ruta en disco.
-Acepto uno o varios.
-
-Si es un .zip de Workato, extrae y envía el .json que tiene el campo `code`
-(no el connection.json).
+Si viene un .zip, usa el archivo de la receta, no el de las conexiones.
 ```
 
 ### importar
 
 ```
-cómo importar flow.json
-
-(1) En Pipefy, abre el pipe de la automatización (debes ser admin; Integrations en la org).
-(2) Haz clic en Integrations.
-(3) En Build a Flow, haz clic en Import y elige flow.json.
-Revisa el canvas y las conexiones. No publiques hasta probar.
+En Pipefy, abre el pipe de la automatización (tienes que ser admin).
+Integrations → Import → el archivo de esta receta.
+Revisa y prueba antes de publicar.
 ```
 
 ### navegador
 
 ```
-El siguiente paso es en Pipefy: abrir el pipe, Integrations, Import de flow.json.
+El siguiente paso es importar en Pipefy.
 
-¿Puedo abrir el navegador de este agente e ir contigo?
-Entras con tu cuenta en esa ventana (SSO/2FA es contigo).
-No publico el flow y no pido contraseña en este chat.
+¿Puedo abrir el navegador e ir contigo? El acceso es tuyo. No publico.
 
-Si prefieres, seguimos aquí: te mando la captura y tú haces clic.
+Si prefieres, te mando la captura y tú haces clic.
 
-¿Abro el navegador?
+¿Lo abro?
 ```
 
 ### conexoes
 
 ```
-En el flow, conecta las cuentas en el panel.
+En el panel de la automatización, conecta las cuentas (Pipefy, Slack, hoja de cálculo).
+La clave de la cuenta queda en el panel, no en este chat.
 
-Pipefy: Service Account (Client ID y Client Secret) en el panel, no en este chat.
-Otras (Slack, Google Sheets): Connect y completa el OAuth en la ventana.
-HTTP Request: autentica de nuevo en este flow (no reutiliza).
-
-Si la conexión iPaaS ya existe, pega el id en vez de hacer clic en Connect:
+Si la conexión ya existe, pega:
 
 Conexión: <id>
 
-Cuando termines, di: conexiones listas
+Cuando termines: conexiones listas
 ```
 
 ### conexoes-dadas
 
 ```
-Enlacé en flow.json las conexiones que pasaste:
+Incluí el ID de la conexión en el borrador. Confirma esa conexión en Pipefy antes de probar.
 
-Conexión: <id>
+Importa en el mismo pipe de esa conexión.
+Lo que falte, conéctalo en el panel.
 
-Importa en el mismo pipe donde esa conexión ya existe.
-Lo que no vino en el prompt sigue en el panel (Connect / Service Account).
-HTTP Request autentica de nuevo en este flow.
-
-Cuando termines, di: conexiones listas
+Cuando termines: conexiones listas
 ```
 
 ### teste
 
 ```
-Prueba el disparador con un evento real en el pipe (crear o mover card, cambiar un campo).
-Sin eso, la prueba no carga los datos.
-No publiques hasta revisar.
+Haz una prueba de verdad: crea o mueve un card, o cambia un campo.
+No publiques antes de revisar.
 ```
 
 ### handoff-import
 
 ```
-Haz clic en Import y elige el .flow.json de esta receta.
-Cuando abra el canvas, vuelve aquí. Confirmo el título antes de seguir.
+Haz clic en Import y elige el archivo de esta receta.
+Cuando se abra la pantalla, vuelve aquí.
 ```
 
 ### mcp-pipefy
 
 ```
-Ya entraste en Pipefy en esta ventana. Podemos activar el MCP de Pipefy en este agente.
+Ya entraste en Pipefy. Puedo consultar tus pipes y conexiones desde aquí, para revisar el destino sin que lo busques en la pantalla.
 
-Qué es: un puente entre el chat y tu cuenta de Pipefy (los pipes y las conexiones que ya ves en la app).
+No publico y no pido contraseña. Si no quieres, seguimos con la captura.
 
-Cómo ayuda en esta migración:
-- Reviso el pipe de destino y las fases reales (por ejemplo si la receta mueve a BackLog y este pipe solo tiene Inbox/Doing/Done).
-- Veo si ya existe una conexión / Service Account usable, en vez de pedirte crear otra.
-- Después del Import, confirmo lo que quedó en el pipe sin que busques el flow a solas.
-
-No publica el flow. No pide contraseña en este chat (el login es el que ya hiciste en Chrome). Sin esto, seguimos con clics y la captura.
-
-¿Activo el MCP de Pipefy?
+¿Lo activo?
 ```
 
 ### sa-24h
 
 ```
-El aviso de 24 horas en pantalla vale para el token generado en ese momento.
-La Service Account sigue existiendo. Genera otro token si el actual expiró.
-No es el plazo de la cuenta.
+Las 24 horas valen para la clave generada ahora, no para la cuenta.
+Si expiró, genera otra.
 ```

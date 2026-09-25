@@ -4,7 +4,7 @@
 //   node scripts/transpilar-receita.mjs --recipe /tmp/card.recipe.json --out /tmp/transpilar/card
 //   [--connection-ids id,id] [--connections-json c.json] [--hints-text 'Conexão: id']
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,12 @@ import { applyBindings, hintsFromArgv, planBindings } from './lib/bind-connectio
 import { writeMermaidPng } from './lib/mermaid-png.mjs';
 import { slugify } from './lib/slug.mjs';
 
+function configuracaoDe(bound) {
+  if (!bound?.ready || bound.missing?.length) return 'incompleta';
+  if (bound.bindings?.some((b) => b.synthetic)) return 'id_informado';
+  return 'ligada';
+}
+
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(name);
   if (i === -1 || !process.argv[i + 1]) return fallback;
@@ -20,20 +26,23 @@ function arg(name, fallback = null) {
 }
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const recipePath = resolve(arg('--recipe') ?? '');
-const outDir = resolve(arg('--out') ?? '');
+const recipeArg = arg('--recipe');
+const outArg = arg('--out');
 const connectionsPath = arg('--connections-json');
 const hints = hintsFromArgv();
 
-if (!recipePath || !outDir) {
+if (!recipeArg || !outArg) {
   console.error('uso: node scripts/transpilar-receita.mjs --recipe <recipe.json> --out <dir> [--connection-ids id,id] [--connections-json <c>]');
   process.exit(2);
 }
 
+const recipePath = resolve(recipeArg);
+const outDir = resolve(outArg);
+
 await main();
 
 async function main() {
-  if (!existsSync(recipePath)) {
+  if (!existsSync(recipePath) || !statSync(recipePath).isFile()) {
     console.log(JSON.stringify({ ok: false, reason: 'recipe_not_found', recipe: recipePath }));
     process.exit(2);
   }
@@ -134,6 +143,7 @@ async function main() {
         piece: b.piece,
         externalId: b.externalId,
         given: b.given,
+        synthetic: Boolean(b.synthetic),
       })),
       missing: plan.missing,
     };
@@ -153,7 +163,7 @@ async function main() {
         id: recipe.id != null ? String(recipe.id) : null,
         arquivo: true,
         importacao: false,
-        configuracao: bound?.missing?.length ? 'incompleta' : bound?.ready ? 'ligada' : 'incompleta',
+        configuracao: configuracaoDe(bound),
         logica: Array.isArray(todos) && todos.length ? 'pendente' : routing.destination === 'manual_revision' ? 'pendente' : 'mapeada',
         teste: false,
         mapped: routing.mapped_operations ?? null,

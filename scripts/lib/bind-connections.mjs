@@ -257,6 +257,17 @@ export function planBindings({
       });
       continue;
     }
+    const accounts = slot.workatoAccounts ?? [];
+    if (slot.kind !== 'pipefy' && accounts.length > 1) {
+      missing.push({
+        label: slot.label,
+        piece: slot.piece,
+        workatoAccounts: accounts,
+        need: accounts.length,
+        reason: 'varias_contas',
+      });
+      continue;
+    }
     const conn = picked[0];
     const stepNames = steps
       .filter((s) => s.settings?.pieceName === slot.piece)
@@ -313,13 +324,19 @@ export function planBindings({
 }
 
 export function applyBindings(flow, bindings) {
-  const byPiece = new Map(bindings.map((b) => [b.piece, b]));
+  const byPiece = new Map();
+  for (const binding of bindings) {
+    const prev = byPiece.get(binding.piece);
+    if (prev) byPiece.set(binding.piece, { ...prev, conflict: true });
+    else byPiece.set(binding.piece, binding);
+  }
   const trigger = flow?.flows?.[0]?.trigger ?? flow?.trigger;
   const applied = [];
   for (const step of walkPieceSteps(trigger)) {
     const piece = step.settings?.pieceName;
     const bind = byPiece.get(piece);
     if (!bind || !needsAuth(piece)) continue;
+    if (bind.conflict || bind.extra?.length) continue;
     if (!step.settings.input || typeof step.settings.input !== 'object') {
       step.settings.input = {};
     }

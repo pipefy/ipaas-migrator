@@ -6,12 +6,24 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.9 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.10 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.10 — 25 set 2026
+
+O tutor fala menos. O diagnóstico deixa de tratar conector Pipefy de outra org como externo.
+
+- Conector Pipefy: nome com `pipefy`, ou o OEM `new_connector_6`. Google Docs, Azure AD, WhatsApp, PDF e Omie não entram.
+- Duas contas da mesma peça (Slack, planilha) não usam a mesma conexão. A configuração fica pendente. Pipefy segue uma service account.
+- Pipe no GraphQL sai de `pipe(id:)` ou `pipe_id`, sem assumir a org 28.
+- Sem argumentos, o transpile pede o uso. ID só digitado não aparece como conexão ligada.
+- A lista de receitas diz quando o teto cortou o resultado.
+- O chat pede o próximo passo em uma ou duas frases. Detalhe técnico só se a pessoa pedir ou se a etapa travar.
+- `migrador-workato-cliente-navegador-0.5.10.tgz`
 
 ## 0.5.9 — 24 set 2026
 

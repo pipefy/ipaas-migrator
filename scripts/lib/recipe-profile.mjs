@@ -3,11 +3,11 @@
 //
 // Observado nos JSONs vindos da API do Workato (nao do export .zip):
 // - `config[].account_id` e o ID numerico da conexao, ou null para built-in.
-// - O conector Pipefy e um connector custom, com duas versoes em uso:
-//   pipefy_connector_186728_1590691380 e new_connector_6_connector_186728_1628717731.
-// - `rest` (HTTP) tem conexao no Workato, mas a piece HTTP do iPaaS nao usa conexao.
+// Conector Pipefy: o nome traz "pipefy", ou e o OEM
+// new_connector_6_connector_186728 (esse nao tem a palavra pipefy).
+// Nao usar _connector_186728_: Google Docs, Azure AD, WhatsApp, PDF e Omie
+// tambem foram publicados nessa conta OEM e nao sao Pipefy.
 
-const PIPEFY_PROVIDER = /_connector_186728_/;
 const HTTP_PROVIDER = 'rest';
 
 const EXTERNAL_LABEL = {
@@ -39,13 +39,17 @@ const TABLE_STEPS = new Set([
   'record_updated',
 ]);
 
-// IDs de pipe da org 28 tem 9 digitos comecando em 30; serve para achar pipe
-// dentro do GraphQL cru de custom_api_call, onde nao existe input.pipe_id.
-const PIPE_ID_IN_TEXT = /\b30\d{7}\b/g;
+// Pipe citado só dentro do GraphQL de custom_api_call, sem input.pipe_id.
+// Aceita pipe(id: N) e "pipe_id": N. Nao assume o prefixo de uma organizacao.
+const PIPE_ID_IN_TEXT = /(?:pipe\(\s*id\s*:\s*"?(\d+)"?|["']pipe_id["']\s*:\s*"?(\d+)"?)/gi;
 
 const MUTATION_IN_GRAPHQL = /mutation|createCard|updateCard|moveCard|updateFieldsValues|deleteCard|createComment/i;
 
-export const isPipefyProvider = (p) => PIPEFY_PROVIDER.test(p ?? '');
+export function isPipefyProvider(p) {
+  const name = String(p ?? '');
+  if (/pipefy/i.test(name)) return true;
+  return name.includes('new_connector_6_connector_186728');
+}
 
 export const IPAAS_PIECE = {
   Slack: '@activepieces/piece-slack',
@@ -164,7 +168,7 @@ export function parseRecipeProfile(json) {
     if (name === 'custom_api_call') {
       customApiCalls++;
       const body = JSON.stringify(input);
-      for (const m of body.matchAll(PIPE_ID_IN_TEXT)) hiddenPipes.add(m[0]);
+      for (const m of body.matchAll(PIPE_ID_IN_TEXT)) hiddenPipes.add(m[1] || m[2]);
       if (MUTATION_IN_GRAPHQL.test(body)) customApiMutates = true;
       return;
     }

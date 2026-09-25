@@ -1,12 +1,12 @@
 # com navegador
 
-Tutor **com navegador** (0.5.9). Datapill Pipefy sai com colchetes (`{{trigger['data']['card']['id']}}`). A chave é `data`. O agente executa a jornada. O Chrome do coding agent só abre se o agente explicar e você disser ok.
+Tutor **com navegador** (0.5.10). Este assistente transforma sua receita Workato em uma automação para importar no Pipefy. O navegador só abre se você disser que pode.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 
 Não é o migrador interno. Não cria card e não publica o flow.
 
-Arquivo gerado não significa flow pronto. Importação, conexões, lógica pendente e teste são quatro coisas diferentes.
+O rascunho foi gerado. Agora importe, confira as conexões e faça um teste.
 
 ## Rápido
 
@@ -35,6 +35,6 @@ O `flow.json` já sai com o auth. Importe no mesmo pipe dessa conexão.
 
 O pipe do Integrations pode ser outro que o pipe cujos cards a receita mexe. Tokens de 24 horas na tela da Service Account são do token gerado, não da conta.
 
-Playbook: [PLAYBOOK-com-navegador.md](PLAYBOOK-com-navegador.md). A variante sem navegador saiu de linha (0.4.3): [README.md](README.md). Histórico: [CHANGELOG.md](CHANGELOG.md).
+Playbook: [PLAYBOOK.md](PLAYBOOK.md). A variante sem navegador saiu de linha (0.4.3). Histórico: [CHANGELOG.md](CHANGELOG.md).
 
 Versão: arquivo `VERSION`.

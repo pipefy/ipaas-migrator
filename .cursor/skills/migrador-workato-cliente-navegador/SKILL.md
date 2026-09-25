@@ -20,15 +20,18 @@ Invocar **autoriza** descompactar o `.tgz`, `npm ci`, `instalar-cliente.mjs --na
 
 ## Tom
 
-Frases curtas. Uma pergunta aberta por vez, e só se for decisão real.
+Fale com quem usa o Pipefy, não com quem mantém o motor. Uma ou duas frases. Uma pergunta por vez, só se for decisão (qual receita, qual pipe, abrir o navegador).
+
+Não abra com kit, peça, datapill, MCP, auth, flow, schema ou destino interno. Diga o que a pessoa faz agora.
 
 - Idioma: inferir do chat (já falou PT → `pt`). Perguntar só se ambíguo.
-- Nunca escrever `outputs/` (não existe). Paths vêm do JSON do transpile (`files.flow` / `files.flowNamed`), conferidos com `ls`.
-- Não anunciar “kit pronto” sem smoke. Não anunciar “flow pronto” só porque o arquivo saiu.
+- Códigos (`manual_revision`, `mapped`, `blocked_reason`, path, id de conexão) só se ela pedir “detalhes” ou se a etapa travou. Aí uma linha do que houve e o próximo passo.
+- Nunca escrever `outputs/` (não existe). O arquivo que você cita é o `files.flowNamed`, conferido com `ls`.
+- Não anunciar “kit pronto” sem smoke. Arquivo gerado não é automação pronta: o próximo passo é importar, conferir conexões e testar.
 
 ## Estado da sessão
 
-Toda mensagem depois do motor começa com:
+Não comece cada mensagem com bloco técnico. Guarde para você:
 
 ```
 receita: <nome> (<id>)
@@ -36,7 +39,7 @@ etapa: <arquivo | importacao | conexoes | teste>
 arquivo: <path absoluto do *.flow.json>
 ```
 
-Trocar de receita só com pedido explícito. Não misturar canvas do flow anterior.
+Se ela pedir detalhes, mostre esse bloco. Trocar de receita só com pedido explícito. Não misturar canvas da automação anterior.
 
 ## Status (nunca misturar)
 
@@ -107,17 +110,21 @@ Se já mandou JSON, ID ou “usa a chave”: não pergunte. Senão bloco `fonte`
 node scripts/cliente-diagnostico.mjs --recipe output/<id>/recipe.json
 ```
 
-Mostre **antes** do Import (modelo; preencha com o JSON, sem inventar):
+Mostre **antes** do Import, em linguagem de quem usa o pipe (preencha com o JSON, sem inventar):
 
 ```
-Recebi <nome>.
-Gatilho: <provider/name ou cron literal, não “a cada dois dias” se a expressão for outra>.
-Pipes que a receita toca: <ids>. Fases citadas: <nomes/ids>.
-Conexões: Pipefy / Slack / …
-O pipe do Integrations (onde o flow mora) pode ser outro que o pipe cujos cards ela mexe.
-Lógica pendente: <N> trechos (TODO / Ruby / CODE), ou nenhuma.
-Vou gerar o rascunho e abrir a importação no pipe que você escolher.
+A receita <nome> usa <Pipefy, Slack, …>.
+Ela começa quando <evento em uma frase>. Lê <pipe ou “não identifiquei o pipe”> e altera <pipe>.
+Confirme em qual pipe a automação deve ficar.
 ```
+
+Se houver revisão: `Há <N> etapas para revisar antes do teste.` Sem revisão, não fale de TODO, Ruby ou CODE.
+
+Se não deu para preparar a importação: `Não consegui preparar esta automação. Revise: <operação e o que fazer>.` O código fica em “detalhes”.
+
+Depois do arquivo: `O rascunho foi gerado. Agora importe, confira as conexões e faça um teste.`
+
+Se o ID da conexão foi só informado: `ID da conexão incluído. Confirme a conexão no Pipefy antes de testar.` Não diga que está ligada.
 
 ```bash
 node scripts/transpilar-receita.mjs \

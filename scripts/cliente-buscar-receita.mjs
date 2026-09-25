@@ -104,12 +104,24 @@ async function workatoGet(base, path, token) {
   const url = `${base.replace(/\/$/, '')}${path}`;
   let lastErr = null;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      lastErr = { status: 0, message: String(err?.message ?? err) };
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      continue;
+    }
     if (res.status === 429 || res.status >= 500) {
       lastErr = { status: res.status };
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : 1500 * (attempt + 1);
+      await new Promise((r) => setTimeout(r, waitMs));
       continue;
     }
     const text = await res.text();
@@ -184,6 +196,7 @@ async function main() {
     const max = Math.min(500, Math.max(1, Number(arg('--max', '300')) || 300));
     let page = Math.max(1, Number(arg('--page', '1')) || 1);
     const recipes = [];
+    let truncated = false;
     while (recipes.length < max) {
       const path = `/recipes?page=${page}&per_page=${perPage}&exclude_code=true`;
       const res = await workatoGet(base, path, token);
@@ -197,14 +210,22 @@ async function main() {
       }
       const batch = unwrapList(res.json);
       if (!batch.length) break;
+      let stoppedEarly = false;
       for (const r of batch) {
         recipes.push(summarizeRecipe(r));
-        if (recipes.length >= max) break;
+        if (recipes.length >= max) {
+          stoppedEarly = true;
+          break;
+        }
+      }
+      if (stoppedEarly) {
+        truncated = true;
+        break;
       }
       if (batch.length < perPage) break;
       page += 1;
     }
-    console.log(JSON.stringify({ ok: true, count: recipes.length, recipes }, null, 2));
+    console.log(JSON.stringify({ ok: true, count: recipes.length, truncated, limit: max, recipes }, null, 2));
     return;
   }
 

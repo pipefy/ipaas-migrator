@@ -1,6 +1,6 @@
 interface:
   display_name: "Migrador Workato (cliente, com navegador)"
-  short_description: "Tutor 0.5.3: smoke, diagnostica, datapills com colchetes, Chrome e MCP Pipefy"
+  short_description: "Tutor 0.5.10: smoke, diagnostica, datapills com colchetes, Chrome e MCP Pipefy"
   default_prompt: "Instale o migrador com navegador e vamos migrar a receita."
 policy:
   allow_implicit_invocation: false
