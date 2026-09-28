@@ -1,6 +1,6 @@
 # com navegador
 
-Tutor **com navegador** (0.5.11). Este assistente transforma sua receita Workato em uma automação para importar no Pipefy. O navegador só abre se você disser que pode.
+Tutor **com navegador** (0.5.12). Este assistente transforma sua receita Workato em uma automação para importar no Pipefy. O navegador só abre se você disser que pode.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 

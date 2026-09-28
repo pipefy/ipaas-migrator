@@ -138,6 +138,8 @@ Confira no disco `files.flowNamed` (ex. `.../alerta-mr-sem-revisores.flow.json`)
 
 Não editar `mappings/`, `kb/`, `engine/`. Não `--force`. Não traduzir Ruby.
 
+Step de planilha declara o pacote `xlsx`. Se o teste disser que o pacote não instalou, use a skill `migrador-workato-sem-dependencia` nesse `*.flow.json` e importe de novo.
+
 ### 5. Navegador e Import
 
 Se ainda não pediu: bloco `navegador`. **Parar.** Pedido uma vez por sessão.

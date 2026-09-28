@@ -1,5 +1,6 @@
-// Python `read_excel` + `to_csv` vira Code JS puro. O XLSX é um zip; o sandbox
-// ST não tem zlib, então o inflate vai no próprio step.
+// Python `read_excel` + `to_csv` vira Code JS com o pacote `xlsx`.
+// `xlsxToCsvPureCode` é o mesmo passo sem npm (zip + inflate no próprio step),
+// para a skill sem-dependencia reescrever quando o sandbox não instala pacote.
 
 function xlsxRuntime(sheetName: string): string {
   const sheet = JSON.stringify(sheetName);
@@ -237,8 +238,49 @@ export const code = async (inputs) => {
 `;
 }
 
-export function xlsxToCsvCode(sheetName: string): string {
+export const XLSX_VERSION = '0.18.5';
+
+export function xlsxPackageJson(): string {
+  return JSON.stringify({ dependencies: { xlsx: XLSX_VERSION } });
+}
+
+/** Leitor sem pacote. A skill sem-dependencia troca o import de `xlsx` por isto. */
+export function xlsxToCsvPureCode(sheetName: string): string {
   return xlsxRuntime(sheetName);
+}
+
+export function xlsxToCsvCode(sheetName: string): string {
+  const sheet = JSON.stringify(sheetName);
+  return `// py_eval/invoke_custom_py_code
+import * as XLSX from 'xlsx';
+
+const sheetName = ${sheet};
+
+export const code = async (inputs) => {
+  const raw = String(inputs.csv || '');
+  const workbook = XLSX.read(raw, { type: 'base64' });
+  const name = sheetName || workbook.SheetNames[0];
+  const sheet = workbook.Sheets[name];
+  if (!sheet) throw new Error('sheet not found: ' + name);
+  return { wd_data: XLSX.utils.sheet_to_csv(sheet) };
+};
+`;
+}
+
+/** Troca o template do motor (import de xlsx, inputs.csv, wd_data) pelo leitor puro. */
+export function rewriteEngineXlsxImport(code: string): string | null {
+  if (!/import \* as XLSX from 'xlsx'/.test(code)) return null;
+  if (!code.includes('XLSX.read') || !code.includes('inputs.csv') || !code.includes('wd_data')) return null;
+  const match = code.match(/const sheetName = ("(?:\\.|[^"\\])*")/);
+  if (!match) return null;
+  let sheet = '';
+  try {
+    sheet = JSON.parse(match[1]!);
+  } catch {
+    return null;
+  }
+  if (typeof sheet !== 'string') return null;
+  return xlsxToCsvPureCode(sheet);
 }
 
 export function xlsxSheetName(python: string): string {

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const SKILL_SEM = 'migrador-workato-cliente';
 const SKILL_NAV = 'migrador-workato-cliente-navegador';
+const SKILL_DEPS = 'migrador-workato-sem-dependencia';
 
 function flag(name) {
   return process.argv.includes(name);
@@ -72,7 +73,7 @@ function openaiYaml(skill) {
       ? '  display_name: "Migrador Workato (cliente, com navegador)"'
       : '  display_name: "Migrador Workato (cliente)"',
     nav
-      ? '  short_description: "Tutor 0.5.11: smoke, versao no GitHub, datapills com colchetes, Chrome e MCP Pipefy"'
+      ? '  short_description: "Tutor 0.5.12: smoke, versao no GitHub, datapills com colchetes, Chrome e MCP Pipefy"'
       : '  short_description: "Tutor: idioma, chave ou JSON, traduz, guia o Import"',
     nav
       ? '  default_prompt: "Instale o migrador com navegador e vamos migrar a receita."'
@@ -99,21 +100,28 @@ function main() {
   const written = [];
   for (const dest of dests(hosts.length ? hosts : ['cursor', 'claude', 'codex'])) {
     const target = join(dest.path, skill);
-    if (dry) {
-      written.push({ host: dest.host, dest: target, action: 'would-copy' });
-      continue;
-    }
-    mkdirSync(dest.path, { recursive: true });
-    rmSync(target, { recursive: true, force: true });
-    cpSync(src, target, { recursive: true });
-    if (dest.host === 'codex' || dest.host === 'agents') {
-      const yaml = join(target, 'agents', 'openai.yaml');
-      if (!existsSync(yaml)) {
-        mkdirSync(dirname(yaml), { recursive: true });
-        writeFileSync(yaml, openaiYaml(skill));
+    if (!dry) {
+      mkdirSync(dest.path, { recursive: true });
+      rmSync(target, { recursive: true, force: true });
+      cpSync(src, target, { recursive: true });
+      if (dest.host === 'codex' || dest.host === 'agents') {
+        const yaml = join(target, 'agents', 'openai.yaml');
+        if (!existsSync(yaml)) {
+          mkdirSync(dirname(yaml), { recursive: true });
+          writeFileSync(yaml, openaiYaml(skill));
+        }
       }
     }
-    written.push({ host: dest.host, dest: target, action: 'copied' });
+    written.push({ host: dest.host, dest: target, action: dry ? 'would-copy' : 'copied' });
+    const depsSrc = join(root, '.cursor', 'skills', SKILL_DEPS);
+    if (existsSync(join(depsSrc, 'SKILL.md'))) {
+      const depsTarget = join(dest.path, SKILL_DEPS);
+      if (!dry) {
+        rmSync(depsTarget, { recursive: true, force: true });
+        cpSync(depsSrc, depsTarget, { recursive: true });
+      }
+      written.push({ host: dest.host, dest: depsTarget, action: dry ? 'would-copy' : 'copied', skill: SKILL_DEPS });
+    }
   }
   console.log(JSON.stringify({ ok: true, root, skill, written }, null, 2));
 }

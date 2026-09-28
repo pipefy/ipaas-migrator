@@ -16,7 +16,7 @@ import { collapseOpKey, lookupMap } from './collapse.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
-import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvCode } from './xlsx-csv.ts';
+import { isXlsxToCsvPython, xlsxPackageJson, xlsxSheetName, xlsxToCsvCode } from './xlsx-csv.ts';
 import { PIPEFY_PIECE_VERSION, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
@@ -982,6 +982,7 @@ function codeStep(
   input: Record<string, any>,
   code: string,
   valid = false,
+  packageJson = '{}',
 ): any {
   return {
     name,
@@ -990,7 +991,7 @@ function codeStep(
     valid,
     settings: {
       input,
-      sourceCode: { code, packageJson: '{}' },
+      sourceCode: { code, packageJson },
       errorHandlingOptions: ERR(),
     },
     displayName,
@@ -1629,7 +1630,7 @@ function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: C
   const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
   const sheet = xlsxSheetName(String(step.input?.code ?? ''));
-  return codeStep(name, display, input, xlsxToCsvCode(sheet), !hasTodoMarker(input));
+  return codeStep(name, display, input, xlsxToCsvCode(sheet), !hasTodoMarker(input), xlsxPackageJson());
 }
 
 function buildOpenCardsSearch(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
