@@ -19,10 +19,10 @@ Em qual idioma seguimos?
 ```
 Como você quer trazer a receita?
 
-1. Chave do Workato — eu abro um arquivo, você cola a chave lá. Não cole neste chat.
-2. Arquivo da receita — me passe o caminho no disco, ou arraste o arquivo.
+1. API do Workato — eu abro um arquivo, você cola a chave lá. Não cole neste chat.
+2. JSON da receita — me passe o caminho no disco, ou arraste o arquivo.
 
-Chave ou arquivo?
+API ou JSON?
 ```
 
 ### env
@@ -82,10 +82,53 @@ Quando terminar: conexões prontas
 ```
 Incluí o ID da conexão no rascunho. Confirme essa conexão no Pipefy antes de testar.
 
-Importe no mesmo pipe dessa conexão.
+A importação, quando chegar a hora, é no mesmo pipe dessa conexão.
 O que faltou, ligue no painel.
 
 Quando terminar: conexões prontas
+```
+
+### atualizacao-falhou
+
+```
+Não consegui atualizar o migrador.
+
+Posso te guiar para atualizar na mão? Sem isso eu não traduzo a receita.
+
+Pode atualizar na mão?
+```
+
+### atualizacao-manual
+
+```
+Abra https://github.com/pipefy/ipaas-migrator (branch main).
+Baixe o ZIP e substitua esta pasta.
+Mantenha o arquivo .env e a pasta output/.
+Quando terminar, diga: atualizei
+```
+
+### conexao-antes
+
+```
+Antes de importar, vamos deixar a conexão certa.
+
+Se a conta já existe no Pipefy, cole:
+
+Conexão: <id>
+
+Se não existe, eu te guio a criar no painel. A chave fica lá, não neste chat.
+
+Quando a conexão estiver definida: conexão pronta
+```
+
+### downloads
+
+```
+O arquivo da receita está pronto.
+
+Posso copiar só o flow.json para a sua pasta Downloads? O diagrama fica onde está.
+
+Pode copiar?
 ```
 
 ### teste
@@ -126,10 +169,10 @@ Se expirou, gere outra.
 ```
 How should I get the recipe?
 
-1. Workato key — I open a file, you paste the key there. Do not paste it in this chat.
-2. Recipe file — give me the path, or drop the file here.
+1. Workato API — I open a file, you paste the key there. Do not paste it in this chat.
+2. Recipe JSON — give me the path, or drop the file here.
 
-Key or file?
+API or JSON?
 ```
 
 ### env
@@ -189,10 +232,53 @@ When you are done: connections ready
 ```
 I added the connection ID to the draft. Confirm that connection in Pipefy before you test.
 
-Import into the same pipe as that connection.
+When we import, it has to be the same pipe as that connection.
 Connect anything missing in the panel.
 
 When you are done: connections ready
+```
+
+### atualizacao-falhou
+
+```
+I could not update the migrator.
+
+Can I walk you through a manual update? I will not translate the recipe until then.
+
+Update it by hand?
+```
+
+### atualizacao-manual
+
+```
+Open https://github.com/pipefy/ipaas-migrator (branch main).
+Download the ZIP and replace this folder.
+Keep the .env file and the output/ folder.
+When you are done, say: updated
+```
+
+### conexao-antes
+
+```
+Before we import, let's set the right connection.
+
+If the account already exists in Pipefy, paste:
+
+Connection: <id>
+
+If it does not, I will guide you in the panel. The key stays there, not in this chat.
+
+When the connection is set: connection ready
+```
+
+### downloads
+
+```
+The recipe file is ready.
+
+Can I copy only the flow.json into your Downloads folder? The diagram stays where it is.
+
+Copy it?
 ```
 
 ### teste
@@ -233,10 +319,10 @@ If it expired, generate another one.
 ```
 ¿Cómo traemos la receta?
 
-1. Clave de Workato — abro un archivo, pegas la clave ahí. No la pegues en este chat.
-2. Archivo de la receta — pásame la ruta, o arrastra el archivo.
+1. API de Workato — abro un archivo, pegas la clave ahí. No la pegues en este chat.
+2. JSON de la receta — pásame la ruta, o arrastra el archivo.
 
-¿Clave o archivo?
+¿API o JSON?
 ```
 
 ### env
@@ -296,10 +382,53 @@ Cuando termines: conexiones listas
 ```
 Incluí el ID de la conexión en el borrador. Confirma esa conexión en Pipefy antes de probar.
 
-Importa en el mismo pipe de esa conexión.
+Cuando llegue la importación, es en el mismo pipe de esa conexión.
 Lo que falte, conéctalo en el panel.
 
 Cuando termines: conexiones listas
+```
+
+### atualizacao-falhou
+
+```
+No pude actualizar el migrador.
+
+¿Te guío para actualizar a mano? Sin eso no traduzco la receta.
+
+¿Actualizas a mano?
+```
+
+### atualizacao-manual
+
+```
+Abre https://github.com/pipefy/ipaas-migrator (branch main).
+Baja el ZIP y sustituye esta carpeta.
+Conserva el archivo .env y la carpeta output/.
+Cuando termines, di: actualicé
+```
+
+### conexao-antes
+
+```
+Antes de importar, dejemos la conexión correcta.
+
+Si la cuenta ya existe en Pipefy, pega:
+
+Conexión: <id>
+
+Si no existe, te guío en el panel. La clave se queda ahí, no en este chat.
+
+Cuando la conexión esté definida: conexión lista
+```
+
+### downloads
+
+```
+El archivo de la receta está listo.
+
+¿Puedo copiar solo el flow.json a tu carpeta Descargas? El diagrama se queda donde está.
+
+¿Lo copio?
 ```
 
 ### teste

@@ -6,12 +6,27 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.12 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.13 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.13 — 29 set 2026
+
+Antes de traduzir, o kit instala a versão mais nova do GitHub e tenta corrigir falha de rede, dependência ou smoke. Se não conseguir, pergunta e só então guia a atualização manual. Não traduz nessa espera.
+
+- A primeira pergunta da receita é API do Workato ou JSON. O pipe vem depois.
+- A conexão vem antes do convite de importar.
+- Com o `*.flow.json` pronto, o tutor pergunta se pode copiar só esse arquivo para Downloads. O PNG não vai.
+- O pill `cards_count` de `get_cards_by_field` sai como `count` da lista `data.cards`.
+- `phase_id` `"0"` (formulário inicial) vira o id da fase cujo rótulo bate com o dropdown, no mesmo pipe.
+- Campos de fase e do formulário inicial saem com o schema que o canvas desenha.
+- `return_result` e `call_recipe` não geram um passo de código extra.
+- Planilha (xlsx para csv) sai sem pacote npm e sem `Buffer`. `encode_base64` também.
+- `stop` vira o passo Parar (`stopFlow`). O fluxo segue só no caminho que não parou.
+- `migrador-workato-cliente-navegador-0.5.13.tgz`
 
 ## 0.5.12 — 28 set 2026
 

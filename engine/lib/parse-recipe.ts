@@ -1,13 +1,34 @@
 // Parser da receita Workato: arvore `code` -> ParsedRecipe.
 import { basename } from 'node:path';
-import type { FormulaHit, ParsedRecipe, ParsedStep } from './types.ts';
+import type { FormulaHit, ParsedRecipe, ParsedStep, WorkatoInputField } from './types.ts';
 import { analyzeFormula } from './datapills.ts';
 import { parseRubySleep } from './delay.ts';
+import { collectPipePhases } from './phase-id.ts';
 
 function walkStrings(node: any, visit: (s: string) => void): void {
   if (typeof node === 'string') visit(node);
   else if (Array.isArray(node)) node.forEach((n) => walkStrings(n, visit));
   else if (node && typeof node === 'object') Object.values(node).forEach((v) => walkStrings(v, visit));
+}
+
+function inputFieldsOf(raw: unknown): WorkatoInputField[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const fields: WorkatoInputField[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const name = (item as { name?: unknown }).name;
+    if (typeof name !== 'string' || !name) continue;
+    const label = (item as { label?: unknown }).label;
+    const control = (item as { control_type?: unknown }).control_type;
+    const optional = (item as { optional?: unknown }).optional;
+    fields.push({
+      name,
+      ...(typeof label === 'string' ? { label } : {}),
+      ...(typeof control === 'string' ? { controlType: control } : {}),
+      ...(typeof optional === 'boolean' ? { optional } : {}),
+    });
+  }
+  return fields.length ? fields : undefined;
 }
 
 function parseStep(node: any): ParsedStep {
@@ -26,6 +47,11 @@ function parseStep(node: any): ParsedStep {
     filter: node.filter && typeof node.filter === 'object' ? node.filter : undefined,
     source: typeof node.source === 'string' ? node.source : undefined,
     comment: node.comment,
+    phasePickLabel:
+      typeof node.dynamicPickListSelection?.phase_id === 'string'
+        ? node.dynamicPickListSelection.phase_id
+        : undefined,
+    inputFields: inputFieldsOf(node.extended_input_schema),
     children: Array.isArray(node.block) ? node.block.map(parseStep) : [],
   };
   if (provider && name && (step.keyword === 'action' || step.keyword === 'trigger')) {
@@ -96,6 +122,7 @@ export function parseRecipe(json: any, file = 'recipe.json'): ParsedRecipe {
     formulas,
     hasRuby,
     stepCount: acc.steps,
+    phasesByPipe: collectPipePhases(code),
   };
 }
 

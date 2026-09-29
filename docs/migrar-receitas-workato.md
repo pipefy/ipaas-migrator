@@ -40,7 +40,7 @@ Clone ou baixe esse repositório, abra a pasta no Cursor, Claude Code ou Codex e
 Instale o migrador com navegador e vamos migrar a receita.
 ```
 
-No início, o agente compara o `VERSION` da pasta com o do GitHub e avisa se `main` estiver mais novo. A instalação segue mesmo assim. Depois ele instala a skill, pergunta o idioma (português, English, español) e como você vai entregar a receita. O Chrome do agente só abre se você disser ok. Depois do login, explica o MCP Pipefy e pede outro ok. Sem ok, segue no print de Import.
+No início, o agente compara o `VERSION` da pasta com o do GitHub. Se `main` estiver mais novo, instala essa versão e tenta corrigir falha de rede, dependência ou smoke antes de desistir. Se não conseguir, não traduz: pergunta se você quer atualizar na mão. Depois pergunta o idioma e se a receita vem pela API do Workato ou por JSON. O pipe só entra depois disso. A conexão vem antes do convite de importar. Com o `flow.json` pronto, pergunta se pode copiar só esse arquivo para a pasta Downloads (o diagrama não vai). O Chrome do agente só abre se você disser ok. Depois do login, explica o MCP Pipefy e pede outro ok. Sem ok, segue no print de Import.
 
 ## 2. Fonte da receita
 
@@ -70,7 +70,7 @@ Se tiver um `.zip` do Workato, extraia e envie o `.json` da receita, não o `con
 
 Com API, o agente lista `id`, nome e gatilho e pergunta qual migrar. Com arquivo, usa o JSON que você mandou.
 
-Ele mostra o resumo e só traduz quando você confirma.
+Ele mostra o resumo, pergunta o pipe e a conexão, e traduz. Se a atualização do kit falhou, não traduz até você atualizar.
 
 Saída em `output/<id>/`:
 

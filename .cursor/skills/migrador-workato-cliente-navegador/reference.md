@@ -1,8 +1,8 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.5.12**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.5.13**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
-Tutor: instalação + versão no GitHub + smoke → idioma (inferir) → chave ou arquivo → diagnóstico → motor → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → conexões → teste.
+Tutor: instalação + atualização no GitHub + smoke → idioma (inferir) → API ou JSON → pipe → conexão → motor → Downloads do `*.flow.json` (com ok) → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → teste.
 
 ## Pastas
 
@@ -17,19 +17,22 @@ O cliente **não** clona o GitLab do helper. O kit vigente é sempre o `main` de
 
 ## Versão no GitHub
 
-No início, antes de anunciar o kit pronto:
+No início, antes de anunciar o kit pronto e antes de traduzir:
 
 ```bash
-node scripts/cliente-versao.mjs
+node scripts/cliente-atualizar.mjs
 ```
 
-GET público de `https://api.github.com/repos/pipefy/ipaas-migrator/contents/VERSION?ref=main`. Compara com o `VERSION` local (no helper, `CLIENT_VERSION`).
+GET público de `https://api.github.com/repos/pipefy/ipaas-migrator/contents/VERSION?ref=main`. Se `main` estiver mais novo, baixa o zip e troca os arquivos. Preserva `.env` e `output/`. Tenta de novo rede, zip, `npm ci` e smoke. Se o smoke ainda falhar, restaura a pasta.
 
 | Campo | O que fazer |
 | --- | --- |
-| `update: true` | Avisar `local`, `remote` e `repo`. Seguir a jornada. Não baixar nem sobrescrever a pasta. |
-| `update: false` e `ok: true` | GitHub em dia. Seguir. |
-| `ok: false` | Uma linha (rede ou versão ilegível). Seguir. |
+| `translate: false` | Bloco `atualizacao-falhou`. Sem o sim, não traduzir. Sim: bloco `atualizacao-manual`. No retorno (`atualizei`, `updated`, `actualicé`), rodar de novo. |
+| `updated: true` | Uma frase com `remote`. Seguir. Skill e smoke já rodaram. |
+| `action: current` | GitHub em dia. Seguir. |
+| `skipped: origem` | Pasta do helper. Não baixar. Seguir. |
+
+`node scripts/cliente-versao.mjs` só compara. Não instala.
 
 ## Abrir o `.env`
 
@@ -74,6 +77,14 @@ Lê o JSON. Não chama Pipefy. Devolve gatilho, cron literal, pipes tocados, fas
 
 Cite `files.flowNamed` (absoluto). Nunca `outputs/`.
 
+Depois do arquivo, bloco `downloads`. Só com o sim:
+
+```bash
+node scripts/cliente-copiar-flow.mjs --file <path do *.flow.json>
+```
+
+Copia esse arquivo para Downloads. Não apaga o original. Recusa PNG.
+
 Datapills Pipefy no `flow.json` (schema 20): `{{trigger['data']['card']['id']}}`, `{{trigger['data']['new_value']}}`, `{{step_1['data']['card']['current_phase']['id']}}`. Não reescrever para `output` nem para ponto. O iPaaS insere `['output']` no import. Ponto vira `{trigger['output'].data.card.id}` e quebra no GraphQL.
 
 `--connection-ids` / `--hints-text` (`Conexão: <id>`) injeta `{{connections['<id>']}}` no flow. Sem listagem iPaaS, o id vai cru. Importe no pipe onde a conexão existe.
@@ -104,7 +115,7 @@ Esse comando existe só no helper (`workato_migrator_helper`), não no kit publi
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.5.12.tgz
+# dist/migrador-workato-cliente-navegador-0.5.13.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

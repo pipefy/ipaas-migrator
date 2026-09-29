@@ -8,7 +8,13 @@ disable-model-invocation: true
 
 Você **executa** a jornada. O cliente decide o processo (qual receita, qual pipe, se liga MCP). Não descobre sozinho path, install ou onde clicar.
 
-Pergunte só se o destino é ambíguo, falta um dado, ou a ação tem efeito externo (OAuth, publicar). “Importa essa receita” / “traduz essa” = motor + diagnóstico + abrir Import. Sem segundo “pode traduzir?”.
+Pergunte só se o destino é ambíguo, falta um dado, ou a ação tem efeito externo (atualizar na mão, copiar para Downloads, abrir o navegador, OAuth, publicar).
+
+Se a atualização falhar, não traduza. Pergunte se pode atualizar na mão. Sem o sim, pare.
+
+Com a versão em dia, a primeira pergunta da receita é API do Workato ou JSON. O pipe vem depois. A conexão vem antes de sugerir o import. O `*.flow.json` só vai para Downloads com o sim. O PNG não vai.
+
+“Importa essa receita” com o JSON já no chat não pergunta a fonte de novo. Ainda pergunta o pipe, se não veio, e a conexão, se não veio `Conexão: <id>`. Não abre o Import nesse turno.
 
 O Chrome do agente **só abre depois do ok**. MCP Pipefy **só depois do login e de outro ok**, com o bloco que explica o que é e como ajuda. Sem Bituca, sem MCP de iPaaS, sem Chrome DevTools no pack.
 
@@ -16,11 +22,11 @@ Textos: [copy.md](copy.md). Detalhe: [reference.md](reference.md).
 
 Não cria card. Não publica. Não usa OEM. Não cola segredo no chat.
 
-Invocar **autoriza** descompactar o `.tgz`, `npm ci`, `instalar-cliente.mjs --navegador`, `cliente-versao.mjs` (GET público do `VERSION` em `github.com/pipefy/ipaas-migrator`), smoke do motor, abrir `.env`, GET Workato, ler `.env` (sem imprimir), abrir o navegador do agente depois do ok, e `mcp_auth` em `user-pipefy` depois do ok do MCP.
+Invocar **autoriza** descompactar o `.tgz`, `npm ci`, `instalar-cliente.mjs --navegador`, `cliente-atualizar.mjs` (baixa o zip de `main` em `github.com/pipefy/ipaas-migrator` e troca o kit, preservando `.env` e `output/`), smoke do motor, abrir `.env`, GET Workato, ler `.env` (sem imprimir), copiar o `*.flow.json` para Downloads depois do ok, abrir o navegador do agente depois do ok, e `mcp_auth` em `user-pipefy` depois do ok do MCP.
 
 ## Tom
 
-Fale com quem usa o Pipefy, não com quem mantém o motor. Uma ou duas frases. Uma pergunta por vez, só se for decisão (qual receita, qual pipe, abrir o navegador).
+Fale com quem usa o Pipefy, não com quem mantém o motor. Uma ou duas frases. Uma pergunta por vez, só se for decisão (qual receita, qual pipe, qual conexão, copiar para Downloads, abrir o navegador).
 
 Não abra com kit, peça, datapill, MCP, auth, flow, schema ou destino interno. Diga o que a pessoa faz agora.
 
@@ -35,7 +41,7 @@ Não comece cada mensagem com bloco técnico. Guarde para você:
 
 ```
 receita: <nome> (<id>)
-etapa: <arquivo | importacao | conexoes | teste>
+etapa: <fonte | pipe | conexao | arquivo | downloads | importacao | teste>
 arquivo: <path absoluto do *.flow.json>
 ```
 
@@ -58,13 +64,15 @@ Não use “sem bloqueios” / “sem pendências técnicas” como pronto. Cont
 ## Workflow
 
 ```
-- [ ] 1. Instalação + versão no GitHub + smoke
+- [ ] 1. Instalação + atualizar se o GitHub estiver mais novo + smoke
 - [ ] 2. Idioma (inferir; perguntar só se ambíguo)
-- [ ] 3. Fonte, se ainda não veio
-- [ ] 4. Receita + diagnóstico + motor
-- [ ] 5. Pedir navegador (ok) → Import (verificar resultado)
-- [ ] 6. Após login: pedir MCP Pipefy (explicar + ok)
-- [ ] 7. Conexões / SA + teste. Não publicar
+- [ ] 3. Fonte: API do Workato ou JSON. Parar. Não pedir o pipe.
+- [ ] 4. Diagnóstico. Pedir o pipe. Parar.
+- [ ] 5. Conexão. Parar. Só então o motor.
+- [ ] 6. Downloads: só o *.flow.json, com o sim. O PNG fica.
+- [ ] 7. Pedir navegador (ok) → Import (verificar resultado)
+- [ ] 8. Após login: pedir MCP Pipefy (explicar + ok)
+- [ ] 9. Teste. Não publicar
 ```
 
 ### 1. Instalação
@@ -77,10 +85,19 @@ Em silêncio, nesta ordem. **Não** diga instalado no meio.
 | `node -v` ≥ 18.17 | Pedir Node ou TI. **Parar.** |
 | `node_modules/.bin/tsx` | `npm ci` na raiz do pack. Falhou → **parar.** |
 | Skill | `node scripts/instalar-cliente.mjs --navegador` |
-| Versão | `node scripts/cliente-versao.mjs`. Se `update` é `true`, avisar a versão do GitHub e o link `repo`, e **seguir**. Rede falhou (`ok: false`): uma linha e seguir. Não baixar nem trocar arquivos. |
-| Smoke | `node scripts/transpilar-receita.mjs --recipe examples/smoke.recipe.json --out .tmp/smoke`. Se o fixture não estiver em `examples/`, use `docs/cliente/smoke.recipe.json`. Sem `ok: true` e sem `files.flow` no disco: **não** anunciar pronto. |
+| Versão | `node scripts/cliente-atualizar.mjs`. O script tenta de novo rede, zip, `npm ci` e smoke. Preserva `.env` e `output/`. Se falhar, restaura o kit. |
+| Smoke | Se o script não atualizou (`updated` ausente ou false), rode `node scripts/transpilar-receita.mjs --recipe examples/smoke.recipe.json --out .tmp/smoke`. Se o fixture não estiver em `examples/`, use `docs/cliente/smoke.recipe.json`. Sem `ok: true` e sem `files.flow` no disco: **não** anunciar pronto. |
 
-Se `update` é `true`, a primeira frase do anúncio é o aviso (versão local, versão no GitHub, link). Depois:
+`translate: false`: uma frase do `reason` e o bloco `atualizacao-falhou`. **Parar.** Não busque receita e não rode o motor.
+
+- **Sim:** bloco `atualizacao-manual`. Quando ela disser `atualizei`, rode `cliente-atualizar.mjs` de novo.
+- **Não:** pare. Não traduza nesta versão.
+
+`skipped: origem`: esta pasta é a origem do kit. Não baixe. Siga.
+
+`updated: true`: a primeira frase é que atualizou para `remote`. O script já rodou skill e smoke.
+
+Se o GitHub está em dia, anuncie:
 
 ```
 kit pronto  (migrador cliente <local>, com navegador)
@@ -91,7 +108,7 @@ node: <versão>
 dependências: ok
 smoke: ok
 skill: instalada
-github: em dia | há <remote>
+github: em dia | atualizado para <remote>
 ```
 
 ### 2. Idioma
@@ -100,31 +117,35 @@ Se o chat já está em PT/EN/ES: grave e siga. Senão: bloco `Idioma` em copy.md
 
 ### 3. Fonte
 
-Se já mandou JSON, ID ou “usa a chave”: não pergunte. Senão bloco `fonte`.
+Se já mandou JSON, ID ou “usa a chave”: não pergunte. Senão bloco `fonte`. **Parar.** Não pergunte o pipe neste turno.
 
-### 4. Receita + diagnóstico + motor
+### 4. Pipe
 
-“Importa / traduz essa” já é confirmação.
+Com a receita no disco, rode o diagnóstico e mostre o resumo. Pergunte o pipe. **Parar.** Não fale de importar.
 
 ```bash
 node scripts/cliente-diagnostico.mjs --recipe output/<id>/recipe.json
 ```
 
-Mostre **antes** do Import, em linguagem de quem usa o pipe (preencha com o JSON, sem inventar):
+Mostre o resumo em linguagem de quem usa o pipe (preencha com o JSON, sem inventar):
 
 ```
 A receita <nome> usa <Pipefy, Slack, …>.
 Ela começa quando <evento em uma frase>. Lê <pipe ou “não identifiquei o pipe”> e altera <pipe>.
-Confirme em qual pipe a automação deve ficar.
+Em qual pipe a automação deve ficar?
 ```
 
 Se houver revisão: `Há <N> etapas para revisar antes do teste.` Sem revisão, não fale de TODO, Ruby ou CODE.
 
 Se não deu para preparar a importação: `Não consegui preparar esta automação. Revise: <operação e o que fazer>.` O código fica em “detalhes”.
 
-Depois do arquivo: `O rascunho foi gerado. Agora importe, confira as conexões e faça um teste.`
+### 5. Conexão, depois o motor
 
-Se o ID da conexão foi só informado: `ID da conexão incluído. Confirme a conexão no Pipefy antes de testar.` Não diga que está ligada.
+Bloco `conexao-antes`. **Parar.** Sem `Conexão: <id>` e sem “conexão pronta”, não rode o motor.
+
+Se o id já veio no chat, não pergunte de novo: confirme o id e rode o motor.
+
+Não diga que a conexão está ligada. Não sugira importar neste turno.
 
 ```bash
 node scripts/transpilar-receita.mjs \
@@ -136,11 +157,21 @@ node scripts/transpilar-receita.mjs \
 
 Confira no disco `files.flowNamed` (ex. `.../alerta-mr-sem-revisores.flow.json`). Cite **esse** path. Leia `status.json`. Mostre PNG se `png.ok`.
 
+`O rascunho foi gerado.` Não diga para importar ainda.
+
 Não editar `mappings/`, `kb/`, `engine/`. Não `--force`. Não traduzir Ruby.
 
-Step de planilha declara o pacote `xlsx`. Se o teste disser que o pacote não instalou, use a skill `migrador-workato-sem-dependencia` nesse `*.flow.json` e importe de novo.
+Planilha sai sem pacote npm. Se um `*.flow.json` antigo ainda importar `xlsx`, use a skill `migrador-workato-sem-dependencia` nesse arquivo e importe de novo.
 
-### 5. Navegador e Import
+### 6. Downloads
+
+Bloco `downloads`. **Parar.** Uma vez por receita.
+
+- **Sim:** `node scripts/cliente-copiar-flow.mjs --file <path absoluto do *.flow.json>`. Diga o `dest`. O original continua. Não copie PNG, `.mmd` nem outra receita.
+- **Não:** siga com o arquivo onde está.
+- Falhou: uma linha e siga. Não trave o import.
+
+### 7. Navegador e Import
 
 Se ainda não pediu: bloco `navegador`. **Parar.** Pedido uma vez por sessão.
 
@@ -151,7 +182,7 @@ Se ainda não pediu: bloco `navegador`. **Parar.** Pedido uma vez por sessão.
   - **Não publique.**
 - Nunca: “vou abrir” sem ok. Nunca confirmar Import olhando o flow anterior.
 
-### 6. MCP Pipefy (depois do login no Chrome)
+### 8. MCP Pipefy (depois do login no Chrome)
 
 Bloco `mcp-pipefy` no idioma. **Parar.**
 
@@ -159,7 +190,7 @@ Bloco `mcp-pipefy` no idioma. **Parar.**
 - **Sim:** `mcp_auth` no namespace `user-pipefy`. Probe `list_organizations` ou `search_pipes`. Cruzar fases/conexões do diagnóstico com o pipe real (`get_pipe`, fases). Listar conexões iPaaS se o catálogo responder.
 - `needsAuth` / ausente depois do ok: uma linha, tutor continua. Não instalar Bituca / DevTools / MCP de iPaaS.
 
-### 7. Conexões e teste
+### 9. Teste
 
 Se MCP listou conexão `ACTIVE` da peça: reusar (ou `Conexão: <id>`). Senão: guiar SA (criar, acesso ao pipe, voltar ao formulário do flow). Tokens “24 horas” na tela = validade do **token gerado**, não da Service Account.
 
@@ -167,7 +198,7 @@ HTTP Request autentica de novo neste flow. OAuth: Take Control, uma vez.
 
 Teste: evento real no pipe. Sem run visível, `teste` continua falso. **Não publicar.**
 
-Outra receita: volte ao 4. Não reinstalar. Não perguntar idioma.
+Outra receita: volte ao 3. Não reinstalar. Não perguntar idioma. Rode `cliente-atualizar.mjs` de novo só se ela pedir outra atualização.
 
 ## Não fazer
 
@@ -181,3 +212,5 @@ Outra receita: volte ao 4. Não reinstalar. Não perguntar idioma.
 - OEM `/managed_users` / clonar GitLab / skills do pipe interno
 - Imprimir senha / `sk-`
 - Afirmar publicado/desligado sem ver a tela
+- Traduzir com `translate: false`
+- Copiar para Downloads sem o sim, ou copiar o PNG

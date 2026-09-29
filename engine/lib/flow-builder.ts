@@ -8,6 +8,7 @@ import type {
   MapTarget,
   ParsedStep,
   ParsedRecipe,
+  PipePhase,
   SlimPiece,
   WorkatoCondition,
   WorkatoConditionsInput,
@@ -16,8 +17,9 @@ import { collapseOpKey, lookupMap } from './collapse.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
-import { isXlsxToCsvPython, xlsxPackageJson, xlsxSheetName, xlsxToCsvCode } from './xlsx-csv.ts';
-import { PIPEFY_PIECE_VERSION, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
+import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvPureCode } from './xlsx-csv.ts';
+import { resolveZeroPhaseInput } from './phase-id.ts';
+import { PIPEFY_PIECE_VERSION, pipefyPropertySettings, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
   resultLabelsFromSchema,
@@ -114,6 +116,8 @@ interface Ctx {
   vars: VarIndex;
   /** Labels do result_schema da recipe function, para o returnResponse. */
   subflowResultLabels: Map<string, string>;
+  /** Fases do schema Workato, para trocar phase_id "0" pelo id do formulário inicial. */
+  phasesByPipe: PipePhase[];
 }
 
 interface PendingCanvasNote {
@@ -139,9 +143,17 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
   if (!as) return;
   const opKey = step.opKey ?? (step.provider && step.name ? `${step.provider}/${step.name}` : undefined);
   const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
+  const cardsByField =
+    target?.name === 'getCardsByFieldValue' && !includeDoneIsFalse(step.input ?? {});
   ctx.asToName.set(
     as,
-    target?.piece === PIPEFY_PIECE ? { name, outputRoot: pipefyOutputRoot(target.name) } : name,
+    target?.piece === PIPEFY_PIECE
+      ? {
+          name,
+          outputRoot: pipefyOutputRoot(target.name),
+          ...(cardsByField ? { actionName: 'getCardsByFieldValue' as const } : {}),
+        }
+      : name,
   );
 }
 
@@ -575,9 +587,11 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     const mark = ctx.pendingCode.length;
     const rawBuilt = buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
-    // `stop` encerra este bloco: os irmaos seguintes nao rodam no Workato.
-    // A nota (se stop_with_error) ja foi emitida em buildStep.
-    if (child.keyword === 'stop' && !child.skip) break;
+    // `stop` encerra este bloco. O passo emitido é stopFlow e os irmãos seguintes não entram.
+    if (child.keyword === 'stop' && !child.skip) {
+      if (built) steps.push(built);
+      break;
+    }
 
     if (!built) continue;
     steps.push(built);
@@ -592,6 +606,19 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
 
       const rest = buildChain(children.slice(i + 1), ctx);
       if (rest) placeRestInOpenBranches(rawBuilt, stops, rest, ctx);
+      break;
+    }
+
+    // Catch com stop: o que vem depois do try só roda no caminho que não parou.
+    // O nextAction do router vale para os dois ramos, então o resto não fica nele.
+    if (child.keyword === 'try' && catchStopsJob(child)) {
+      const rest = buildChain(children.slice(i + 1), ctx);
+      const router = findCatchRouter(built);
+      if (router) {
+        if (rest) router.children[1] = appendToChain(router.children[1], rest) ?? rest;
+      } else if (rest) {
+        attachRestToSuccessTails(built, rest, ctx);
+      }
       break;
     }
   }
@@ -788,15 +815,8 @@ function buildStepInner(step: ParsedStep, ctx: Ctx): any | null {
     case 'catch':
       return null;
     case 'stop':
-      if (String(step.input?.stop_with_error) === 'true') {
-        ctx.todos.push('STOP: stop_with_error — AP nao tem equivalente; revisar (erro explicito).');
-        pushReviewNote(
-          ctx,
-          'STOP',
-          'Workato stop_with_error — o AP nao tem equivalente. Esta nota marca o ponto onde a receita parava com erro explicito. Recriar o tratamento manualmente.',
-        );
-      }
-      return null;
+      if (step.skip) return null;
+      return stopFlowStep(ctx);
     default:
       // keyword desconhecida sem piece: comentario / wrapper. Encadeia filhos, nao emite TODO.
       if (!step.provider && !step.name) {
@@ -1630,7 +1650,7 @@ function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: C
   const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
   const sheet = xlsxSheetName(String(step.input?.code ?? ''));
-  return codeStep(name, display, input, xlsxToCsvCode(sheet), !hasTodoMarker(input), xlsxPackageJson());
+  return codeStep(name, display, input, xlsxToCsvPureCode(sheet), !hasTodoMarker(input));
 }
 
 function buildOpenCardsSearch(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
@@ -1737,7 +1757,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
 
   const opKey = step.opKey ?? `${step.provider}/${step.name}`;
   let entry = lookupMap(ctx.merged, opKey);
-  let sourceInput = step.input ?? {};
+  let sourceInput = resolveZeroPhaseInput(step.input ?? {}, step.phasePickLabel, ctx.phasesByPipe);
   if (entry?.target && collapseOpKey(opKey) === 'clock/wait_until_time') {
     const resolved = resolveWaitUntilTime(sourceInput, ctx.merged);
     entry = resolved.entry;
@@ -1829,13 +1849,12 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
 
   const t = entry.target;
   ctx.piecesUsed.add(t.piece);
-  let input = resolveFormulas(convInput(sourceInput, entry, ctx), ctx, name, sourceInput);
+  // callFlow/returnResponse remontam o input e resolvem a formula lá dentro.
+  // Resolver antes criava um step CODE órfão com a mesma expressão.
+  const shaped = t.piece === SUBFLOW_PIECE ? applySubflowAction(opKey, t.name, sourceInput, ctx, name) : null;
+  let input = shaped ?? resolveFormulas(convInput(sourceInput, entry, ctx), ctx, name, sourceInput);
   const omie = fillOmieHttp(opKey, t, input, sourceInput, ctx, name);
   if (omie) input = omie;
-  if (t.piece === SUBFLOW_PIECE) {
-    const shaped = applySubflowAction(opKey, t.name, sourceInput, ctx, name);
-    if (shaped) input = shaped;
-  }
   if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
   if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
     input = fillHttpSend(input, sourceInput, ctx);
@@ -1902,7 +1921,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       pieceName: t.piece,
       actionName: t.name,
       pieceVersion: pieceVersion(ctx, t.piece),
-      propertySettings: settingsFor(t.piece, t.name, input),
+      propertySettings:
+        t.piece === PIPEFY_PIECE ? pipefyPropertySettings(input, step.inputFields) : settingsFor(t.piece, t.name, input),
       errorHandlingOptions: ERR(),
     },
     displayName: display,
@@ -2585,23 +2605,74 @@ function catchRouter(owners: string[], handler: any): any {
 }
 
 function isStopOnlyCatch(handlers: ParsedStep[]): boolean {
-  return (
-    handlers.length === 1 &&
-    handlers[0]!.keyword === 'stop' &&
-    String(handlers[0]!.input?.stop_with_error) === 'true'
-  );
+  return handlers.length === 1 && handlers[0]!.keyword === 'stop';
 }
 
-/** Mensagem do failFlow. Pill do catch vira o erro deste step. */
-function bindFailMessage(reason: string, stepName: string): string {
-  const pill = `{{${stepName}['error']['message']}}`;
-  if (!reason.includes(CATCH_ERROR_TOKEN)) return reason.trim() || pill;
-  return reason.split(CATCH_ERROR_TOKEN).join(pill);
+function catchStopsJob(step: ParsedStep): boolean {
+  const catchNode = step.children.find((child) => child.keyword === 'catch');
+  return (catchNode?.children ?? []).some((handler) => handler.keyword === 'stop' && handler.skip !== true);
 }
 
-function failFlowStep(message: string, ctx: Ctx): any {
-  const name = nextName('fail');
-  const input = { message };
+function findCatchRouter(step: any): any | undefined {
+  let cursor = step;
+  const seen = new Set<any>();
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    if (cursor.type === 'ROUTER' && cursor.displayName === CATCH_ROUTER_LABEL) return cursor;
+    cursor = cursor.nextAction;
+  }
+  return undefined;
+}
+
+function endsWithStopFlow(step: any): boolean {
+  let cursor = step;
+  const seen = new Set<any>();
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    if (cursor.settings?.actionName === 'stopFlow') return true;
+    cursor = cursor.nextAction ?? cursor.continueOnFailureBranches?.onSuccess;
+  }
+  return false;
+}
+
+/** O resto do fluxo entra no fim do caminho de sucesso. O ramo de falha já termina em stopFlow. */
+function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
+  const tails: any[] = [];
+  const seen = new Set<any>();
+  const walk = (node: any) => {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    if (node.settings?.actionName === 'stopFlow') return;
+    if (node.continueOnFailureBranches?.onSuccess) {
+      walk(node.continueOnFailureBranches.onSuccess);
+      return;
+    }
+    if (!isFallibleStep(node)) {
+      if (node.nextAction) {
+        walk(node.nextAction);
+        return;
+      }
+      for (const child of node.children ?? []) {
+        if (child && !endsWithStopFlow(child)) walk(child);
+      }
+      return;
+    }
+    tails.push(node);
+  };
+  walk(step);
+  if (!tails.length) return;
+  const branches = tails[0].continueOnFailureBranches ?? {};
+  tails[0].continueOnFailureBranches = { ...branches, onSuccess: rest };
+  if (tails.length > 1) {
+    ctx.todos.push(
+      `STOP: a continuação depois do try também se aplica a ${tails.length - 1} caminho(s) de sucesso — duplicar manualmente.`,
+    );
+  }
+}
+
+function stopFlowStep(ctx: Ctx): any {
+  const name = nextName('stop');
+  const input = {};
   ctx.piecesUsed.add(FLOW_HELPER_PIECE);
   return {
     name,
@@ -2611,38 +2682,39 @@ function failFlowStep(message: string, ctx: Ctx): any {
     settings: {
       input,
       pieceName: FLOW_HELPER_PIECE,
-      actionName: 'failFlow',
+      actionName: 'stopFlow',
       pieceVersion: pieceVersion(ctx, FLOW_HELPER_PIECE),
       propertySettings: propertySettings(input),
       errorHandlingOptions: ERR(),
     },
-    displayName: 'Falhou',
+    displayName: 'Parar',
     lastUpdatedDate: NOW,
   };
 }
 
 /**
  * Catch que só para o job. Cada Piece/Code do bloco ganha os ramos do step:
- * Success segue a cadeia, Failure chama failFlow. `nextAction` do passo fica
+ * Success segue a cadeia, Failure chama stopFlow. `nextAction` do passo fica
  * vazio — o motor executa o ramo e depois ainda anda o `nextAction`.
  * Router e loop não têm ramo; os passos de dentro sim. Passo já reivindicado
  * por outro catch (router no fim, ou este mesmo tratamento) fica como está.
  */
-function rewireStopOnFailure(step: any, reason: string, ctx: Ctx): any {
+function rewireStopOnFailure(step: any, ctx: Ctx): any {
   if (!step) return step;
+  if (step.settings?.actionName === 'stopFlow') return step;
   if (step.type === 'ROUTER' && step.displayName === CATCH_ROUTER_LABEL) {
-    step.nextAction = rewireStopOnFailure(step.nextAction, reason, ctx);
+    step.nextAction = rewireStopOnFailure(step.nextAction, ctx);
     return step;
   }
   if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
-    step.nextAction = rewireStopOnFailure(step.nextAction, reason, ctx);
+    step.nextAction = rewireStopOnFailure(step.nextAction, ctx);
     return step;
   }
-  if (step.firstLoopAction) step.firstLoopAction = rewireStopOnFailure(step.firstLoopAction, reason, ctx);
+  if (step.firstLoopAction) step.firstLoopAction = rewireStopOnFailure(step.firstLoopAction, ctx);
   if (Array.isArray(step.children)) {
-    step.children = step.children.map((child: any) => rewireStopOnFailure(child, reason, ctx));
+    step.children = step.children.map((child: any) => rewireStopOnFailure(child, ctx));
   }
-  const rest = step.nextAction ? rewireStopOnFailure(step.nextAction, reason, ctx) : undefined;
+  const rest = step.nextAction ? rewireStopOnFailure(step.nextAction, ctx) : undefined;
   if (!isFallibleStep(step)) {
     step.nextAction = rest;
     return step;
@@ -2651,7 +2723,7 @@ function rewireStopOnFailure(step: any, reason: string, ctx: Ctx): any {
   if (step.settings?.errorHandlingOptions) {
     step.settings.errorHandlingOptions.continueOnFailure = { value: true };
   }
-  const failure = failFlowStep(bindFailMessage(reason, step.name), ctx);
+  const failure = stopFlowStep(ctx);
   step.continueOnFailureBranches = rest ? { onSuccess: rest, onFailure: failure } : { onFailure: failure };
   claimedByCatch.add(step);
   return step;
@@ -2668,8 +2740,7 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   );
 
   if (isStopOnlyCatch(activeHandlers)) {
-    const reason = pills(String(activeHandlers[0]!.input?.stop_reason ?? ''), ctx);
-    return rewireStopOnFailure(first, reason, ctx) ?? null;
+    return rewireStopOnFailure(first, ctx) ?? null;
   }
 
   const owners = claimCatchBody(first);
@@ -2704,18 +2775,6 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     );
   }
   notePendingJobContext(ctx, anchor);
-  for (const handler of handlers) {
-    if (handler.keyword !== 'stop' || String(handler.input?.stop_with_error) !== 'true') continue;
-    ctx.todos.push('STOP: stop_with_error — AP nao tem equivalente; revisar (erro explicito).');
-    pushReviewNote(
-      ctx,
-      'STOP',
-      'Workato stop_with_error no catch — o AP nao tem equivalente. Esta nota marca o ponto onde a receita parava com erro explicito. Recriar o tratamento manualmente.',
-      '',
-      anchor,
-    );
-  }
-
   return routed ?? null;
 }
 
@@ -2775,7 +2834,11 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
   if (entry?.target?.kind === 'trigger') {
     const t = entry.target;
     ctx.piecesUsed.add(t.piece);
-    let input = convInput(root.input, entry, ctx);
+    let input = convInput(
+      resolveZeroPhaseInput(root.input ?? {}, root.phasePickLabel, ctx.phasesByPipe),
+      entry,
+      ctx,
+    );
     if (t.piece === SUBFLOW_PIECE && t.name === 'callableFlow') {
       input = shapeCallableFlow(root.input ?? {});
     }
@@ -2844,6 +2907,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     pendingCode: [],
     vars: indexVariables(recipe.root),
     subflowResultLabels: new Map(),
+    phasesByPipe: recipe.phasesByPipe ?? [],
   };
   assignNames(recipe.root, ctx, true);
   const trigger = buildTrigger(recipe.root, ctx);

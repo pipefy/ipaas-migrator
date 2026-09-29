@@ -147,6 +147,12 @@ function wrapApFormula(expr: string): string {
   return `ap-formula-v1::{${expr}}::ap-formula-v1`;
 }
 
+/** Workato `cards_count` do get_cards_by_field. A piece devolve a lista, sem esse campo. */
+function cardsCountFormula(binding: StepBinding | undefined, stepName: string): string | null {
+  if (!binding || typeof binding === 'string' || binding.actionName !== 'getCardsByFieldValue') return null;
+  return wrapApFormula(`count(${renderApTemplate(stepName, ['data', 'cards'])})`);
+}
+
 /** Nomes oficiais do catalogo AP (`packages/core/formula`): `uppercase` / `lowercase`. */
 function apCaseFn(method: string): 'uppercase' | 'lowercase' {
   return method === 'upcase' ? 'uppercase' : 'lowercase';
@@ -653,7 +659,13 @@ function tidyJobContext(text: string): string {
  * (release 0.85.4). O iPaaS prefixa `['output']` no import de um flow v20.
  * Gravando `output` no template, a migracao vira `['output'].output...`.
  */
-export type StepBinding = string | { name: string; outputRoot?: string; stripHead?: string };
+export type StepBinding = string | {
+  name: string;
+  outputRoot?: string;
+  stripHead?: string;
+  /** Ação da piece. `getCardsByFieldValue` não tem `cards_count`; a contagem é `count(data.cards)`. */
+  actionName?: string;
+};
 
 export type StepNameMap = Map<string, StepBinding>;
 
@@ -777,6 +789,14 @@ function renderDataPill(
   }
 
   let base = mappedName ?? line;
+  if (
+    mappedName &&
+    path.length === 1 &&
+    path[0] === 'cards_count'
+  ) {
+    const counted = cardsCountFormula(mapped, mappedName);
+    if (counted) return counted;
+  }
   const pathHead = path.find((element) => typeof element === 'string') as string | undefined;
   let segments: string[] = outputRootSegments(mapped, pathHead);
   const render = () => renderApTemplate(base, segments);
@@ -943,6 +963,10 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
   if (parts[0] === 'foreach' && /^index\b/.test(path)) {
     const loop = mapped.replace(/\.item$/, '');
     return `{{${loop}.${path}}}`;
+  }
+  if (path === 'cards_count') {
+    const counted = cardsCountFormula(binding, mapped);
+    if (counted) return counted;
   }
   const pathHead = path.split('.')[0];
   const segs = withoutStripHead(binding, [

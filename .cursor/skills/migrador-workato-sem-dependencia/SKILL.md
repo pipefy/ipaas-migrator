@@ -47,8 +47,8 @@ Cada item de `manual` traz o step e os pacotes. Abrir o `sourceCode.code` e o Py
 
 Planilha (`xlsx`, `exceljs`, pandas `read_excel` / `to_excel`, openpyxl): copiar o bloco de [reference.md](reference.md). Uma aba, sem senha, sem gráfico, sem `.xls` antigo.
 
-- CSV → xlsx: o gerador OOXML (zip store, `Buffer`).
-- xlsx → CSV: o leitor com inflate no próprio step (o sandbox ST não tem `zlib`).
+- CSV → xlsx: o gerador OOXML (zip store, `Uint8Array`).
+- xlsx → CSV: o leitor com inflate no próprio step (o sandbox não tem `zlib` nem `Buffer`).
 
 Manter os nomes de chave que o step já devolve (`excel_content`, `csv`, `wd_data`, …) e o caminho de entrada (`inputs.csv` ou `inputs.code_input.data`).
 
@@ -79,7 +79,7 @@ O script grava o `code` e põe `packageJson` em `{}`. Exit 0 = aplicado. Exit 3 
 | `sem_export_const_code` | falta `export const code =` |
 | `unknown` | nome de step que não existe |
 
-`node:zlib`, `fs`, `Buffer` e `fetch` não são pacote. Não colocar nada disso no `packageJson`.
+`fs` e `fetch` não são pacote npm. O sandbox sem libs também não define `Buffer`, `atob` nem `TextDecoder`, e o ST não tem `node:zlib`. Não chamar isso no step e não colocar no `packageJson`.
 
 ### 4. Conferir
 

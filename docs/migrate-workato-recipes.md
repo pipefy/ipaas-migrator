@@ -40,7 +40,7 @@ Clone or download that repository, open the folder in Cursor, Claude Code, or Co
 Install the migrator with browser and let's migrate a recipe.
 ```
 
-At the start, the agent compares the folder's `VERSION` with GitHub and tells you if `main` is newer. Install continues either way. It then installs the skill, asks the language (português, English, español), and how you will provide the recipe. It only opens its Chrome if you say yes. After you sign in, it explains Pipefy MCP and asks again. Without that OK, it stays on the Import screenshot.
+At the start, the agent compares the folder's `VERSION` with GitHub. If `main` is newer, it installs that version and retries network, dependency, and smoke failures before it gives up. If the update fails, it does not translate: it asks whether you want to update by hand. It then asks the language and whether the recipe comes from the Workato API or from JSON. The pipe comes after that. The connection comes before the import offer. When `flow.json` is ready, it asks to copy only that file into Downloads (the diagram stays put). It only opens its Chrome if you say yes. After you sign in, it explains Pipefy MCP and asks again. Without that OK, it stays on the Import screenshot.
 
 ## 2. Recipe source
 
@@ -70,7 +70,7 @@ If you have a Workato `.zip` export, extract it and send the recipe `.json`, not
 
 With an API key, the agent lists `id`, name, and trigger, then asks which recipe to migrate. With a file, it uses the JSON you sent.
 
-It shows a short summary and waits for you to confirm before translating.
+It shows a short summary, asks for the pipe and the connection, then translates. If the kit update failed, it does not translate until you update.
 
 Files land in `output/<id>/`:
 

@@ -1,6 +1,6 @@
 # Playbook do migrador Workato (cliente, com navegador)
 
-Versão 0.5.12. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
+Versão 0.5.13. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
 
 O arquivo final é um `*.flow.json` (cópia nomeada ao lado de `flow.json`). O agente não publica.
 
@@ -18,15 +18,16 @@ Arquivo gerado não significa flow pronto. Operações mapeadas não substituem 
 
 ## O que o kit faz
 
-1. Instala o motor e a skill. Compara o `VERSION` com o GitHub e avisa se `main` estiver mais novo. Só anuncia pronto depois de um smoke do motor.
+1. Instala o motor e a skill. Se o GitHub estiver mais novo, instala essa versão e tenta corrigir a falha antes de desistir. Sem a atualização, não traduz. Só anuncia pronto depois de um smoke do motor.
 2. Infere o idioma do chat (pergunta só se estiver ambíguo).
-3. Pergunta a fonte se ainda não veio: API client Workato ou JSON.
-4. Diagnostica a receita (gatilho, cron literal, pipes, fases, conexões) e traduz.
-5. Se o chat tem `Conexão: <id>`, o flow já sai ligado.
-6. Explica o navegador e espera o ok.
-7. Sim: abre o Chrome do agente. Você entra (SSO é com você). Ele guia Import e confere o canvas.
-8. Depois do login: explica o MCP Pipefy e espera outro ok. Sem ok, segue no clique.
-9. Acompanha conexões e teste. Não publica.
+3. Pergunta a fonte se ainda não veio: API do Workato ou JSON. O pipe vem depois.
+4. Diagnostica a receita e pergunta o pipe.
+5. Trata a conexão antes de traduzir. Se o chat tem `Conexão: <id>`, o flow já sai ligado.
+6. Pergunta se pode copiar só o `*.flow.json` para Downloads. O diagrama não vai.
+7. Explica o navegador e espera o ok.
+8. Sim: abre o Chrome do agente. Você entra (SSO é com você). Ele guia Import e confere o canvas.
+9. Depois do login: explica o MCP Pipefy e espera outro ok. Sem ok, segue no clique.
+10. Acompanha o teste. Não publica.
 
 O pipe do Integrations (onde o flow mora) pode ser outro que o pipe cujos cards a receita mexe.
 

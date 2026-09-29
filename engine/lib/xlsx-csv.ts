@@ -1,6 +1,6 @@
-// Python `read_excel` + `to_csv` vira Code JS com o pacote `xlsx`.
-// `xlsxToCsvPureCode` é o mesmo passo sem npm (zip + inflate no próprio step),
-// para a skill sem-dependencia reescrever quando o sandbox não instala pacote.
+// Python `read_excel` + `to_csv` vira Code JS sem pacote npm e sem lib do Node.
+// O sandbox do iPaaS não define Buffer, atob, btoa, TextDecoder nem node:zlib.
+// `xlsxToCsvCode` fica só para o script reconhecer flow antigo que ainda importa `xlsx`.
 
 function xlsxRuntime(sheetName: string): string {
   const sheet = JSON.stringify(sheetName);
@@ -141,6 +141,22 @@ function inflateRaw(bytes) {
   return new Uint8Array(out);
 }
 
+function base64ToBytes(raw) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = String(raw).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i + 1 < clean.length; i += 4) {
+    const a = alphabet.indexOf(clean[i]);
+    const b = alphabet.indexOf(clean[i + 1]);
+    const c = i + 2 < clean.length ? alphabet.indexOf(clean[i + 2]) : -1;
+    const d = i + 3 < clean.length ? alphabet.indexOf(clean[i + 3]) : -1;
+    out.push((a << 2) | (b >> 4));
+    if (c >= 0) out.push(((b & 15) << 4) | (c >> 2));
+    if (d >= 0) out.push(((c & 3) << 6) | d);
+  }
+  return new Uint8Array(out);
+}
+
 function unzip(bytes) {
   const files = {};
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -152,7 +168,7 @@ function unzip(bytes) {
     const nameLen = view.getUint16(offset + 26, true);
     const extraLen = view.getUint16(offset + 28, true);
     const start = offset + 30 + nameLen + extraLen;
-    const name = new TextDecoder().decode(bytes.subarray(offset + 30, offset + 30 + nameLen));
+    const name = text(bytes.subarray(offset + 30, offset + 30 + nameLen));
     const data = bytes.subarray(start, start + compSize);
     files[name] = method === 0 ? data : inflateRaw(data);
     offset = start + compSize;
@@ -222,9 +238,7 @@ function csvCell(value) {
 
 export const code = async (inputs) => {
   const raw = String(inputs.csv || '');
-  const binary = atob(raw.replace(/\\s/g, ''));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const bytes = base64ToBytes(raw);
   const files = unzip(bytes);
   const path = sheetPath(files);
   const xml = text(files[path] || new Uint8Array());
@@ -244,7 +258,7 @@ export function xlsxPackageJson(): string {
   return JSON.stringify({ dependencies: { xlsx: XLSX_VERSION } });
 }
 
-/** Leitor sem pacote. A skill sem-dependencia troca o import de `xlsx` por isto. */
+/** Leitor que o motor emite. Zip e inflate no próprio step, só ECMAScript. */
 export function xlsxToCsvPureCode(sheetName: string): string {
   return xlsxRuntime(sheetName);
 }

@@ -72,6 +72,13 @@ export interface ParsedStep {
   comment?: string;
   children: ParsedStep[];
   opKey?: string; // 'provider/name' quando aplicavel
+  /**
+   * Rótulo do dropdown de fase (`dynamicPickListSelection.phase_id`).
+   * O input guarda `0` para o formulário inicial; o id real está no schema.
+   */
+  phasePickLabel?: string;
+  /** Campos do `extended_input_schema` (nome, rótulo, tipo). */
+  inputFields?: WorkatoInputField[];
   /** Nome do step no flow AP, atribuido no pre-pass. */
   apName?: string;
   /**
@@ -81,6 +88,14 @@ export interface ParsedStep {
    */
   varSnapshot?: Map<string, string>;
 }
+/** Campo dinâmico do conector Workato, usado para desenhar phaseFields/startFormFields. */
+export interface WorkatoInputField {
+  name: string;
+  label?: string;
+  controlType?: string;
+  optional?: boolean;
+}
+
 export interface FormulaHit {
   raw: string;
   rubyMethods: string[];
@@ -98,6 +113,18 @@ export interface ParsedRecipe {
   formulas: FormulaHit[];
   hasRuby: boolean;
   stepCount: number;
+  /**
+   * Fases lidas de `fields_by_phase` nos schemas de saída, agrupadas pelo
+   * `pipe_id` do passo que trouxe o schema.
+   */
+  phasesByPipe?: PipePhase[];
+}
+
+/** Fase Pipefy vista no schema Workato: rótulo do dropdown → id numérico. */
+export interface PipePhase {
+  pipeId: string;
+  label: string;
+  phaseId: string;
 }
 
 export interface OpClassification {

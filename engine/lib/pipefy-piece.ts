@@ -91,6 +91,43 @@ export function updateListFieldFromGraphql(input: Record<string, any>): UpdateLi
   };
 }
 
+const DYNAMIC_FIELD_PROPS = ['phaseFields', 'startFormFields'] as const;
+
+function fieldPropertyType(controlType: string | undefined): string {
+  const control = (controlType ?? '').toLowerCase();
+  if (control === 'text-area' || control === 'text_area') return 'LONG_TEXT';
+  if (control === 'number' || control === 'integer') return 'NUMBER';
+  if (control === 'checkbox') return 'CHECKBOX';
+  return 'SHORT_TEXT';
+}
+
+/**
+ * O canvas só desenha phaseFields/startFormFields se o schema estiver em
+ * propertySettings. A chave é o id do campo no Pipefy (o slug, ex. request_identifier).
+ */
+export function pipefyPropertySettings(
+  input: Record<string, any>,
+  fields: { name: string; label?: string; controlType?: string; optional?: boolean }[] | undefined,
+): Record<string, any> {
+  const settings: Record<string, any> = {};
+  for (const key of Object.keys(input)) settings[key] = { type: 'MANUAL' };
+  for (const prop of DYNAMIC_FIELD_PROPS) {
+    const value = input[prop];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const schema: Record<string, unknown> = {};
+    for (const fieldKey of Object.keys(value)) {
+      const def = fields?.find((field) => field.name === fieldKey);
+      schema[fieldKey] = {
+        displayName: def?.label?.trim() || fieldKey,
+        required: def?.optional === false,
+        type: fieldPropertyType(def?.controlType),
+      };
+    }
+    if (Object.keys(schema).length) settings[prop] = { type: 'MANUAL', schema };
+  }
+  return settings;
+}
+
 export function withPipefyCardFields(actionName: string, input: Record<string, any>): Record<string, any> {
   if (!CARD_READ_ACTIONS.has(actionName)) return input;
   const fields: Record<string, string[]> = {};

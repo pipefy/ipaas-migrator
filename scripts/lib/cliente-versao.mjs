@@ -1,8 +1,21 @@
 // Compara a versão local do kit cliente com o VERSION publicado no GitHub.
-// Avisa. Não baixa e não troca arquivos.
+// Quem baixa e troca arquivos é scripts/cliente-atualizar.mjs.
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const CLIENT_REPO_WEB = 'https://github.com/pipefy/ipaas-migrator';
 export const CLIENT_VERSION_URL = 'https://api.github.com/repos/pipefy/ipaas-migrator/contents/VERSION?ref=main';
+export const CLIENT_ZIP_URL = 'https://codeload.github.com/pipefy/ipaas-migrator/zip/refs/heads/main';
+
+export function readLocalVersion(root) {
+  const versionFile = join(root, 'VERSION');
+  if (existsSync(versionFile)) return readFileSync(versionFile, 'utf8').trim();
+  const tree = join(root, 'scripts', 'lib', 'cliente-tree.mjs');
+  if (!existsSync(tree)) return null;
+  const match = readFileSync(tree, 'utf8').match(/CLIENT_VERSION = '(\d+\.\d+\.\d+)'/);
+  return match ? match[1] : null;
+}
 
 export function decodeVersionBody(text) {
   const trimmed = String(text ?? '').trim();

@@ -70,6 +70,21 @@ const HELPERS: Record<string, string> = {
   dig: `const dig = (v, k) => v?.[k];`,
   // `.quote` do Workato dobra a aspa simples (escape de SQL).
   quote: `const quote = (v) => String(v ?? '').split("'").join("''");`,
+  b64: `const b64 = (v) => {
+  const bytes = unescape(encodeURIComponent(String(v ?? '')));
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes.charCodeAt(i);
+    const b = i + 1 < bytes.length ? bytes.charCodeAt(i + 1) : 0;
+    const c = i + 2 < bytes.length ? bytes.charCodeAt(i + 2) : 0;
+    const n = (a << 16) | (b << 8) | c;
+    out += alphabet[(n >>> 18) & 63] + alphabet[(n >>> 12) & 63];
+    out += i + 1 < bytes.length ? alphabet[(n >>> 6) & 63] : '=';
+    out += i + 2 < bytes.length ? alphabet[n & 63] : '=';
+  }
+  return out;
+};`,
   strftime: `const strftime = (v, fmt) => {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return '';
@@ -453,7 +468,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   compact: (t, s) => (useHelper(s, 'list'), `list(${t}).filter((x) => x !== null && x !== undefined)`),
   join: (t, s) => (useHelper(s, 'join'), `join(${t}, "")`),
   to_json: (t) => `JSON.stringify(${t})`,
-  encode_base64: (t) => `Buffer.from(String(${t} ?? ''), 'utf8').toString('base64')`,
+  encode_base64: (t, s) => (useHelper(s, 'b64'), `b64(${t})`),
   to_date: (t, s) => (useHelper(s, 'toDate'), `toDate(${t})`),
 };
 
@@ -521,7 +536,8 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
     }
     case 'encode_base64': {
       if (plain.length || pairs.length) return null;
-      return `Buffer.from(String(${target} ?? ''), 'utf8').toString('base64')`;
+      useHelper(s, 'b64');
+      return `b64(${target})`;
     }
     case 'to_date': {
       if (plain.length || pairs.length) return null;

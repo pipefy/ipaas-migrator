@@ -1,6 +1,6 @@
 # Sem dependência — blocos sem pacote
 
-Retrato, não contrato. O motor e o traduzir-code emitem `xlsx`. Estes blocos substituem esse pacote.
+Retrato, não contrato. O motor emite o leitor puro em `read_excel` + `to_csv`. Estes blocos cobrem o que sobrar, sem pacote e sem lib do Node.
 
 O script `scripts/sem-dependencia.mjs` já troca o template do motor (`import * as XLSX`, `inputs.csv`, `wd_data`). O que sobrar em `manual` usa os blocos abaixo.
 
@@ -10,7 +10,7 @@ Não usar `exceljs` nem `xlsx` aqui. `packageJson` fica `{}`.
 
 Quando o original gera um `.xlsx` de uma tabela CSV. Visto na receita `46740012` (card `1448579797`): `step_3` faz `pandas.read_csv` + `to_excel` e devolve `excel_content`; `step_5` faz `openpyxl` `Workbook.save` e devolve `encoded_xlsx_content`. Os dois recebem CSV em base64 e o nome da aba.
 
-O worker do iPaaS descarta `packageJson.dependencies` quando `ALLOW_NPM_PACKAGES_IN_CODE_STEP` está desligada. O arquivo abaixo é OOXML (zip sem compressão) e só usa `Buffer`. Um CSV com aspas e vírgula no meio da célula abriu no LibreOffice e voltou com as mesmas linhas.
+O worker do iPaaS descarta `packageJson.dependencies` quando `ALLOW_NPM_PACKAGES_IN_CODE_STEP` está desligada. O sandbox desse worker não define `Buffer`, `atob`, `btoa` nem `TextDecoder`. O arquivo abaixo é OOXML (zip sem compressão) em `Uint8Array`. Um CSV com aspas e vírgula no meio da célula abriu no LibreOffice e voltou com as mesmas linhas.
 
 Limites, de propósito: uma aba, sem coluna de índice, toda célula como texto. Casa com `csv.reader` + `openpyxl`. O `to_excel` do pandas pode gravar número como número; aqui o `10` continua texto. Várias abas, estilo, gráfico ou `index=True`: não usar este bloco, deixar o stub.
 
@@ -26,56 +26,114 @@ function crc32(buf) {
   return (~c) >>> 0;
 }
 
+function utf8Bytes(value) {
+  const encoded = unescape(encodeURIComponent(String(value)));
+  const out = new Uint8Array(encoded.length);
+  for (let i = 0; i < encoded.length; i++) out[i] = encoded.charCodeAt(i) & 255;
+  return out;
+}
+
+function bytesToUtf8(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  try {
+    return decodeURIComponent(escape(out));
+  } catch (error) {
+    return out;
+  }
+}
+
+function concatBytes(parts) {
+  let len = 0;
+  for (const part of parts) len += part.length;
+  const out = new Uint8Array(len);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function putU16(buf, offset, value) {
+  buf[offset] = value & 255;
+  buf[offset + 1] = (value >>> 8) & 255;
+}
+
+function putU32(buf, offset, value) {
+  buf[offset] = value & 255;
+  buf[offset + 1] = (value >>> 8) & 255;
+  buf[offset + 2] = (value >>> 16) & 255;
+  buf[offset + 3] = (value >>> 24) & 255;
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function bytesToBase64(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    const n = (bytes[i] << 16) | (b << 8) | c;
+    out += B64[(n >>> 18) & 63] + B64[(n >>> 12) & 63];
+    out += i + 1 < bytes.length ? B64[(n >>> 6) & 63] : '=';
+    out += i + 2 < bytes.length ? B64[n & 63] : '=';
+  }
+  return out;
+}
+
+function base64ToBytes(raw) {
+  const clean = String(raw).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i + 1 < clean.length; i += 4) {
+    const a = B64.indexOf(clean[i]);
+    const b = B64.indexOf(clean[i + 1]);
+    const c = i + 2 < clean.length ? B64.indexOf(clean[i + 2]) : -1;
+    const d = i + 3 < clean.length ? B64.indexOf(clean[i + 3]) : -1;
+    out.push((a << 2) | (b >> 4));
+    if (c >= 0) out.push(((b & 15) << 4) | (c >> 2));
+    if (d >= 0) out.push(((c & 3) << 6) | d);
+  }
+  return new Uint8Array(out);
+}
+
 function zipStore(files) {
   const locals = [];
   const centrals = [];
   let offset = 0;
   for (const [name, text] of files) {
-    const data = Buffer.from(text);
-    const nameBuf = Buffer.from(name);
+    const data = utf8Bytes(text);
+    const nameBuf = utf8Bytes(name);
     const crc = crc32(data);
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0, 6);
-    local.writeUInt16LE(0, 8);
-    local.writeUInt16LE(0, 10);
-    local.writeUInt16LE(0, 12);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBuf.length, 26);
-    local.writeUInt16LE(0, 28);
-    locals.push(Buffer.concat([local, nameBuf, data]));
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(0, 8);
-    central.writeUInt16LE(0, 10);
-    central.writeUInt16LE(0, 12);
-    central.writeUInt16LE(0, 14);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(nameBuf.length, 28);
-    central.writeUInt16LE(0, 30);
-    central.writeUInt16LE(0, 32);
-    central.writeUInt16LE(0, 34);
-    central.writeUInt16LE(0, 36);
-    central.writeUInt32LE(0, 38);
-    central.writeUInt32LE(offset, 42);
-    centrals.push(Buffer.concat([central, nameBuf]));
-    offset += locals[locals.length - 1].length;
+    const local = new Uint8Array(30);
+    putU32(local, 0, 0x04034b50);
+    putU16(local, 4, 20);
+    putU32(local, 14, crc);
+    putU32(local, 18, data.length);
+    putU32(local, 22, data.length);
+    putU16(local, 26, nameBuf.length);
+    const entry = concatBytes([local, nameBuf, data]);
+    locals.push(entry);
+    const central = new Uint8Array(46);
+    putU32(central, 0, 0x02014b50);
+    putU16(central, 4, 20);
+    putU16(central, 6, 20);
+    putU32(central, 16, crc);
+    putU32(central, 20, data.length);
+    putU32(central, 24, data.length);
+    putU16(central, 28, nameBuf.length);
+    putU32(central, 42, offset);
+    centrals.push(concatBytes([central, nameBuf]));
+    offset += entry.length;
   }
-  const centralDir = Buffer.concat(centrals);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(files.length, 8);
-  eocd.writeUInt16LE(files.length, 10);
-  eocd.writeUInt32LE(centralDir.length, 12);
-  eocd.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, centralDir, eocd]);
+  const centralDir = concatBytes(centrals);
+  const eocd = new Uint8Array(22);
+  putU32(eocd, 0, 0x06054b50);
+  putU16(eocd, 8, files.length);
+  putU16(eocd, 10, files.length);
+  putU32(eocd, 12, centralDir.length);
+  putU32(eocd, 16, offset);
+  return concatBytes([...locals, centralDir, eocd]);
 }
 
 function xmlEscape(value) {
@@ -171,31 +229,27 @@ function csvToXlsxBase64(csvText, name) {
 <sheetData>${sheetData}</sheetData>
 </worksheet>`],
   ]);
-  return zip.toString('base64');
+  return bytesToBase64(zip);
 }
 
 export const code = async (inputs) => {
   const { file_content, sheet_name } = inputs.code_input.data;
-  const csv = Buffer.from(file_content, 'base64').toString('utf8');
+  const csv = bytesToUtf8(base64ToBytes(file_content));
   return { excel_content: csvToXlsxBase64(csv, sheet_name) };
 };
 ```
 
-Copiar as funções para dentro do step. Trocar a chave do `return` pela do original. CSV que já chega como texto não passa pelo `Buffer.from(..., 'base64')`.
+Copiar as funções para dentro do step. Trocar a chave do `return` pela do original. CSV que já chega como texto não passa pelo `base64ToBytes`.
 
 ## Xlsx para CSV
 
-O bloco abaixo importa `node:zlib`. O sandbox ST não tem `zlib`. Nesse ambiente, não copiar o import: o script já troca o template do motor pelo leitor com `inflateRaw` no próprio step. Para outro step de leitura, gerar esse leitor e adaptar a entrada e a chave do `return`:
+Quando o original lê uma aba e devolve o CSV dela. Visto na receita `55161670` (card `1448579773`): `step_6` e `step_26` fazem `pandas.read_excel` + `to_csv(index=False, header=True)` e devolvem `csv`. A receita `59157200` (Validate Excel) devolve `wd_data` e lê `inputs.csv`, aba `Supplier Listing`. O script `sem-dependencia.mjs` já troca o template do motor (`import * as XLSX`, `inputs.csv`, `wd_data`) pelo leitor puro. Para outro step, gerar e adaptar a entrada e a chave do `return`:
 
 ```bash
 npx tsx -e "import { xlsxToCsvPureCode } from './engine/lib/xlsx-csv.ts'; console.log(xlsxToCsvPureCode(''))"
 ```
 
-## Xlsx para CSV (com zlib)
-
-Quando o original lê uma aba e devolve o CSV dela. Visto na receita `55161670` (card `1448579773`): `step_6` e `step_26` fazem `pandas.read_excel` + `to_csv(index=False, header=True)` e devolvem `csv`. Entrada: xlsx em base64 e o nome da aba.
-
-Este leitor usa `node:zlib`. Não colocar pacote no `packageJson`. No sandbox ST, usar o leitor do comando acima, que traz o inflate no step. Abre zip store e deflate, shared string, inline string, número, booleano e data com `numFmtId` de data.
+O bloco abaixo é o leitor com data, para o step que o script não reconhece. Não importa `node:zlib` e não chama `Buffer`: o sandbox sem libs não define nenhum dos dois. Abre zip store e deflate, shared string, inline string, número, booleano e data com `numFmtId` de data.
 
 Conferido: um `.xlsx` gerado pelo LibreOffice (zip deflate, shared strings) voltou `nome,valor` / `Ana, B` / `Bob,20`. Uma célula data serial `43845` com formato 14 virou `2020-01-15`.
 
@@ -204,40 +258,207 @@ Diferenças em relação ao pandas, de propósito: número sai como está no XML
 Aba com outro nome que não existe: o step lança `sheet not found`. Arquivo que não é zip OOXML (`.xls` antigo): lança `not an xlsx zip`. Não tentar adivinhar.
 
 ```js
-import { inflateRawSync } from 'node:zlib';
+function u16(buf, offset) {
+  return buf[offset] | (buf[offset + 1] << 8);
+}
+
+function u32(buf, offset) {
+  return (buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | (buf[offset + 3] << 24)) >>> 0;
+}
+
+function bytesToUtf8(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  try {
+    return decodeURIComponent(escape(out));
+  } catch (error) {
+    return out;
+  }
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function base64ToBytes(raw) {
+  const clean = String(raw).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i + 1 < clean.length; i += 4) {
+    const a = B64.indexOf(clean[i]);
+    const b = B64.indexOf(clean[i + 1]);
+    const c = i + 2 < clean.length ? B64.indexOf(clean[i + 2]) : -1;
+    const d = i + 3 < clean.length ? B64.indexOf(clean[i + 3]) : -1;
+    out.push((a << 2) | (b >> 4));
+    if (c >= 0) out.push(((b & 15) << 4) | (c >> 2));
+    if (d >= 0) out.push(((c & 3) << 6) | d);
+  }
+  return new Uint8Array(out);
+}
+
+function bits(bytes) {
+  let i = 0;
+  let buf = 0;
+  let n = 0;
+  const need = (count) => {
+    while (n < count) {
+      if (i >= bytes.length) break;
+      buf |= bytes[i++] << n;
+      n += 8;
+    }
+  };
+  return {
+    get: (count) => {
+      need(count);
+      const value = buf & ((1 << count) - 1);
+      buf >>>= count;
+      n -= count;
+      return value;
+    },
+    align: () => {
+      buf = 0;
+      n = 0;
+    },
+  };
+}
+
+function huffman(lengths) {
+  const counts = [];
+  let max = 0;
+  for (const len of lengths) {
+    if (!len) continue;
+    counts[len] = (counts[len] || 0) + 1;
+    if (len > max) max = len;
+  }
+  const next = [];
+  let code = 0;
+  counts[0] = 0;
+  for (let len = 1; len <= max; len++) {
+    code = (code + (counts[len - 1] || 0)) << 1;
+    next[len] = code;
+  }
+  const map = new Map();
+  lengths.forEach((len, symbol) => {
+    if (!len) return;
+    map.set((len << 16) | next[len], symbol);
+    next[len]++;
+  });
+  return (bit) => {
+    let value = 0;
+    for (let len = 1; len <= max; len++) {
+      value = (value << 1) | bit.get(1);
+      const symbol = map.get((len << 16) | value);
+      if (symbol !== undefined) return symbol;
+    }
+    return 0;
+  };
+}
+
+const LEN_BASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+const LEN_EXTRA = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+const DIST_BASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+const DIST_EXTRA = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+
+function inflateRaw(bytes) {
+  const bit = bits(bytes);
+  const out = [];
+  let final = 0;
+  while (!final) {
+    final = bit.get(1);
+    const type = bit.get(2);
+    if (type === 0) {
+      bit.align();
+      const len = bit.get(8) | (bit.get(8) << 8);
+      bit.get(8);
+      bit.get(8);
+      for (let n = 0; n < len; n++) out.push(bit.get(8));
+      continue;
+    }
+    let lit;
+    let dist;
+    if (type === 1) {
+      const lens = [];
+      for (let i = 0; i < 144; i++) lens.push(8);
+      for (let i = 0; i < 112; i++) lens.push(9);
+      for (let i = 0; i < 24; i++) lens.push(7);
+      for (let i = 0; i < 8; i++) lens.push(8);
+      lit = huffman(lens);
+      const dl = [];
+      for (let i = 0; i < 32; i++) dl.push(5);
+      dist = huffman(dl);
+    } else {
+      const hlit = bit.get(5) + 257;
+      const hdist = bit.get(5) + 1;
+      const hclen = bit.get(4) + 4;
+      const order = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+      const cl = [];
+      for (let i = 0; i < hclen; i++) cl[order[i]] = bit.get(3);
+      for (let i = hclen; i < 19; i++) cl[order[i]] = 0;
+      const codeLen = huffman(cl);
+      const lens = [];
+      while (lens.length < hlit + hdist) {
+        const symbol = codeLen(bit);
+        if (symbol < 16) lens.push(symbol);
+        else if (symbol === 16) {
+          const extra = bit.get(2) + 3;
+          const prev = lens[lens.length - 1] || 0;
+          for (let n = 0; n < extra; n++) lens.push(prev);
+        } else if (symbol === 17) {
+          const extra = bit.get(3) + 3;
+          for (let n = 0; n < extra; n++) lens.push(0);
+        } else {
+          const extra = bit.get(7) + 11;
+          for (let n = 0; n < extra; n++) lens.push(0);
+        }
+      }
+      lit = huffman(lens.slice(0, hlit));
+      dist = huffman(lens.slice(hlit));
+    }
+    for (;;) {
+      const symbol = lit(bit);
+      if (symbol < 256) {
+        out.push(symbol);
+        continue;
+      }
+      if (symbol === 256) break;
+      const len = LEN_BASE[symbol - 257] + bit.get(LEN_EXTRA[symbol - 257]);
+      const distanceCode = dist(bit);
+      const distance = DIST_BASE[distanceCode] + bit.get(DIST_EXTRA[distanceCode]);
+      for (let n = 0; n < len; n++) out.push(out[out.length - distance]);
+    }
+  }
+  return new Uint8Array(out);
+}
 
 const BUILTIN_DATE = new Set(['14', '15', '16', '17', '18', '19', '20', '21', '22', '45', '46', '47']);
 
 function findEocd(buf) {
   const min = Math.max(0, buf.length - 22 - 65535);
   for (let i = buf.length - 22; i >= min; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) return i;
+    if (u32(buf, i) === 0x06054b50) return i;
   }
   throw new Error('not an xlsx zip');
 }
 
 function unzip(buf) {
   const eocd = findEocd(buf);
-  const count = buf.readUInt16LE(eocd + 10);
-  let p = buf.readUInt32LE(eocd + 16);
+  const count = u16(buf, eocd + 10);
+  let p = u32(buf, eocd + 16);
   const files = new Map();
   for (let i = 0; i < count; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('zip central');
-    const method = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const localOff = buf.readUInt32LE(p + 42);
-    const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8').replace(/\\/g, '/');
-    const localNameLen = buf.readUInt16LE(localOff + 26);
-    const localExtraLen = buf.readUInt16LE(localOff + 28);
+    if (u32(buf, p) !== 0x02014b50) throw new Error('zip central');
+    const method = u16(buf, p + 10);
+    const compSize = u32(buf, p + 20);
+    const nameLen = u16(buf, p + 28);
+    const extraLen = u16(buf, p + 30);
+    const commentLen = u16(buf, p + 32);
+    const localOff = u32(buf, p + 42);
+    const name = bytesToUtf8(buf.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, '/');
+    const localNameLen = u16(buf, localOff + 26);
+    const localExtraLen = u16(buf, localOff + 28);
     const dataOff = localOff + 30 + localNameLen + localExtraLen;
     const comp = buf.subarray(dataOff, dataOff + compSize);
     let data;
-    if (method === 0) data = Buffer.from(comp);
-    else if (method === 8) data = inflateRawSync(comp);
-    else throw new Error(`zip method ${method}`);
+    if (method === 0) data = comp;
+    else if (method === 8) data = inflateRaw(comp);
+    else throw new Error('zip method ' + method);
     if (!name.endsWith('/')) files.set(name.replace(/^\//, ''), data);
     p += 46 + nameLen + extraLen + commentLen;
   }
@@ -382,9 +603,9 @@ function xlsxSheetToCsv(file, sheetName) {
   const files = unzip(file);
   const workbook = files.get('xl/workbook.xml');
   if (!workbook) throw new Error('not an xlsx zip');
-  const workbookXml = workbook.toString('utf8');
+  const workbookXml = bytesToUtf8(workbook);
   const date1904 = /date1904="1"/.test(workbookXml);
-  const rels = (files.get('xl/_rels/workbook.xml.rels') || Buffer.from('')).toString('utf8');
+  const rels = bytesToUtf8(files.get('xl/_rels/workbook.xml.rels') || new Uint8Array());
   let target = '';
   for (const tag of workbookXml.match(/<sheet\b[^>]*\/?>/g) || []) {
     if (attr(tag, 'name') !== sheetName) continue;
@@ -397,16 +618,16 @@ function xlsxSheetToCsv(file, sheetName) {
   if (!target) throw new Error(`sheet not found: ${sheetName}`);
   const sheet = files.get(sheetPath(target));
   if (!sheet) throw new Error(`sheet not found: ${sheetName}`);
-  const strings = files.has('xl/sharedStrings.xml') ? sharedStrings(files.get('xl/sharedStrings.xml').toString('utf8')) : [];
-  const dates = dateStyleIndexes((files.get('xl/styles.xml') || Buffer.from('')).toString('utf8'));
-  return gridToCsv(parseSheet(sheet.toString('utf8'), strings, dates, date1904));
+  const strings = files.has('xl/sharedStrings.xml') ? sharedStrings(bytesToUtf8(files.get('xl/sharedStrings.xml'))) : [];
+  const dates = dateStyleIndexes(bytesToUtf8(files.get('xl/styles.xml') || new Uint8Array()));
+  return gridToCsv(parseSheet(bytesToUtf8(sheet), strings, dates, date1904));
 }
 
 export const code = async (inputs) => {
   const { file_content, sheet_name } = inputs.code_input.data;
-  const file = Buffer.from(file_content, 'base64');
+  const file = base64ToBytes(file_content);
   return { csv: xlsxSheetToCsv(file, sheet_name) };
 };
 ```
 
-Copiar o import e as funções para dentro do step. A chave do `return` é a do original (`csv` nesse caso). Conteúdo que já é binário não passa de novo pelo base64.
+Copiar as funções para dentro do step. A chave do `return` é a do original (`csv` ou `wd_data`). Conteúdo que já é binário não passa de novo pelo `base64ToBytes`. Na Validate Excel a entrada é `inputs.csv` e o retorno é `{ wd_data }`.
