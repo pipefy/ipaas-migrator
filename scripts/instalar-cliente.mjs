@@ -73,7 +73,7 @@ function openaiYaml(skill) {
       ? '  display_name: "Migrador Workato (cliente, com navegador)"'
       : '  display_name: "Migrador Workato (cliente)"',
     nav
-      ? '  short_description: "Tutor 0.5.13: atualiza antes de traduzir, API ou JSON, conexao e Downloads"'
+      ? '  short_description: "Tutor 0.5.14: atualiza antes de traduzir, API ou JSON, conexao e Downloads"'
       : '  short_description: "Tutor: idioma, chave ou JSON, traduz, guia o Import"',
     nav
       ? '  default_prompt: "Instale o migrador com navegador e vamos migrar a receita."'

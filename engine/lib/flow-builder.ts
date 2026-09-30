@@ -609,16 +609,10 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
       break;
     }
 
-    // Catch com stop: o que vem depois do try só roda no caminho que não parou.
-    // O nextAction do router vale para os dois ramos, então o resto não fica nele.
-    if (child.keyword === 'try' && catchStopsJob(child)) {
+    // O que vem depois do try só entra no sucesso. nextAction rodaria também na falha.
+    if (child.keyword === 'try' && hasActiveCatch(child)) {
       const rest = buildChain(children.slice(i + 1), ctx);
-      const router = findCatchRouter(built);
-      if (router) {
-        if (rest) router.children[1] = appendToChain(router.children[1], rest) ?? rest;
-      } else if (rest) {
-        attachRestToSuccessTails(built, rest, ctx);
-      }
+      if (rest) attachRestToSuccessTails(built, rest, ctx);
       break;
     }
   }
@@ -1151,10 +1145,6 @@ function slackSendWantsFlowLink(target: MapTarget, sourceInput: Record<string, a
 
 const NOTE_STEP_STRIDE = 120;
 const NOTE_X = 312;
-
-function describeLostHandlers(handlers: ParsedStep[]): string {
-  return handlers.map((c) => c.comment || c.opKey || c.keyword).join(', ');
-}
 
 function lastStepName(head: any | undefined): string | undefined {
   let last = head;
@@ -2553,75 +2543,13 @@ function claimCatchBody(head: any): string[] {
   return names;
 }
 
-function bindCatchMessage(head: any, messagePill: string): any {
-  const raw = JSON.stringify(head).split(CATCH_ERROR_TOKEN).join(messagePill);
-  return JSON.parse(raw);
-}
-
-function catchMessageStep(owners: string[]): any {
-  const name = nextName('catch_msg');
-  const input: Record<string, string> = {};
-  owners.forEach((owner, index) => {
-    input[`e${index}`] = `{{${owner}['error']['message']}}`;
-  });
-  const reads = owners.map((_, index) => `inputs.e${index}`).join(', ');
-  const code = [
-    'export const code = async (inputs) => {',
-    `  const messages = [${reads}];`,
-    "  const message = messages.find((item) => item !== undefined && item !== null && String(item) !== '') ?? '';",
-    '  return { message };',
-    '};',
-  ].join('\n');
-  return codeStep(name, 'Mensagem do catch', input, code, true);
-}
-
-function catchRouter(owners: string[], handler: any): any {
-  const message = catchMessageStep(owners);
-  const branch = handler
-    ? appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`))
-    : message;
-  return {
-    name: nextName('catch'),
-    skip: false,
-    type: 'ROUTER',
-    valid: true,
-    settings: {
-      branches: [
-        {
-          branchName: 'Falhou',
-          branchType: 'CONDITION',
-          conditions: owners.map((owner) => [
-            { operator: 'EXISTS', firstValue: `{{${owner}['error']['message']}}` },
-          ]),
-        },
-        { branchName: 'Seguiu', branchType: 'FALLBACK' },
-      ],
-      executionType: 'EXECUTE_FIRST_MATCH',
-    },
-    children: [branch, null],
-    displayName: CATCH_ROUTER_LABEL,
-    lastUpdatedDate: NOW,
-  };
-}
-
 function isStopOnlyCatch(handlers: ParsedStep[]): boolean {
   return handlers.length === 1 && handlers[0]!.keyword === 'stop';
 }
 
-function catchStopsJob(step: ParsedStep): boolean {
+function hasActiveCatch(step: ParsedStep): boolean {
   const catchNode = step.children.find((child) => child.keyword === 'catch');
-  return (catchNode?.children ?? []).some((handler) => handler.keyword === 'stop' && handler.skip !== true);
-}
-
-function findCatchRouter(step: any): any | undefined {
-  let cursor = step;
-  const seen = new Set<any>();
-  while (cursor && !seen.has(cursor)) {
-    seen.add(cursor);
-    if (cursor.type === 'ROUTER' && cursor.displayName === CATCH_ROUTER_LABEL) return cursor;
-    cursor = cursor.nextAction;
-  }
-  return undefined;
+  return (catchNode?.children ?? []).some((handler) => handler.keyword !== 'catch' && handler.skip !== true);
 }
 
 function endsWithStopFlow(step: any): boolean {
@@ -2708,6 +2636,9 @@ function rewireStopOnFailure(step: any, ctx: Ctx): any {
   }
   if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
     step.nextAction = rewireStopOnFailure(step.nextAction, ctx);
+    if (step.continueOnFailureBranches?.onSuccess) {
+      step.continueOnFailureBranches.onSuccess = rewireStopOnFailure(step.continueOnFailureBranches.onSuccess, ctx);
+    }
     return step;
   }
   if (step.firstLoopAction) step.firstLoopAction = rewireStopOnFailure(step.firstLoopAction, ctx);
@@ -2729,6 +2660,68 @@ function rewireStopOnFailure(step: any, ctx: Ctx): any {
   return step;
 }
 
+/** Cópia do catch com nomes novos. A pill de erro aponta para o passo que falhou. */
+function cloneHandler(template: any, ownerName: string, ctx: Ctx): any {
+  const clone = JSON.parse(JSON.stringify(template));
+  const renames: [string, string][] = [];
+  const seen = new Set<any>();
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (typeof node.name === 'string' && node.type) {
+      const prefix = node.name.replace(/_\d+$/, '') || 'catch';
+      // `step_` vem do contador da receita. `nextName` sozinho repetia esses nomes.
+      const next = prefix === 'step' ? `step_${ctx.counter.n++}` : nextName(prefix);
+      renames.push([node.name, next]);
+      node.name = next;
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(walk);
+      else if (value && typeof value === 'object') walk(value);
+    }
+  };
+  walk(clone);
+  let raw = JSON.stringify(clone);
+  renames.sort((a, b) => b[0].length - a[0].length);
+  for (const [from, to] of renames) raw = raw.split(`{{${from}`).join(`{{${to}`);
+  raw = raw.split(CATCH_ERROR_TOKEN).join(`{{${ownerName}['error']['message']}}`);
+  return JSON.parse(raw);
+}
+
+/**
+ * Cada passo do try: sucesso segue o bloco, falha executa o catch.
+ * nextAction fica vazio porque o motor ainda anda nele depois do ramo.
+ * Passo já reivindicado por um monitor de dentro fica como está.
+ */
+function rewireMonitor(step: any, template: any, ctx: Ctx): any {
+  if (!step) return step;
+  if (step.settings?.actionName === 'stopFlow') return step;
+  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
+    step.nextAction = rewireMonitor(step.nextAction, template, ctx);
+    if (step.continueOnFailureBranches?.onSuccess) {
+      step.continueOnFailureBranches.onSuccess = rewireMonitor(step.continueOnFailureBranches.onSuccess, template, ctx);
+    }
+    return step;
+  }
+  if (step.firstLoopAction) step.firstLoopAction = rewireMonitor(step.firstLoopAction, template, ctx);
+  if (Array.isArray(step.children)) {
+    step.children = step.children.map((child: any) => rewireMonitor(child, template, ctx));
+  }
+  const rest = step.nextAction ? rewireMonitor(step.nextAction, template, ctx) : undefined;
+  if (!isFallibleStep(step)) {
+    step.nextAction = rest;
+    return step;
+  }
+  step.nextAction = undefined;
+  if (step.settings?.errorHandlingOptions) {
+    step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+  }
+  const failure = cloneHandler(template, step.name, ctx);
+  step.continueOnFailureBranches = rest ? { onSuccess: rest, onFailure: failure } : { onFailure: failure };
+  claimedByCatch.add(step);
+  return step;
+}
+
 function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   const catchNode = step.children.find((c) => c.keyword === 'catch');
   const handlers = (catchNode?.children ?? []).filter((c) => c.keyword !== 'catch');
@@ -2743,39 +2736,15 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     return rewireStopOnFailure(first, ctx) ?? null;
   }
 
-  const owners = claimCatchBody(first);
-
-  if (!handlers.length) return first ?? null;
-
-  const anchor = lastStepName(first);
-  const handlerHead = buildChain(handlers, ctx);
-  // stop_with_error vira nota, nao step: ainda assim o catch tem corpo e o
-  // verificador exige o router no fim do bloco.
-  const routed =
-    owners.length && (handlerHead || activeHandlers.length)
-      ? appendToChain(first, catchRouter(owners, handlerHead))
-      : first;
-
-  if (handlerHead || handlers.some((handler) => handler.keyword === 'stop')) {
-    const lost = describeLostHandlers(handlers);
-    const where = step.comment || `try passo ${step.number ?? '?'}`;
-    ctx.todos.push(
-      `CATCH (${where}): o AP nao tem try/catch. ` +
-        'Os passos do bloco seguem com continueOnFailure e o catch virou um router no fim: ' +
-        `${lost}.`,
-    );
-
-    pushReviewNote(
-      ctx,
-      'CATCH',
-      `O AP nao tem try/catch. Os passos do bloco seguem com continueOnFailure. ` +
-        `O catch virou um router no fim do bloco: ${lost}.`,
-      lost,
-      anchor,
-    );
+  if (!activeHandlers.length) {
+    claimCatchBody(first);
+    return first ?? null;
   }
-  notePendingJobContext(ctx, anchor);
-  return routed ?? null;
+
+  const handlerHead = buildChain(activeHandlers, ctx);
+  if (!handlerHead) return first ?? null;
+  notePendingJobContext(ctx, lastStepName(first));
+  return rewireMonitor(first, handlerHead, ctx) ?? null;
 }
 
 function describeFilter(filter: WorkatoConditionsInput | undefined): string {

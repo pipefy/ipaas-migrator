@@ -6,12 +6,20 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.13 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.5.14 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.5.14 — 30 set 2026
+
+O catch da Workato deixa de ser um router no fim do bloco. Cada passo do try segue quando dá certo e, se falha, executa o catch. O que vem depois do try só entra nesse sucesso.
+
+- Uma falha não executa os passos seguintes do mesmo try.
+- Se o catch termina em parar, esse caminho acaba no passo Parar.
+- `migrador-workato-cliente-navegador-0.5.14.tgz`
 
 ## 0.5.13 — 29 set 2026
 
