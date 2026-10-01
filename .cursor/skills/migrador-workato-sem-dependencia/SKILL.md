@@ -17,7 +17,7 @@ Não mexe em piece, input, notes nem no encadeamento. Não chama Pipefy. Não ed
 - O teste ou o import disse que o code step não instalou o pacote (`ALLOW_NPM_PACKAGES_IN_CODE_STEP` desligada, sandbox ST).
 - A verificação marcou `python pacote`.
 
-Não rodar no transpile por padrão. Com a flag ligada, o step com `xlsx` fica.
+Não rodar no segundo passo do transpile. O padrão é traduzir com lib. Este comando entra quando o cliente pede para gerar de novo sem biblioteca (`code-com-lib`).
 
 ## Workflow
 

@@ -155,13 +155,20 @@ node scripts/transpilar-receita.mjs \
 
 `Conexão: <id>` no chat: acrescente `--connection-ids` e `--hints-text`.
 
+Antes do motor terminar o arquivo que a pessoa vai importar, diga o bloco `traduzindo-code`. Rode o segundo passo: [traduzir-code](../migrador-workato-traduzir-code/SKILL.md) em todo `AP-MIGRATION-TODO`. Lib no `packageJson` quando o código precisar. Depois:
+
+```bash
+node scripts/conferir-code-traduzido.mjs \
+  --flow-json output/<id>/flow.json
+```
+
+Exit 4: a etapa ainda não acabou. Não mostre o rascunho. Exit 0 e `usedLib: true` em `code-lib.json`: bloco `code-com-lib`, com o caminho do `*.flow.json`. O comando sem lib é `npx tsx scripts/sem-dependencia.mjs --flow-json <esse arquivo>`.
+
 Confira no disco `files.flowNamed` (ex. `.../alerta-mr-sem-revisores.flow.json`). Cite **esse** path. Leia `status.json`. Mostre PNG se `png.ok`.
 
 `O rascunho foi gerado.` Não diga para importar ainda.
 
-Não editar `mappings/`, `kb/`, `engine/`. Não `--force`. Não traduzir Ruby.
-
-Planilha sai sem pacote npm. Se um `*.flow.json` antigo ainda importar `xlsx`, use a skill `migrador-workato-sem-dependencia` nesse arquivo e importe de novo.
+Não editar `mappings/`, `kb/`, `engine/`. Não `--force`.
 
 ### 6. Downloads
 

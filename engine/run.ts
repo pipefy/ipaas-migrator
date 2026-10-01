@@ -1,6 +1,7 @@
 // 1 receita Workato -> stdout: flow Activepieces + diagrama Mermaid + roteamento.
-// Sem --force: operacao nao mapeada, JSON invalido, arquivo ausente
-// ou gatilho sem piece (receita em branco) vao para manual_revision.
+// Sem --force: operacao nao mapeada ainda vai para manual_revision, mas o
+// flow traz os passos que ja tem mapa. JSON invalido, arquivo ausente ou
+// gatilho sem piece (receita em branco) continuam no wrapper bloqueado.
 // Email/SMS by Workato: flow real + aviso, destino manual_revision (nao para o canvas).
 // ROUTER/Ruby com TODO ainda e ipaas_ready.
 // O diagrama sai mesmo quando a transpilacao bloqueia.
@@ -164,21 +165,6 @@ async function main(): Promise<void> {
 
   const unmapped = ops.filter((o) => o.status === 'unmapped');
 
-  if (unmapped.length) {
-    const block = formatUnmappedBlock(unmapped);
-    emit(blockedFlow('Workato migration blocked', block.notes), diagram, {
-      status: 'ERROR',
-      destination: 'manual_revision',
-      blocked_reason: block.reason,
-      mapped_operations: mapped,
-      unmapped_operations: unmapped.length,
-      unmapped_ops: block.keys,
-      has_router: hasKeyword(recipe.root, 'if'),
-      has_code_ruby: recipe.hasRuby,
-    });
-    return;
-  }
-
   if (isEmptyWorkatoTrigger(recipe.root)) {
     const reason = [
       'Gatilho sem piece: a receita nao tem provider/name no trigger (applications vazias).',
@@ -197,6 +183,21 @@ async function main(): Promise<void> {
   }
 
   const { flow, todos } = buildFlow(recipe, merged, kb);
+  if (unmapped.length) {
+    const block = formatUnmappedBlock(unmapped);
+    emit(flow, diagram, {
+      status: 'ERROR',
+      destination: 'manual_revision',
+      blocked_reason: block.reason,
+      mapped_operations: mapped,
+      unmapped_operations: unmapped.length,
+      unmapped_ops: block.keys,
+      has_router: hasKeyword(recipe.root, 'if'),
+      has_code_ruby: recipe.hasRuby,
+      todos: todos.length,
+    });
+    return;
+  }
   if (blockedChannels.length) {
     const listed = blockedChannels.map((o) => `${o.opKey} (${o.count}x)`).join('; ');
     const reason = `Email by Workato e SMS by Workato nao migram (nao viram SMTP nem Twilio). ${listed}.`;

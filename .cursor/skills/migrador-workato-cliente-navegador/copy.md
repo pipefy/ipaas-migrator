@@ -155,6 +155,20 @@ Não publico e não peço senha. Se não quiser, seguimos pelo print.
 Pode ligar?
 ```
 
+### traduzindo-code
+
+```
+Estou traduzindo o código da receita para JavaScript. É a etapa depois do motor.
+```
+
+### code-com-lib
+
+```
+Essa tradução usou biblioteca no código. Se o ambiente não instalar pacote, gere de novo sem biblioteca:
+
+npx tsx scripts/sem-dependencia.mjs --flow-json <arquivo>
+```
+
 ### sa-24h
 
 ```
@@ -305,6 +319,20 @@ I will not publish and I will not ask for a password. If you skip this, we stay 
 Turn it on?
 ```
 
+### traduzindo-code
+
+```
+Translating the recipe code to JavaScript. This step runs after the engine.
+```
+
+### code-com-lib
+
+```
+This translation used a library in the code. If this environment cannot install packages, generate it again without a library:
+
+npx tsx scripts/sem-dependencia.mjs --flow-json <file>
+```
+
 ### sa-24h
 
 ```
@@ -453,6 +481,20 @@ Ya entraste en Pipefy. Puedo consultar tus pipes y conexiones desde aquí, para 
 No publico y no pido contraseña. Si no quieres, seguimos con la captura.
 
 ¿Lo activo?
+```
+
+### traduzindo-code
+
+```
+Estoy traduciendo el código de la receta a JavaScript. Es el paso después del motor.
+```
+
+### code-com-lib
+
+```
+Esta traducción usó una biblioteca en el código. Si el entorno no instala paquetes, genera de nuevo sin biblioteca:
+
+npx tsx scripts/sem-dependencia.mjs --flow-json <archivo>
 ```
 
 ### sa-24h

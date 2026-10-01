@@ -13,6 +13,9 @@ export const MULTIPLY_NOTE =
 export const CURRENCY_NOTE =
   "to_currency virou replace(format_currency(valor; unidade); \".\"; separador). O milhar continua virgula. delimiter diferente de virgula nao entra nesse mapa.";
 
+export const PHONE_NOTE =
+  'Telefone com 12 dígitos ganha um 9 depois dos 4 primeiros, num step CODE. Os outros comprimentos saem iguais.';
+
 /** Helpers do runtime Ruby-like, injetados no step CODE conforme o uso. */
 const HELPERS: Record<string, string> = {
   inspect: `const inspect = (v) => {
@@ -881,6 +884,27 @@ export function compileRubyExpression(
 ): CompiledExpr | null {
   const src = source.trim().replace(/^=/, '').trim();
   if (!src) return null;
+  const phone = src.match(
+    /^(\{\{[^{}]+\}\})\.length == 12 \?\s*\1\[0,4\] \+ "9" \+ \1\[4\.\.-1\] :\s*\1$/,
+  );
+  if (phone) {
+    const state: State = {
+      tokens: [],
+      pos: 0,
+      bindings: registry.bindings,
+      pillNames: registry.pillNames,
+      helpers: new Set(),
+      approximations: [PHONE_NOTE],
+      seq: registry.seq,
+    };
+    const name = bindPill(state, phone[1]!);
+    return {
+      expr: `(String(${name} ?? '').length === 12 ? String(${name}).slice(0, 4) + '9' + String(${name}).slice(4) : String(${name} ?? ''))`,
+      bindings: registry.bindings,
+      helpers: state.helpers,
+      approximations: [PHONE_NOTE],
+    };
+  }
   const tokens = tokenize(src);
   if (!tokens || !tokens.length) return null;
 

@@ -6,12 +6,23 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.5.14 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.0 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.0 — 1 out 2026
+
+Fórmulas que ainda ficavam para revisar passam a sair prontas. Telefone de 12 dígitos vira um passo de código. Update de card sem nenhum campo não entra no fluxo: o canvas segue e uma nota guarda o passo original.
+
+- Mês por extenso, horas, percentual, data de N dias atrás, `strftime`, início do mês e `split` entram no catálogo.
+- Telefone com 12 dígitos ganha um 9 depois dos quatro primeiros. Outro comprimento fica igual.
+- Código Python ou JavaScript da Workato aparece dentro do passo de código, junto do Ruby.
+- Update sem valor de campo não é importado. A nota traz o número e o comentário do passo. Os campos vazios não apagam o que já está no card.
+- Um passo sem mapa manda a receita para revisão, e o arquivo ainda traz os passos que já traduzem.
+- `migrador-workato-cliente-navegador-0.6.0.tgz`
 
 ## 0.5.14 — 30 set 2026
 

@@ -176,6 +176,8 @@ function escapeFormulaString(value: string): string {
 function convertKnownRubyAfterPills(out: string): string | null {
   let s = out.trim();
   if (s.startsWith('=')) s = s.slice(1).trim();
+  // Limiar numérico que sobrou de uma comparação. Não é fórmula.
+  if (/^-?\d+$/.test(s)) return s;
 
   const include = s.match(/^\[(.*)\]\.include\?\((.+)\)$/s);
   if (include) {
@@ -244,12 +246,63 @@ function convertCatalogFormula(src: string): string | null {
   const todayPlus = s.match(/^today\s*\+\s*(\d+)\.days?$/);
   if (todayPlus) return `add_days(today(); ${todayPlus[1]})`;
 
+  // `{{pill}}+3.hours`
+  const plusHours = s.match(/^(\{\{[^{}]+\}\})\s*\+\s*(\d+)\.hours$/);
+  if (plusHours) return `add_hours(${plusHours[1]}; ${plusHours[2]})`;
+
   // `{{pill}}+1`
   const plus = s.match(/^(\{\{[^{}]+\}\})\s*\+\s*(\d+)$/);
   if (plus) return `add(to_number(${plus[1]}); ${plus[2]})`;
 
+  // `{{a}} + ({{b}}.to_f / 60)`
+  const plusDiv = s.match(
+    /^(\{\{[^{}]+\}\})\s*\+\s*\((\{\{[^{}]+\}\})\.to_f\s*\/\s*(\d+)\)$/,
+  );
+  if (plusDiv) {
+    return `add(to_number(${plusDiv[1]}); divide(to_number(${plusDiv[2]}); ${plusDiv[3]}))`;
+  }
+
+  // `(100*((a/b)-1)).round(2)`, com `.to_i` opcional no divisor.
+  const percent = s.match(
+    /^\(100\*\(\((\{\{[^{}]+\}\})\/(\{\{[^{}]+\}\})(?:\.to_i)?\)-1\)\)(?:\.round\((\d+)\))?$/,
+  );
+  if (percent) {
+    const body = `multiply(subtract(divide(to_number(${percent[1]}); to_number(${percent[2]})); 1); 100)`;
+    return percent[3] ? `round(${body}; ${percent[3]})` : body;
+  }
+
+  // `({{a}}) / ({{b}}.length)`
+  const overLength = s.match(/^\((\{\{[^{}]+\}\})\)\s*\/\s*\((\{\{[^{}]+\}\})\.length\)$/);
+  if (overLength) return `divide(to_number(${overLength[1]}); length(${overLength[2]}))`;
+
+  // `{{pill}}/86400.floor` — no Ruby o `.floor` é do literal; a divisão inteira é que arredonda.
+  const dayFloor = s.match(/^(\{\{[^{}]+\}\})\/(\d+)\.floor$/);
+  if (dayFloor) return `round_down(divide(to_number(${dayFloor[1]}); ${dayFloor[2]}))`;
+
+  // `{{pill}}-90` e `{{pill}}.to_date-90`: data menos N dias, sem `.days`.
+  const dateMinus = s.match(/^(\{\{[^{}]+\}\})(?:\.to_date)?\s*-\s*(\d+)$/);
+  if (dateMinus) {
+    const date = dateMinus[0].includes('.to_date') ? `to_date(${dateMinus[1]})` : dateMinus[1]!;
+    return `add_days(${date}; -${dateMinus[2]})`;
+  }
+
   if (s === 'now.to_date') return 'today()';
   if (s === 'now') return 'now()';
+
+  const daysAgo = s.match(/^(\d+)\.days\.ago$/);
+  if (daysAgo) return `subtract_days(today(); ${daysAgo[1]})`;
+
+  const nowFmt = s.match(/^now\.strftime\((['"])([^'"\\]+)\1\)$/);
+  if (nowFmt) {
+    const tokens = strftimeToApTokens(nowFmt[2]!);
+    if (tokens) return `format_date(now(); ${tokens})`;
+  }
+
+  const nowShift = s.match(/^\(now\s*-\s*(\d+)\.days\)\.strftime\((['"])([^'"\\]+)\2\)$/);
+  if (nowShift) {
+    const tokens = strftimeToApTokens(nowShift[3]!);
+    if (tokens) return `format_date(subtract_days(today(); ${nowShift[1]}); ${tokens})`;
+  }
 
   const todayMinus = s.match(
     /^\(today\s*-\s*(\d+)\.days?\)\.strftime\((['"])([^'"\\]+)\2\)(?:\.to_s)?$/,
@@ -276,18 +329,36 @@ function convertCatalogFormula(src: string): string | null {
     return `format_date(${base}; ${tokens})`;
   }
 
-  // `{{pill}}.strftime("%d/%m/%Y")`, com `.to_date` / `.to_s` opcionais.
+  const monthStart = s.match(/^(\{\{[^{}]+\}\})\.beginning_of_month$/);
+  if (monthStart) return `start_of_month(${monthStart[1]})`;
+
+  // `{{pill}}.split(",")[{{i}}].strip`, com `.gsub('"', "")` opcional.
+  const splitAt = s.match(
+    /^(\{\{[^{}]+\}\})\.split\(",\"\)\[(\{\{[^{}]+\}\})\](?:\.gsub\('"',""\))?\.strip$/,
+  );
+  if (splitAt) {
+    const item = `split(${splitAt[1]}; ","; ${splitAt[2]})`;
+    const cleaned = splitAt[0].includes('.gsub(')
+      ? `replace(${item}; "${escapeFormulaString('"')}"; "")`
+      : item;
+    return `trim(${cleaned})`;
+  }
+
+  // `{{pill}}.strftime("%d/%m/%Y")`, com `.to_date` / `.to_time` / `.to_s` / `.to_i` opcionais.
   const strftime = s.match(
-    /^(\{\{[^{}]+\}\})(?:\.to_date)?\.strftime\((['"])([^'"\\]+)\2\)(?:\.to_s)?$/,
+    /^(\{\{[^{}]+\}\})(?:\.to_date|\.to_time)?\.strftime\((['"])([^'"\\]+)\2\)(?:\.to_s|\.to_i)?$/,
   );
   if (strftime) {
     const format = strftime[3]!;
+    const date = strftime[0].includes('.to_date.strftime') || strftime[0].includes('.to_time.strftime')
+      ? `to_date(${strftime[1]})`
+      : strftime[1];
+    if (format === '%e') return `get_day(${date})`;
     const tokens = strftimeToApTokens(format);
     if (tokens) {
       const fn = /%[HIMSpl]/.test(format) && !/%[dmYy]/.test(format)
         ? 'format_time'
         : 'format_date';
-      const date = strftime[0].includes('.to_date.strftime') ? `to_date(${strftime[1]})` : strftime[1];
       return `${fn}(${date}; ${tokens})`;
     }
   }
@@ -295,6 +366,15 @@ function convertCatalogFormula(src: string): string | null {
   // `{{pill}}.gsub("de", "para")` encadeado, so com literais seguros
   const gsub = parseGsubChain(s);
   if (gsub) return gsub;
+
+  if (/\[.*janeiro.*dezembro.*\]\[now\.month\s*-\s*1\]/.test(s)) {
+    return [
+      'switch(get_month(now());',
+      'January; janeiro; February; fevereiro; March; março; April; abril;',
+      'May; maio; June; junho; July; julho; August; agosto;',
+      'September; setembro; October; outubro; November; novembro; December; dezembro)',
+    ].join(' ');
+  }
 
   // `{{pill}}.include?("a") || {{pill}}.include?("b")`
   const includes = parseIncludeChain(s);
@@ -579,7 +659,7 @@ export function analyzeFormula(s: string): FormulaHit | null {
 export type LoopItemResolver = (collection: string) => string | undefined;
 
 /** Contagem de pills `job_context` já traduzidas nesta receita. */
-export type JobContextHits = { name: number; id: number; link: number };
+export type JobContextHits = { name: number; id: number; link: number; created: number };
 
 export type PillOptions = {
   recipeName?: string;
@@ -634,6 +714,10 @@ function renderJobContext(key: string | undefined, options: PillOptions | undefi
   if (key === 'recipe_url' || key === 'job_url') {
     if (hits) hits.link += 1;
     return FLOW_LINK;
+  }
+  if (key === 'job_created_at') {
+    if (hits) hits.created += 1;
+    return "{{job_now['now']}}";
   }
   return null;
 }
@@ -761,6 +845,8 @@ function renderDataPill(
     const key = path.find((element) => typeof element === 'string') as string | undefined;
     const job = renderJobContext(key, options);
     if (job !== null) return job;
+    // Sem `line`. Usar o mapa emitia `{{undefined['…']}}`.
+    return '';
   }
   const line = dp.line ?? dp.provider;
   const mapped = asToName.get(line);

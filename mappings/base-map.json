@@ -641,8 +641,10 @@
     },
     "_alpha_pipefy_connector_202183_1605207454/update_fields_values": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "propMap": {"node_ID":"cardId","Node_Id":"cardId","Fields_to_update":"phaseFields"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Fields_to_update e lista {fieldId, value}. organization_id, pipe_id e phase_id nao vem nesse passo."
     },
     "abbyy/create_transaction": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
@@ -2385,8 +2387,10 @@
     },
     "pipefy/update_fields_values": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "propMap": {"node_ID":"cardId","Node_Id":"cardId","Fields_to_update":"phaseFields"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Fields_to_update e lista {fieldId, value}. organization_id, pipe_id e phase_id nao vem nesse passo."
     },
     "pipefy/update_list_type_field": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
@@ -2489,8 +2493,10 @@
     },
     "pipefy_connector_186728_1590691380/update_fields_values": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "propMap": {"node_ID":"cardId","Node_Id":"cardId","Fields_to_update":"phaseFields"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Fields_to_update e lista {fieldId, value}. organization_id, pipe_id e phase_id nao vem nesse passo."
     },
     "pipefy_connector_186728_1590691380/update_list_type_field": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateListField","kind":"action"},
@@ -2698,8 +2704,10 @@
     },
     "pipefy_legacy_v2_connector_186728_1723750715/update_fields_values": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateCard","kind":"action"},
+      "propMap": {"node_ID":"cardId","Node_Id":"cardId","Fields_to_update":"phaseFields"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Fields_to_update e lista {fieldId, value}. organization_id, pipe_id e phase_id nao vem nesse passo."
     },
     "pipefy_legacy_v2_connector_186728_1723750715/update_record_field": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"updateRecord","kind":"action"},

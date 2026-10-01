@@ -47,6 +47,7 @@ import {
   compileRubyExpression,
   CURRENCY_NOTE,
   MULTIPLY_NOTE,
+  PHONE_NOTE,
   newBindingRegistry,
   renderHelpers,
   type BindingRegistry,
@@ -101,6 +102,8 @@ interface Ctx {
   piecesUsed: Set<string>;
   todos: string[];
   canvasNotes: PendingCanvasNote[];
+  /** Nota de update vazio ainda sem passo seguinte para ancorar. */
+  noteAnchorPending?: number;
   /** Nome e id da receita, para pills `job_context` que não apontam para um passo. */
   recipeName: string;
   recipeId?: string;
@@ -122,7 +125,7 @@ interface Ctx {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE';
   content: string;
   anchorStepName?: string;
 }
@@ -573,17 +576,6 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
   const steps: any[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i]!;
-    if (isMergeableSiblingIf(child)) {
-      let end = i + 1;
-      while (end < children.length && isMergeableSiblingIf(children[end]!)) end++;
-      if (end > i + 1) {
-        const mark = ctx.pendingCode.length;
-        const rawBuilt = buildSiblingRouter(children.slice(i, end), ctx);
-        steps.push(prependPendingCode(rawBuilt, ctx, mark));
-        i = end - 1;
-        continue;
-      }
-    }
     const mark = ctx.pendingCode.length;
     const rawBuilt = buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
@@ -594,6 +586,11 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     }
 
     if (!built) continue;
+    const pendingNote = ctx.noteAnchorPending;
+    if (pendingNote != null && ctx.canvasNotes[pendingNote] && !ctx.canvasNotes[pendingNote]!.anchorStepName) {
+      ctx.canvasNotes[pendingNote]!.anchorStepName = built.name;
+      ctx.noteAnchorPending = undefined;
+    }
     steps.push(built);
 
     // `stop` do Workato encerra o job inteiro. Se algum ramo para, os passos
@@ -828,20 +825,28 @@ function stepName(step: ParsedStep, ctx: Ctx): string {
  * Stub do step CODE. Embute o Ruby original (quando houver) como comentario,
  * com marcador AP-MIGRATION-TODO para a LLM da skill traduzir para JS.
  */
-function buildCodeStub(opKey: string, ruby: string): string {
-  if (ruby.trim()) {
-    const commented = ruby.split('\n').map((l) => ` * ${l}`).join('\n');
+function codeLanguage(opKey: string): string {
+  if (opKey.endsWith('/invoke_custom_py_code')) return 'Python';
+  if (opKey.endsWith('/invoke_custom_js_code')) return 'JavaScript';
+  if (opKey.endsWith('/invoke_custom_ruby_code')) return 'Ruby';
+  return 'Workato';
+}
+
+function buildCodeStub(opKey: string, source: string, language = codeLanguage(opKey)): string {
+  if (source.trim()) {
+    const commented = source.split('\n').map((l) => ` * ${l}`).join('\n');
+    const tag = language.toUpperCase();
     return [
       '/**',
-      ` * AP-MIGRATION-TODO: traduzir o Ruby (Workato "${opKey}") para JavaScript.`,
+      ` * AP-MIGRATION-TODO: traduzir o ${language} (Workato "${opKey}") para JavaScript.`,
       ' * Formato Activepieces: use `inputs.<campo>` (chaves de settings.input) e RETORNE o resultado final.',
       ' *',
-      ' * --- RUBY ORIGINAL (Workato) ---',
+      ` * --- ${tag} ORIGINAL (Workato) ---`,
       commented,
-      ' * --- FIM RUBY ---',
+      ` * --- FIM ${tag} ---`,
       ' */',
       'export const code = async (inputs) => {',
-      '  // TODO(LLM): implementar o equivalente do Ruby acima.',
+      `  // TODO(LLM): implementar o equivalente do ${language} acima.`,
       '  return inputs;',
       '};',
     ].join('\n');
@@ -968,6 +973,15 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
       owner,
     );
   }
+  if (JSON.stringify(replaced).includes('janeiro') && JSON.stringify(replaced).includes('switch(get_month(now())')) {
+    pushReviewNote(
+      ctx,
+      'FORMULA',
+      `Passo \`${owner}\`.\n\nget_month devolve o mês em inglês (January). O switch troca para janeiro–dezembro. Se o iPaaS mudar o nome do mês, a troca não acha a chave.`,
+      owner,
+      owner,
+    );
+  }
   if (!harvest.fields.length) return replaced;
 
   ctx.pendingCode.push(formulaCodeStep(harvest));
@@ -977,7 +991,7 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
   );
   for (const note of [...new Set(harvest.approximations)]) {
     ctx.todos.push(`FORMULA (${harvest.name()}): ${note}.`);
-    if (note === MULTIPLY_NOTE || note === CURRENCY_NOTE) {
+    if (note === MULTIPLY_NOTE || note === CURRENCY_NOTE || note === PHONE_NOTE) {
       pushReviewNote(
         ctx,
         'FORMULA',
@@ -1022,6 +1036,8 @@ export const REVIEW_FORMULA_LABEL = 'REVISAR: formula';
 export const REVIEW_SUBFLOW_LABEL = 'REVISAR: subflow';
 export const REVIEW_EMAIL_LABEL = 'REVISAR: email';
 export const REVIEW_SMS_LABEL = 'REVISAR: sms';
+export const REVIEW_SCHEDULE_LABEL = 'AVISO: agenda quinzenal';
+export const REVIEW_EMPTY_UPDATE_LABEL = 'AVISO: update sem campos';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1104,7 +1120,7 @@ const SLACK_PIECE = '@activepieces/piece-slack';
 const SLACK_SEND_ACTIONS = new Set(['send_channel_message', 'send_direct_message']);
 
 function emptyHits(): JobContextHits {
-  return { name: 0, id: 0, link: 0 };
+  return { name: 0, id: 0, link: 0, created: 0 };
 }
 
 function jobContextParagraph(hits: JobContextHits, noted: JobContextHits): string {
@@ -1174,7 +1190,7 @@ function stepDepth(root: any, name: string | undefined): number | undefined {
 
 function pushReviewNote(
   ctx: Ctx,
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS',
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE',
   message: string,
   lost = '',
   anchorStepName?: string,
@@ -1192,9 +1208,13 @@ function pushReviewNote(
               ? REVIEW_SUBFLOW_LABEL
               : kind === 'EMAIL'
                 ? REVIEW_EMAIL_LABEL
-                : kind === 'SMS'
-                  ? REVIEW_SMS_LABEL
-                  : REVIEW_JOB_CONTEXT_LABEL;
+              : kind === 'SMS'
+                ? REVIEW_SMS_LABEL
+                : kind === 'SCHEDULE'
+                  ? REVIEW_SCHEDULE_LABEL
+                  : kind === 'UPDATE'
+                    ? REVIEW_EMPTY_UPDATE_LABEL
+                    : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
     kind === 'CATCH'
       ? 'review_catch'
@@ -1210,7 +1230,11 @@ function pushReviewNote(
                 ? 'review_email'
                 : kind === 'SMS'
                   ? 'review_sms'
-                  : 'review_job';
+                  : kind === 'SCHEDULE'
+                    ? 'review_schedule'
+                    : kind === 'UPDATE'
+                      ? 'review_update'
+                      : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -1614,6 +1638,70 @@ function buildCreateList(name: string, display: string, step: ParsedStep, ctx: C
   );
 }
 
+/** Python que só importa `time` e dorme um literal. Outro corpo fica no stub. */
+function pythonSleepMs(python: string): number | null {
+  const lines = python
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+  if (lines.length !== 3) return null;
+  if (lines[0] !== 'import time') return null;
+  if (!/^def\s+main\s*\(\s*[A-Za-z_]\w*\s*\)\s*:$/.test(lines[1]!)) return null;
+  const sleep = lines[2]!.match(/^time\.sleep\(\s*(\d+(?:\.\d+)?)\s*\)$/);
+  if (!sleep) return null;
+  const ms = Math.round(Number(sleep[1]) * 1000);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Ruby do CAPEX que só avança N dias úteis (pula sáb/dom) e devolve
+ * `data_resultado` como `YYYY-MM-DDT18:00:00`. Outro corpo fica no stub.
+ */
+function isBusinessDaysRuby(ruby: string): boolean {
+  const compact = ruby
+    .replace(/#.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (
+    compact ===
+    `data = Time.parse(input['data_base'].to_s) dias_uteis = (input['dias_uteis'] || 5).to_i while dias_uteis > 0 data = data + 1.day if data.wday != 0 && data.wday != 6 dias_uteis = dias_uteis - 1 end end { data_resultado: data.strftime("%Y-%m-%d") + "T18:00:00" }`
+  );
+}
+
+function businessDaysCode(): string {
+  return [
+    'export const code = async (inputs) => {',
+    '  const match = String(inputs.data_base == null ? "" : inputs.data_base).match(/(\\d{4})-(\\d{2})-(\\d{2})/);',
+    '  if (!match) throw new Error("data_base");',
+    '  const cursor = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));',
+    '  let remaining = Number.parseInt(String(inputs.dias_uteis == null ? 5 : inputs.dias_uteis), 10);',
+    '  if (!Number.isFinite(remaining)) remaining = 5;',
+    '  while (remaining > 0) {',
+    '    cursor.setUTCDate(cursor.getUTCDate() + 1);',
+    '    const wday = cursor.getUTCDay();',
+    '    if (wday !== 0 && wday !== 6) remaining -= 1;',
+    '  }',
+    '  const y = cursor.getUTCFullYear();',
+    '  const m = String(cursor.getUTCMonth() + 1).padStart(2, "0");',
+    '  const d = String(cursor.getUTCDate()).padStart(2, "0");',
+    '  return { data_resultado: `${y}-${m}-${d}T18:00:00` };',
+    '};',
+  ].join('\n');
+}
+
+function buildPythonSleep(name: string, display: string, step: ParsedStep, ctx: Ctx, ms: number): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  const code = [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    `  await new Promise((resolve) => setTimeout(resolve, ${ms}));`,
+    '  return inputs;',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, input, code, !hasTodoMarker(input));
+}
+
 function isNodeIdsPython(python: string): boolean {
   const compact = python.replace(/\s+/g, ' ');
   return (
@@ -1713,6 +1801,121 @@ function sheetsTopLeftCols(sourceInput: Record<string, any>): boolean {
   return Object.keys(data).some((key) => /^col_\d+$/i.test(key));
 }
 
+function blankProp(value: unknown): boolean {
+  return value == null || value === '';
+}
+
+function phaseFieldsBlank(value: unknown): boolean {
+  if (blankProp(value)) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length === 0;
+  return false;
+}
+
+function copyProp(input: Record<string, any>, dest: string, ...sources: string[]): void {
+  if (!blankProp(input[dest])) return;
+  for (const source of sources) {
+    if (!blankProp(input[source]) && input[source] !== '=skip') {
+      input[dest] = input[source];
+      return;
+    }
+  }
+}
+
+/** Renomeia props Workato para o nome obrigatório da piece quando o valor já está no input. */
+function fillKnownProps(
+  target: MapTarget,
+  input: Record<string, any>,
+  sourceInput: Record<string, any>,
+): Record<string, any> {
+  if (target.piece === '@activepieces/piece-microsoft-outlook' && target.name === 'send-email') {
+    copyProp(input, 'subject', 'Subject');
+    copyProp(input, 'body', 'Content');
+    if (blankProp(input.recipients) && !blankProp(input.ToRecipients)) {
+      const to = input.ToRecipients;
+      input.recipients = Array.isArray(to) ? to : [to];
+    }
+    if (blankProp(input.bodyFormat) && !blankProp(input.ContentType)) {
+      const kind = String(input.ContentType).toLowerCase();
+      input.bodyFormat = kind.includes('html') ? 'html' : 'text';
+    }
+  }
+
+  if (target.piece === GOOGLE_SHEETS_PIECE) {
+    copyProp(input, 'spreadsheetId', 'spreadsheet');
+    copyProp(input, 'sheetId', 'sheet');
+    copyProp(input, 'values', 'data', 'rows');
+    if (
+      (target.name === 'insert_row' || target.name === 'update_row' || target.name === 'get-many-rows') &&
+      blankProp(input.first_row_headers)
+    ) {
+      if (target.name === 'insert_row' && sheetsTopLeftCols(sourceInput)) input.first_row_headers = false;
+      else if (target.name !== 'insert_row' || blankProp(sourceInput.column_headers)) input.first_row_headers = true;
+    }
+  }
+
+  if (target.piece === '@activepieces/piece-date-helper' && target.name === 'get_current_date') {
+    if (blankProp(input.timeZone)) input.timeZone = 'America/Sao_Paulo';
+    if (blankProp(input.timeFormat)) input.timeFormat = 'yyyy-MM-dd HH:mm:ss';
+  }
+
+  if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'create_google_calendar_event') {
+    copyProp(input, 'calendar_id', 'id');
+    copyProp(input, 'title', 'summary');
+    copyProp(input, 'start_date_time', 'start');
+    copyProp(input, 'send_notifications', 'sendNotifications');
+  }
+  if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'new_or_updated_event') {
+    copyProp(input, 'calendar_id', 'id');
+    if (blankProp(input.expandRecurringEvent)) input.expandRecurringEvent = false;
+  }
+
+  if (target.piece === '@activepieces/piece-google-drive' && target.name === 'upload_gdrive_file') {
+    copyProp(input, 'fileName', 'name');
+    copyProp(input, 'file', 'fileContent');
+    if (blankProp(input.parentFolder) && !blankProp(input.parents)) {
+      const parents = input.parents;
+      if (Array.isArray(parents) && parents.length === 1) input.parentFolder = parents[0];
+      else if (!Array.isArray(parents)) input.parentFolder = parents;
+    }
+  }
+
+  if (target.piece === '@activepieces/piece-google-docs' && target.name === 'append_text') {
+    copyProp(input, 'documentId', 'document_id');
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'cardExpired') {
+    copyProp(input, 'organizationId', 'organization_id');
+    copyProp(input, 'pipeId', 'pipe_id');
+    if (blankProp(input.phaseId) && !blankProp(input.on_phase_ids)) {
+      const phases = input.on_phase_ids;
+      if (Array.isArray(phases) && phases.length === 1) input.phaseId = phases[0];
+      else if (typeof phases === 'string' && !phases.includes(',')) input.phaseId = phases;
+    }
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'updateCard') {
+    copyProp(input, 'cardId', 'node_ID', 'Node_Id', 'card_id');
+    copyProp(input, 'phaseFields', 'Fields_to_update');
+    copyProp(input, 'organizationId', 'organization_id');
+    copyProp(input, 'pipeId', 'pipe_id');
+    copyProp(input, 'phaseId', 'phase_id');
+    // Workato manda [{fieldId, value}] em Fields_to_update. A piece espera { slug: valor }.
+    if (Array.isArray(input.phaseFields)) {
+      const fields: Record<string, any> = {};
+      for (const item of input.phaseFields) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const id = item.fieldId ?? item.field_id;
+        if (id == null || id === '') continue;
+        fields[String(id)] = item.value;
+      }
+      if (Object.keys(fields).length) input.phaseFields = fields;
+    }
+  }
+
+  return input;
+}
+
 function fillSheetsInsertRow(
   target: MapTarget,
   input: Record<string, any>,
@@ -1721,6 +1924,97 @@ function fillSheetsInsertRow(
   if (target.piece !== GOOGLE_SHEETS_PIECE || target.name !== 'insert_row') return input;
   if (input.first_row_headers !== undefined) return input;
   if (sheetsTopLeftCols(sourceInput)) input.first_row_headers = false;
+  return input;
+}
+
+const JOB_NOW_CODE = `export const code = async () => {
+  return { now: new Date().toISOString() };
+};
+`;
+
+function jobNowStep(next: any | undefined): any {
+  const step = codeStep('job_now', 'Data do job', {}, JOB_NOW_CODE, true);
+  step.nextAction = next;
+  return step;
+}
+
+/** Domingo 1970-01-04 mais o dia da semana do trigger (0 = domingo). */
+function biweeklyAnchor(daysOfWeek: unknown): string {
+  const raw = String(daysOfWeek ?? '0').split(/[,\s]+/)[0] ?? '0';
+  const day = Number.parseInt(raw, 10);
+  const shift = Number.isFinite(day) ? ((day % 7) + 7) % 7 : 0;
+  const date = new Date(Date.UTC(1970, 0, 4 + shift));
+  return date.toISOString().slice(0, 10);
+}
+
+function biweeklyWeeks(input: Record<string, any> | undefined): number | undefined {
+  const unit = String(input?.time_unit ?? '').trim().toLowerCase();
+  if (unit !== 'weeks' && unit !== 'week') return undefined;
+  const n = Number.parseInt(String(input?.trigger_every ?? ''), 10);
+  return Number.isFinite(n) && n > 1 ? n : undefined;
+}
+
+function biweeklyGate(next: any | undefined, weeks: number, anchor: string, timezone: string): any {
+  const days = weeks * 7;
+  const code = `export const code = async () => {
+  // agenda: a cada ${weeks} semanas a partir de ${anchor}
+  const primeiraExecucao = Date.parse('${anchor}T00:00:00Z');
+  const hoje = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: '${timezone}',
+  }).format(new Date());
+  const dias = Math.round(
+    (Date.parse(\`\${hoje}T00:00:00Z\`) - primeiraExecucao) / 86400000,
+  );
+  return { executar: dias >= 0 && dias % ${days} === 0 };
+};
+`;
+  const check = codeStep('agenda_semana', 'Semana da agenda', {}, code, true);
+  const router = {
+    name: 'agenda_quinzena',
+    skip: false,
+    type: 'ROUTER',
+    valid: true,
+    settings: {
+      branches: [
+        {
+          branchName: 'Semana da agenda',
+          branchType: 'CONDITION',
+          conditions: [[{
+            firstValue: "{{agenda_semana['executar']}}",
+            operator: 'BOOLEAN_IS_TRUE',
+          }]],
+        },
+        { branchName: 'Outra semana', branchType: 'FALLBACK' },
+      ],
+      executionType: 'EXECUTE_FIRST_MATCH',
+    },
+    children: [next ?? null, null],
+    displayName: 'Agenda a cada N semanas',
+    lastUpdatedDate: NOW,
+  };
+  check.nextAction = router;
+  return check;
+}
+
+function fillSheetsFindRows(
+  target: MapTarget,
+  input: Record<string, any>,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): Record<string, any> {
+  if (target.piece !== GOOGLE_SHEETS_PIECE || target.name !== 'find_rows') return input;
+  const data = sourceInput.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const keys = Object.keys(data).filter((key) => data[key] !== '=skip' && data[key] != null && data[key] !== '');
+    if (keys.length === 1 && (input.columnName == null || input.columnName === '')) {
+      input.columnName = keys[0];
+      if (input.searchValue == null || input.searchValue === '') {
+        input.searchValue = deepConvert(data[keys[0]!], ctx);
+      }
+    }
+  }
+  if (input.matchCase == null || input.matchCase === '') input.matchCase = true;
+  if (input.headerRow == null || input.headerRow === '') input.headerRow = true;
   return input;
 }
 
@@ -1782,6 +2076,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isNodeIdsPython(String(step.input?.code ?? ''))) {
     return buildNodeIdsPython(name, display, step, ctx);
   }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code') {
+    const sleepMs = pythonSleepMs(String(step.input?.code ?? ''));
+    if (sleepMs != null) return buildPythonSleep(name, display, step, ctx, sleepMs);
+  }
   if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
     return buildOpenCardsSearch(name, display, sourceInput, ctx);
   }
@@ -1806,33 +2104,44 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       '',
       name,
     );
-    return todoPieceStep(name, display, sourceInput);
+    const input = resolveFormulas(convInput(sourceInput, undefined, ctx), ctx, name, sourceInput);
+    return todoPieceStep(name, display, input);
   }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
   if (!rubySleep && (entry?.manual || entry?.builtin || opKey.endsWith('/invoke_custom_ruby_code'))) {
     const isRuby = opKey.endsWith('/invoke_custom_ruby_code');
-    const ruby = isRuby ? String(step.input?.code ?? '') : '';
-    // para custom ruby, os inputs reais estao em code_input.data
-    const rawInput = isRuby ? (step.input?.code_input?.data ?? {}) : sourceInput;
-    const kind = entry?.builtin === 'loop' ? 'acumulador/loop' : isRuby ? 'Ruby' : 'logica';
+    const isPython = opKey.endsWith('/invoke_custom_py_code');
+    const isJs = opKey.endsWith('/invoke_custom_js_code');
+    const language = codeLanguage(opKey);
+    // Ruby e Python leem os campos reais em code_input.data. O stub achata isso em inputs.<campo>.
+    const rawInput = isRuby || isPython || isJs ? (step.input?.code_input?.data ?? {}) : sourceInput;
+    const kind = entry?.builtin === 'loop' ? 'acumulador/loop' : isRuby ? 'Ruby' : isPython ? 'Python' : 'logica';
     const codeInput = resolveFormulas(convInput(rawInput, undefined, ctx), ctx, name);
-    const source = isRuby ? ruby : String(step.input?.code ?? '');
+    const source = String(step.input?.code ?? '');
     const lifted = liftCodeSecrets(codeInput, source, ctx, name);
-    if (opKey.endsWith('/invoke_custom_js_code')) {
+    if (isRuby && isBusinessDaysRuby(lifted.source)) {
+      return codeStep(name, display, lifted.input, businessDaysCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isJs) {
       const wrapped = wrapJsEvalMain(lifted.source);
       if (wrapped) {
         return codeStep(name, display, lifted.input, wrapped, !hasTodoMarker(lifted.input));
       }
     }
-    ctx.todos.push(`CODE (${name}): traduzir "${opKey}" (${kind}) para JS. Ruby original embutido no step.`);
-    return codeStep(name, display, lifted.input, buildCodeStub(opKey, isRuby ? lifted.source : ruby));
+    ctx.todos.push(`CODE (${name}): traduzir "${opKey}" (${kind}) para JS. ${language} original embutido no step.`);
+    return codeStep(name, display, lifted.input, buildCodeStub(opKey, lifted.source, language));
   }
 
   if (!entry || !entry.target) {
     // Passo desligado que nao tem piece: o cartao vazio do bloco de erro
     // ("Select an app and action", skip: true). Nao vira TODO no flow.
     if (step.skip) return null;
+    // Word "Get document content" nao tem action com o mesmo provider e os
+    // mesmos inputs. O passo sai do canvas; o que vem depois continua.
+    if (collapseOpKey(opKey) === 'word/get_document_content') {
+      return buildChain(step.children, ctx) ?? null;
+    }
     ctx.todos.push(`NAO MAPEADA (${name}): "${opKey}" -> definir mapa (add-map).`);
     return todoPieceStep(name, display, sourceInput);
   }
@@ -1850,6 +2159,24 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     input = fillHttpSend(input, sourceInput, ctx);
   }
   input = fillSheetsInsertRow(t, input, sourceInput);
+  input = fillSheetsFindRows(t, input, sourceInput, ctx);
+  input = fillKnownProps(t, input, sourceInput);
+  if (t.piece === PIPEFY_PIECE && t.name === 'updateCard' && phaseFieldsBlank(input.phaseFields)) {
+    const original = JSON.stringify(step.input ?? {}, null, 2);
+    pushReviewNote(
+      ctx,
+      'UPDATE',
+      [
+        `Passo Workato ${step.number ?? '?'} (${step.comment || step.name || opKey}) nao foi transportado.`,
+        'O update nao traz valor de campo. A Workato ignora os opcionais vazios e o card nao muda.',
+        '',
+        `${step.provider ?? ''}/${step.name ?? ''}`,
+        original,
+      ].join('\n'),
+    );
+    ctx.noteAnchorPending = ctx.canvasNotes.length - 1;
+    return null;
+  }
   if (collapseOpKey(opKey) === 'file_connector/uncompress_file') {
     if (input.file == null && input.file_contents != null) {
       input.file = input.file_contents;
@@ -2115,68 +2442,6 @@ function branchHasTerminatingStop(children: ParsedStep[]): boolean {
     if (stopsExecution(child)) return true;
   }
   return false;
-}
-
-/**
- * IF irmao: sem elsif/else e sem stop. Dois ou mais seguidos viram um router
- * so, EXECUTE_ALL_MATCH. if/elsif/else e if com stop continuam separados.
- */
-function isMergeableSiblingIf(step: ParsedStep): boolean {
-  if (step.keyword !== 'if' || step.skip) return false;
-  if (
-    step.children.some(
-      (child) => child.keyword === 'elsif' || child.keyword === 'elseif' || child.keyword === 'else',
-    )
-  ) {
-    return false;
-  }
-  return !branchHasTerminatingStop(step.children);
-}
-
-/** IFs irmaos -> um ROUTER com EXECUTE_ALL_MATCH. O passo seguinte fica no nextAction. */
-function buildSiblingRouter(steps: ParsedStep[], ctx: Ctx): any {
-  const name = steps[0]!.apName || nextName('router');
-  const parts = steps.map((step) =>
-    withOverlay(ctx, variableOverlay(step, ctx), () => ({
-      built: buildConditionGroups(asConditionsInput(step.input), ctx),
-      children: buildChain(step.children, ctx) ?? null,
-      comment: step.comment,
-    })),
-  );
-  const groups = resolveFormulas(
-    parts.map((part) => part.built.groups),
-    ctx,
-    name,
-  ) as any[][][];
-  const review = parts.some((part) => part.built.review) || hasTodoMarker(groups);
-
-  if (review) {
-    ctx.todos.push(`ROUTER (${name}): revisar condicoes dos ifs irmaos.`);
-  }
-  ctx.todos.push(
-    `ROUTER (${name}): ${steps.length} ifs irmaos viraram ramos do mesmo router (all match).`,
-  );
-
-  return {
-    name,
-    skip: false,
-    type: 'ROUTER',
-    valid: !review,
-    settings: {
-      branches: [
-        ...parts.map((part, index) => ({
-          branchName: part.comment || `Se verdadeiro (${index + 1})`,
-          branchType: 'CONDITION' as const,
-          conditions: groups[index],
-        })),
-        { branchName: 'Senao', branchType: 'FALLBACK' as const },
-      ],
-      executionType: 'EXECUTE_ALL_MATCH',
-    },
-    children: [...parts.map((part) => part.children), null],
-    displayName: 'Condicao',
-    lastUpdatedDate: NOW,
-  };
 }
 
 /** if / elsif... / else -> ROUTER com EXECUTE_FIRST_MATCH (mesma semantica). */
@@ -2660,54 +2925,94 @@ function rewireStopOnFailure(step: any, ctx: Ctx): any {
   return step;
 }
 
-/** Cópia do catch com nomes novos. A pill de erro aponta para o passo que falhou. */
-function cloneHandler(template: any, ownerName: string, ctx: Ctx): any {
-  const clone = JSON.parse(JSON.stringify(template));
-  const renames: [string, string][] = [];
-  const seen = new Set<any>();
-  const walk = (node: any) => {
-    if (!node || typeof node !== 'object' || seen.has(node)) return;
-    seen.add(node);
-    if (typeof node.name === 'string' && node.type) {
-      const prefix = node.name.replace(/_\d+$/, '') || 'catch';
-      // `step_` vem do contador da receita. `nextName` sozinho repetia esses nomes.
-      const next = prefix === 'step' ? `step_${ctx.counter.n++}` : nextName(prefix);
-      renames.push([node.name, next]);
-      node.name = next;
-    }
-    for (const value of Object.values(node)) {
-      if (Array.isArray(value)) value.forEach(walk);
-      else if (value && typeof value === 'object') walk(value);
-    }
-  };
-  walk(clone);
-  let raw = JSON.stringify(clone);
-  renames.sort((a, b) => b[0].length - a[0].length);
-  for (const [from, to] of renames) raw = raw.split(`{{${from}`).join(`{{${to}`);
-  raw = raw.split(CATCH_ERROR_TOKEN).join(`{{${ownerName}['error']['message']}}`);
+/** Primeira mensagem de erro entre os passos deste monitor. */
+function catchMessageStep(owners: string[]): any {
+  const name = nextName('catch_msg');
+  const input: Record<string, string> = {};
+  owners.forEach((owner, index) => {
+    input[`e${index}`] = `{{${owner}['error']['message']}}`;
+  });
+  const reads = owners.map((_, index) => `inputs.e${index}`).join(', ');
+  const code = [
+    'export const code = async (inputs) => {',
+    `  const messages = [${reads}];`,
+    "  const message = messages.find((item) => item !== undefined && item !== null && String(item) !== '') ?? '';",
+    '  return { message };',
+    '};',
+  ].join('\n');
+  return codeStep(name, 'Mensagem do catch', input, code, true);
+}
+
+function bindCatchMessage(head: any, messagePill: string): any {
+  const raw = JSON.stringify(head).split(CATCH_ERROR_TOKEN).join(messagePill);
   return JSON.parse(raw);
 }
 
-/**
- * Cada passo do try: sucesso segue o bloco, falha executa o catch.
- * nextAction fica vazio porque o motor ainda anda nele depois do ramo.
- * Passo já reivindicado por um monitor de dentro fica como está.
- */
-function rewireMonitor(step: any, template: any, ctx: Ctx): any {
-  if (!step) return step;
-  if (step.settings?.actionName === 'stopFlow') return step;
+/** Um router para o catch. As ações, e o stop quando existe, aparecem uma vez. */
+function sharedCatchRouter(owners: string[], handler: any): any {
+  const message = catchMessageStep(owners);
+  const branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
+  return {
+    name: nextName('catch'),
+    skip: false,
+    type: 'ROUTER',
+    valid: true,
+    settings: {
+      branches: [
+        {
+          branchName: 'Cenario de erro',
+          branchType: 'CONDITION',
+          conditions: owners.map((owner) => [
+            { operator: 'EXISTS', firstValue: `{{${owner}['error']['message']}}` },
+          ]),
+        },
+        { branchName: 'Seguiu', branchType: 'FALLBACK' },
+      ],
+      executionType: 'EXECUTE_FIRST_MATCH',
+    },
+    children: [branch, null],
+    displayName: CATCH_ROUTER_LABEL,
+    lastUpdatedDate: NOW,
+  };
+}
+
+/** Passos deste monitor. Um catch de dentro já ficou com a falha dele. */
+function collectMonitorOwners(step: any, names: string[] = [], seen = new Set<any>()): string[] {
+  if (!step || seen.has(step)) return names;
+  seen.add(step);
+  if (step.settings?.actionName === 'stopFlow') return names;
+  if (step.displayName === CATCH_ROUTER_LABEL) return names;
   if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
-    step.nextAction = rewireMonitor(step.nextAction, template, ctx);
+    collectMonitorOwners(step.continueOnFailureBranches?.onSuccess, names, seen);
+    return names;
+  }
+  if (step.firstLoopAction) collectMonitorOwners(step.firstLoopAction, names, seen);
+  for (const child of step.children ?? []) collectMonitorOwners(child, names, seen);
+  if (isFallibleStep(step) && step.name) names.push(step.name);
+  collectMonitorOwners(step.nextAction, names, seen);
+  return names;
+}
+
+/**
+ * Catch com ações. Sucesso segue o bloco. A falha não leva os passos seguintes.
+ * O router do cenário de erro fica uma vez, no nextAction do primeiro passo:
+ * o motor anda esse nextAction depois do ramo, então qualquer falha da cadeia
+ * volta nele. Passo já reivindicado por um monitor de dentro fica como está.
+ */
+function rewireOpenCatch(step: any, ctx: Ctx): any {
+  if (!step) return step;
+  if (step.settings?.actionName === 'stopFlow' || step.displayName === CATCH_ROUTER_LABEL) return step;
+  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
     if (step.continueOnFailureBranches?.onSuccess) {
-      step.continueOnFailureBranches.onSuccess = rewireMonitor(step.continueOnFailureBranches.onSuccess, template, ctx);
+      step.continueOnFailureBranches.onSuccess = rewireOpenCatch(step.continueOnFailureBranches.onSuccess, ctx);
     }
     return step;
   }
-  if (step.firstLoopAction) step.firstLoopAction = rewireMonitor(step.firstLoopAction, template, ctx);
+  if (step.firstLoopAction) step.firstLoopAction = rewireOpenCatch(step.firstLoopAction, ctx);
   if (Array.isArray(step.children)) {
-    step.children = step.children.map((child: any) => rewireMonitor(child, template, ctx));
+    step.children = step.children.map((child: any) => rewireOpenCatch(child, ctx));
   }
-  const rest = step.nextAction ? rewireMonitor(step.nextAction, template, ctx) : undefined;
+  const rest = step.nextAction ? rewireOpenCatch(step.nextAction, ctx) : undefined;
   if (!isFallibleStep(step)) {
     step.nextAction = rest;
     return step;
@@ -2716,8 +3021,7 @@ function rewireMonitor(step: any, template: any, ctx: Ctx): any {
   if (step.settings?.errorHandlingOptions) {
     step.settings.errorHandlingOptions.continueOnFailure = { value: true };
   }
-  const failure = cloneHandler(template, step.name, ctx);
-  step.continueOnFailureBranches = rest ? { onSuccess: rest, onFailure: failure } : { onFailure: failure };
+  if (rest) step.continueOnFailureBranches = { onSuccess: rest };
   claimedByCatch.add(step);
   return step;
 }
@@ -2744,7 +3048,33 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   const handlerHead = buildChain(activeHandlers, ctx);
   if (!handlerHead) return first ?? null;
   notePendingJobContext(ctx, lastStepName(first));
-  return rewireMonitor(first, handlerHead, ctx) ?? null;
+
+  const owners = collectMonitorOwners(first);
+  const router = sharedCatchRouter(owners, handlerHead);
+  const head = rewireOpenCatch(first, ctx);
+  attachSharedRouter(head, router);
+  return head ?? null;
+}
+
+/** O router do catch fica no nextAction do primeiro passo falível deste monitor. */
+function attachSharedRouter(step: any, router: any, seen = new Set<any>()): boolean {
+  if (!step || seen.has(step) || step === router || step.displayName === CATCH_ROUTER_LABEL) return false;
+  seen.add(step);
+  const ownedByInner =
+    step.continueOnFailureBranches?.onFailure || step.nextAction?.displayName === CATCH_ROUTER_LABEL;
+  if (ownedByInner) {
+    return attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen);
+  }
+  if (isFallibleStep(step)) {
+    step.nextAction = router;
+    return true;
+  }
+  if (attachSharedRouter(step.nextAction, router, seen)) return true;
+  if (attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen)) return true;
+  for (const child of step.children ?? []) {
+    if (attachSharedRouter(child, router, seen)) return true;
+  }
+  return false;
 }
 
 function describeFilter(filter: WorkatoConditionsInput | undefined): string {
@@ -2798,7 +3128,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
   if (String(root.provider ?? '').includes('recipe_function') && root.name === 'execute') {
     ctx.subflowResultLabels = resultLabelsFromSchema(root.input?.result_schema_json);
   }
-  const nextAction = gateOnTriggerFilter(root, buildChain(root.children, ctx), ctx);
+  let nextAction = gateOnTriggerFilter(root, buildChain(root.children, ctx), ctx);
 
   if (entry?.target?.kind === 'trigger') {
     const t = entry.target;
@@ -2811,12 +3141,29 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     if (t.piece === SUBFLOW_PIECE && t.name === 'callableFlow') {
       input = shapeCallableFlow(root.input ?? {});
     }
+    input = fillKnownProps(t, input, root.input ?? {});
+    if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
     if (opKey === 'clock/scheduled_event' && t.name === 'cron_expression') {
       const cron = workatoScheduleToCron(root.input);
       if (cron) input.cronExpression = cron;
-      if (!input.timezone) input.timezone = 'UTC';
-      const note = scheduleCronTodo(root.input, cron ?? '');
-      if (note) ctx.todos.push(note);
+      const weeks = biweeklyWeeks(root.input);
+      if (weeks) {
+        const timezone = String(root.input?.timezone ?? input.timezone ?? 'America/Sao_Paulo');
+        input.timezone = timezone;
+        const anchor = biweeklyAnchor(root.input?.days_of_week);
+        nextAction = biweeklyGate(nextAction, weeks, anchor, timezone);
+        pushReviewNote(
+          ctx,
+          'SCHEDULE',
+          `A agenda Workato é a cada ${weeks} semanas. O gatilho dispara toda semana (${cron ?? 'cron semanal'}) em ${timezone}. O passo agenda_semana só deixa seguir na semana certa, contada a partir de ${anchor}.`,
+          '',
+          'agenda_semana',
+        );
+      } else {
+        if (!input.timezone) input.timezone = 'UTC';
+        const note = scheduleCronTodo(root.input, cron ?? '');
+        if (note) ctx.todos.push(note);
+      }
     }
     const missing = missingRequiredProps(ctx, t, input);
     if (missing.length) {

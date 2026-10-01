@@ -78,15 +78,22 @@ export function updateListFieldFromGraphql(input: Record<string, any>): UpdateLi
   if (!query || !/updateFieldsValues/i.test(query)) return null;
   const fields = [...query.matchAll(/fieldId:/g)];
   if (fields.length !== 1) return null;
-  const node = query.match(/nodeId:\s*(\{\{[\s\S]*?\}\}|[^,\s]+)/);
+  const node = query.match(/nodeId:\s*"?(\{\{[\s\S]*?\}\}|[^",\s]+)"?/);
   const item = query.match(
-    /fieldId:\s*"([^"]+)"\s*,?\s*value:\s*(?:"([\s\S]*?)"|(\{\{[\s\S]*?\}\}))\s*,?\s*operation:\s*"?ADD"?\b/,
+    /fieldId:\s*"([^"]+)"[\s\S]*?value:\s*(?:"([^"]*)"|\[([\s\S]*?)\]|(\{\{[\s\S]*?\}\}))[\s\S]*?operation:\s*"?ADD"?\b/,
   );
   if (!node || !item) return null;
+  let fieldValue = item[2] ?? item[4];
+  if (fieldValue == null && item[3] != null) {
+    const parts = [...item[3].matchAll(/"([^"]*)"|(\{\{[\s\S]*?\}\})/g)].map((match) => match[1] ?? match[2]!);
+    if (parts.length !== 1) return null;
+    fieldValue = parts[0];
+  }
+  if (!fieldValue) return null;
   return {
     nodeId: node[1]!.trim(),
     fieldId: item[1]!,
-    fieldValue: (item[2] ?? item[3])!,
+    fieldValue,
     operation: 'ADD',
   };
 }
