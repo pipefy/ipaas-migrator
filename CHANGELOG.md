@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.1 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.2 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.2 — 5 out 2026
+
+HTTP com conexão na Workato ganha nota amarela no canvas pedindo para recriar a autenticação. Pill interna do motor sai em colchete e o mapa ganha ajustes de prop.
+
+- Step HTTP de receita com conexão Workato sai com a nota `REVISAR: conexão`. O piece HTTP do iPaaS não importa conexão e o step sai com `authType: "none"`.
+- Pill interna (`formula_1.f1`, `loop_2.item['id']`) sai em colchete, sem virar `['output'].f1` no import.
+- Uma prop do iPaaS pode juntar várias da Workato (Dropbox `path` = pasta + nome). Propriedade de conta Workato vira variável `{{variables['NOME']}}`.
+- 108 operações do mapa com prop, `fixedProps` ou nota ajustados.
+- `migrador-workato-cliente-navegador-0.6.2.tgz`
 
 ## 0.6.1 — 5 out 2026
 

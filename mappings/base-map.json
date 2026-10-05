@@ -27,12 +27,28 @@
 
   "operations": {
     "slack_bot/post_bot_message": {
-      "target": { "piece": "@activepieces/piece-slack", "name": "send_channel_message", "kind": "action" },
-      "alt": { "piece": "@activepieces/piece-slack", "name": "send_direct_message", "kind": "action", "when": "channel e um user id (DM) -> usar send_direct_message (userId)" },
-      "propMap": { "channel": "channel", "text": "text", "blocks": "blocks" },
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
+      "alt": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_direct_message",
+        "kind": "action",
+        "when": "channel e um user id (DM) -> usar send_direct_message (userId)"
+      },
+      "propMap": {
+        "channel": "channel",
+        "text": "text",
+        "blocks": "blocks"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "attachments/message.color nao tem prop direta; usar blocks (Block Kit) ou custom_api_call."
+      "notes": "attachments/message.color nao tem prop direta; usar blocks (Block Kit) ou custom_api_call.",
+      "fixedProps": {
+        "sendAsBot": true
+      }
     },
     "slack_bot/get_user_by_email": {
       "target": { "piece": "@activepieces/piece-slack", "name": "slack-find-user-by-email", "kind": "action" },
@@ -242,11 +258,19 @@
     },
 
     "rest/make_request_v2": {
-      "target": { "piece": "@activepieces/piece-http", "name": "send_request", "kind": "action" },
-      "propMap": { "request.method": "method", "request.url": "url", "request.body": "body" },
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body"
+      },
       "difficulty": "low",
       "manual": false,
-      "notes": "headers/Content-Type e auth (authType/authFields) definir manualmente na piece HTTP."
+      "notes": "headers/Content-Type e auth (authType/authFields) definir manualmente na piece HTTP. Conector customizado sem URL na receita: preencher method e url."
     },
     "file_connector/read_file": {
       "target": { "piece": "@activepieces/piece-http", "name": "send_request", "kind": "action" },
@@ -356,11 +380,22 @@
       "notes": "slash command/botao -> trigger new_command; botoes de resposta via request_action_message."
     },
     "slack/post_message_to_channel": {
-      "target": { "piece": "@activepieces/piece-slack", "name": "send_channel_message", "kind": "action" },
-      "propMap": { "channel": "channel", "text": "text" },
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
+      "propMap": {
+        "channel": "channel",
+        "text": "text",
+        "username": "username"
+      },
       "difficulty": "low",
       "manual": false,
-      "notes": "conector Slack classico (nao Workbot). attachments/parse nao tem prop direta."
+      "notes": "conector Slack classico (nao Workbot). attachments/parse nao tem prop direta.",
+      "fixedProps": {
+        "sendAsBot": true
+      }
     },
     "slack/get_user_by_email": {
       "target": { "piece": "@activepieces/piece-slack", "name": "slack-find-user-by-email", "kind": "action" },
@@ -454,19 +489,38 @@
       "manual": false
     },
     "salesforce/get_custom_object": {
-      "target": { "piece": "@activepieces/piece-salesforce", "name": "find_record", "kind": "action" },
-      "propMap": { "sobject_name": "object", "id": "search_value" },
-      "fixedProps": { "field": "Id" },
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "find_record",
+        "kind": "action"
+      },
+      "propMap": {
+        "sobject_name": "object",
+        "id": "search_value"
+      },
+      "fixedProps": {
+        "field": "Id"
+      },
       "difficulty": "medium",
       "manual": false,
       "notes": "get by id no Workato; field fixo Id. Revisar se o objeto usa outro identificador."
     },
     "salesforce/search_sobjects": {
-      "target": { "piece": "@activepieces/piece-salesforce", "name": "find_record", "kind": "action" },
-      "propMap": { "sobject_name": "object" },
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "find_record",
+        "kind": "action"
+      },
+      "propMap": {
+        "sobject_name": "object",
+        "Name": "search_value"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "field + search_value sao dinamicos no Workato; escolher na importacao."
+      "notes": "field + search_value sao dinamicos no Workato; escolher na importacao. A receita filtra por Name; se filtrar por outro campo, ajustar field e search_value.",
+      "fixedProps": {
+        "field": "Name"
+      }
     },
     "salesforce/search_sobjects_soql": {
       "target": { "piece": "@activepieces/piece-salesforce", "name": "run_query", "kind": "action" },
@@ -488,10 +542,21 @@
       "notes": "parent_object/parent_id dependem do sObject; AccountId e outros FKs ficam para revisao."
     },
     "salesforce/__adhoc_http_action": {
-      "target": { "piece": "@activepieces/piece-salesforce", "name": "custom_api_call", "kind": "action" },
-      "propMap": { "path": "url", "verb": "method" },
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
 
     "google_big_query/search_rows_using_custom_sql_sync": {
@@ -530,18 +595,40 @@
       "notes": "Workato gera linhas a partir de lista; column_labels/force_quotes nao tem prop direta."
     },
     "open_ai/__adhoc_http_action": {
-      "target": { "piece": "@activepieces/piece-openai", "name": "custom_api_call", "kind": "action" },
-      "propMap": { "path": "url", "verb": "method" },
+      "target": {
+        "piece": "@activepieces/piece-openai",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "HTTP ad-hoc do conector OpenAI; body/headers vao em custom_api_call. Revisar path absoluto."
+      "notes": "HTTP ad-hoc do conector OpenAI; body/headers vao em custom_api_call. Revisar path absoluto.",
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "slack_bot/__adhoc_http_action": {
-      "target": { "piece": "@activepieces/piece-slack", "name": "custom_api_call", "kind": "action" },
-      "propMap": { "path": "url", "verb": "method" },
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "HTTP ad-hoc do Workbot; useUserToken e path Slack ficam para revisao."
+      "notes": "HTTP ad-hoc do Workbot; useUserToken e path Slack ficam para revisao.",
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "json_parser/parse_json": {
       "target": { "piece": "@activepieces/piece-json", "name": "convert_text_to_json", "kind": "action" },
@@ -595,8 +682,14 @@
       "notes": "API platform inbound -> catch_webhook. Resposta via return_response no mesmo flow."
     },
     "workato_api_platform/return_response": {
-      "target": { "piece": "@activepieces/piece-webhook", "name": "return_response", "kind": "action" },
-      "propMap": {},
+      "target": {
+        "piece": "@activepieces/piece-webhook",
+        "name": "return_response",
+        "kind": "action"
+      },
+      "propMap": {
+        "response": "fields"
+      },
       "difficulty": "medium",
       "manual": false,
       "notes": "http_status_code/body do Workato -> fields do return_response; conferir responseType."
@@ -675,26 +768,58 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (ABBYY Vantage REST)."
     },
     "amazon_s3/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "high",
       "manual": false,
       "notes": "action custom_api_call nao existe em @activepieces/piece-amazon-s3; migrar de fora via HTTP. original: @activepieces/piece-amazon-s3 / custom_api_call"
     },
     "azure_active_directory_connector_186728_1693347237/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "azure_active_directory_connector_186728_1693347237/get_group_members": {
-      "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "list_group_members",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (groupId); escolher na importacao."
     },
     "azure_active_directory_connector_186728_1693347237/get_user_custom_attributes": {
-      "target": {"piece":"@activepieces/piece-azure-ad","name":"get_user_by_id","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "get_user_by_id",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (userId); escolher na importacao."
     },
     "azure_active_directory_connector_186728_1693347237/new_updated_user": {
       "target": {"piece":"@activepieces/piece-azure-ad","name":"new_user","kind":"trigger"},
@@ -702,9 +827,21 @@
       "manual": false
     },
     "azure_ad/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "azure_ad/get_group_members": {
       "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
@@ -753,10 +890,14 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
     },
     "click_up_connector_744758_1661261772/get_object": {
-      "target": {"piece":"@activepieces/piece-clickup","name":"get_task_by_name","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-clickup",
+        "name": "get_task_by_name",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "ou custom_api_call"
+      "notes": "ou custom_api_call Prop obrigatoria que depende da conta do cliente (workspace_id, space_id, list_id); escolher na importacao."
     },
     "click_up_connector_744758_1661261772/new_event": {
       "target": {"piece":"@activepieces/piece-clickup","name":"clickup_trigger_task_created","kind":"trigger"},
@@ -765,10 +906,14 @@
       "notes": "ou task_updated conforme evento"
     },
     "clickup/get_object": {
-      "target": {"piece":"@activepieces/piece-clickup","name":"get_task_by_name","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-clickup",
+        "name": "get_task_by_name",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "ou custom_api_call"
+      "notes": "ou custom_api_call Prop obrigatoria que depende da conta do cliente (workspace_id, space_id, list_id); escolher na importacao."
     },
     "clickup/new_event": {
       "target": {"piece":"@activepieces/piece-clickup","name":"clickup_trigger_task_created","kind":"trigger"},
@@ -833,9 +978,14 @@
       "manual": false
     },
     "coupa/new_or_updated_object": {
-      "target": {"piece":"@activepieces/piece-coupa","name":"new_or_updated_object","kind":"trigger"},
+      "target": {
+        "piece": "@activepieces/piece-coupa",
+        "name": "new_or_updated_object",
+        "kind": "trigger"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (module); escolher na importacao."
     },
     "coupa/search_objects": {
       "target": {"piece":"@activepieces/piece-coupa","name":"search_objects","kind":"action"},
@@ -877,9 +1027,21 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
     },
     "docusign/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-docusign","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "docusign/create_envelope": {
       "target": {"piece":"@activepieces/piece-docusign","name":"createAndSendEnvelope","kind":"action"},
@@ -887,9 +1049,14 @@
       "manual": false
     },
     "docusign/download_document": {
-      "target": {"piece":"@activepieces/piece-docusign","name":"getDocument","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "getDocument",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (accountId, documentId); escolher na importacao."
     },
     "docusign/get_envelope": {
       "target": {"piece":"@activepieces/piece-docusign","name":"getEnvelope","kind":"action"},
@@ -897,15 +1064,24 @@
       "manual": false
     },
     "docusign/list_documents": {
-      "target": {"piece":"@activepieces/piece-docusign","name":"getDocument","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "getDocument",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (accountId); escolher na importacao."
     },
     "docusign/new_event": {
-      "target": {"piece":"@activepieces/piece-docusign","name":"envelopeCompleted","kind":"trigger"},
+      "target": {
+        "piece": "@activepieces/piece-docusign",
+        "name": "envelopeCompleted",
+        "kind": "trigger"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "e demais envelope*/recipient* conforme evento"
+      "notes": "e demais envelope*/recipient* conforme evento Prop obrigatoria que depende da conta do cliente (accountId); escolher na importacao."
     },
     "docusign/send_envelope": {
       "target": {"piece":"@activepieces/piece-docusign","name":"createAndSendEnvelope","kind":"action"},
@@ -913,9 +1089,22 @@
       "manual": false
     },
     "dropbox/create_folder": {
-      "target": {"piece":"@activepieces/piece-dropbox","name":"create_new_dropbox_folder","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-dropbox",
+        "name": "create_new_dropbox_folder",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "composeProps": {
+        "path": {
+          "parts": [
+            "folder_path",
+            "folder_name"
+          ],
+          "separator": "/"
+        }
+      }
     },
     "dropbox/move_file": {
       "target": {"piece":"@activepieces/piece-dropbox","name":"move_dropbox_file","kind":"action"},
@@ -933,19 +1122,53 @@
       "manual": false
     },
     "dropbox/upload_file_from_url": {
-      "target": {"piece":"@activepieces/piece-dropbox","name":"upload_dropbox_file","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-dropbox",
+        "name": "upload_dropbox_file",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "composeProps": {
+        "path": {
+          "parts": [
+            "folder_path",
+            "filename"
+          ],
+          "separator": "/"
+        }
+      },
+      "propMap": {
+        "url": "file"
+      },
+      "notes": "path = folder_path + \"/\" + filename. O iPaaS recebe o arquivo, nao a URL: baixar antes (HTTP) e apontar file para o resultado."
     },
     "excel/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-excel-365",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "excel/add_rows_batch": {
-      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"append_multiple_rows","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-excel-365",
+        "name": "append_multiple_rows",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (storageSource, workbookId, worksheetId); escolher na importacao."
     },
     "excel/get_range_cells": {
       "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"get_range","kind":"action"},
@@ -953,9 +1176,14 @@
       "manual": false
     },
     "excel/get_table_rows": {
-      "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"get_table_rows","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-excel-365",
+        "name": "get_table_rows",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (storageSource, workbookId, worksheetId); escolher na importacao."
     },
     "excel/search_workbooks": {
       "target": {"piece":"@activepieces/piece-microsoft-excel-365","name":"find-workbook","kind":"action"},
@@ -968,9 +1196,14 @@
       "manual": false
     },
     "facebook_lead_ads/new_lead": {
-      "target": {"piece":"@activepieces/piece-facebook-leads","name":"new_lead","kind":"trigger"},
+      "target": {
+        "piece": "@activepieces/piece-facebook-leads",
+        "name": "new_lead",
+        "kind": "trigger"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (page); escolher na importacao."
     },
     "file_connector/compress_file": {
       "target": {"piece":"@activepieces/piece-file-helper","name":"zipFiles","kind":"action"},
@@ -1009,9 +1242,16 @@
       "manual": false
     },
     "ftps/get_file_content": {
-      "target": {"piece":"@activepieces/piece-sftp","name":"read_file_content","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "read_file_content",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "file_name": "filePath"
+      }
     },
     "ftps/new_file_in_dir": {
       "target": {"piece":"@activepieces/piece-sftp","name":"new_file","kind":"trigger"},
@@ -1024,9 +1264,17 @@
       "manual": false
     },
     "ftps/upload": {
-      "target": {"piece":"@activepieces/piece-sftp","name":"upload_file","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "upload_file",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "filename": "fileName",
+        "content": "fileContent"
+      }
     },
     "gmail/download_attachment": {
       "target": {"piece":"@activepieces/piece-gmail","name":"gmail_get_mail","kind":"action"},
@@ -1040,9 +1288,25 @@
       "manual": false
     },
     "gmail/send_mail": {
-      "target": {"piece":"@activepieces/piece-gmail","name":"send_email","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-gmail",
+        "name": "send_email",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "to": "receiver",
+        "cc": "cc",
+        "bcc": "bcc",
+        "subject": "subject",
+        "body": "body",
+        "attachments": "attachments"
+      },
+      "fixedProps": {
+        "body_type": "plain_text",
+        "draft": false
+      }
     },
     "google_big_query/insert_row": {
       "target": {"piece":"@activepieces/piece-google-bigquery","name":"create_row","kind":"action"},
@@ -1095,9 +1359,16 @@
       "manual": false
     },
     "google_calendar/delete_event": {
-      "target": {"piece":"@activepieces/piece-google-calendar","name":"delete_event","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-calendar",
+        "name": "delete_event",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "event_id": "eventId"
+      }
     },
     "google_calendar/search_events": {
       "target": {"piece":"@activepieces/piece-google-calendar","name":"google_calendar_get_events","kind":"action"},
@@ -1105,11 +1376,22 @@
       "manual": false
     },
     "google_calendar/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-google-calendar","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method"},
+      "target": {
+        "piece": "@activepieces/piece-google-calendar",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "HTTP ad-hoc do conector Calendar. A piece tem Custom API Call (KB 0.10.3). Path/body/headers ficam para revisao — nas Gong isso e POST de evento com colorId/conferenceData."
+      "notes": "HTTP ad-hoc do conector Calendar. A piece tem Custom API Call (KB 0.10.3). Path/body/headers ficam para revisao — nas Gong isso e POST de evento com colorId/conferenceData.",
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "google_cloud_storage/download_object": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
@@ -1119,9 +1401,14 @@
       "notes": "action custom_api_call nao existe em @activepieces/piece-google-cloud-storage; migrar de fora via HTTP. original: @activepieces/piece-google-cloud-storage / custom_api_call (download)"
     },
     "google_cloud_storage/list_objects": {
-      "target": {"piece":"@activepieces/piece-google-cloud-storage","name":"search_objects","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-cloud-storage",
+        "name": "search_objects",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (projectId, bucket); escolher na importacao."
     },
     "google_cloud_storage/upload_object_streaming": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
@@ -1131,9 +1418,21 @@
       "notes": "action custom_api_call nao existe em @activepieces/piece-google-cloud-storage; migrar de fora via HTTP. original: @activepieces/piece-google-cloud-storage / custom_api_call (upload)"
     },
     "google_docs/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-google-docs","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-docs",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "google_docs/create_document_from_template": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
@@ -1158,9 +1457,21 @@
       "notes": "aprox.; update rico via custom_api_call"
     },
     "google_docs_connector_186728_1621263423/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-google-docs","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-docs",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "google_docs_connector_186728_1621263423/get_doc": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"read_document","kind":"action"},
@@ -1190,23 +1501,55 @@
       "manual": false
     },
     "google_document_ai/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "Document AI"
     },
     "google_document_ai_connector_4798631_1739093489/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "Document AI"
     },
     "google_drive/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-google-drive","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-drive",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "google_drive/add_permission": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"update_permissions","kind":"action"},
@@ -1266,9 +1609,14 @@
       "manual": false
     },
     "google_forms/new_response": {
-      "target": {"piece":"@activepieces/piece-google-forms","name":"new_response","kind":"trigger"},
+      "target": {
+        "piece": "@activepieces/piece-google-forms",
+        "name": "new_response",
+        "kind": "trigger"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (form_id); escolher na importacao."
     },
     "google_forms_connector_3237509_1742584356/new_response": {
       "target": {"piece":"@activepieces/piece-google-forms","name":"new_response","kind":"trigger"},
@@ -1276,14 +1624,34 @@
       "manual": false
     },
     "google_people/create_contact": {
-      "target": {"piece":"@activepieces/piece-google-contacts","name":"add_contact","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-contacts",
+        "name": "add_contact",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "names.givenName": "firstName",
+        "names.familyName": "lastName"
+      }
     },
     "google_sheets/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-google-sheets","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-sheets",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "google_sheets/add_row_v4_bulk": {
       "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-insert-multiple-rows","kind":"action"},
@@ -1449,9 +1817,14 @@
       "notes": "batch"
     },
     "jira/create_issue": {
-      "target": {"piece":"@activepieces/piece-jira-cloud","name":"create_issue","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-jira-cloud",
+        "name": "create_issue",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (projectId, issueTypeId); escolher na importacao."
     },
     "js_eval/invoke_custom_js_code": {
       "target": null,
@@ -1509,16 +1882,32 @@
       "manual": false
     },
     "lookup_table/add_batch_of_entries": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-create-records",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id",
+        "parameters": "values"
+      }
     },
     "lookup_table/add_entry": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-create-records",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id",
+        "parameters": "values"
+      }
     },
     "lookup_table/delete_entries": {
       "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
@@ -1533,34 +1922,71 @@
       "notes": "recriar Lookup Table"
     },
     "lookup_table/get_entries": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-find-records",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id"
+      }
     },
     "lookup_table/get_entry": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-get-record","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-get-record",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS. Workato busca por colunas (parameters); o iPaaS busca por record_id. Usar tables-find-records ou informar record_id.",
+      "propMap": {
+        "lookup_table_id": "table_id"
+      }
     },
     "lookup_table/search_entries": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-find-records",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id"
+      }
     },
     "lookup_table/truncate": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-clear-table","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-clear-table",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id"
+      }
     },
     "lookup_table/update_entry": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-update-record","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-update-record",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Lookup Table"
+      "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
+      "propMap": {
+        "lookup_table_id": "table_id",
+        "parameters": "values",
+        "id": "record_id"
+      }
     },
     "microsoft_dynamics_crm/create_object": {
       "target": {
@@ -1598,9 +2024,21 @@
       "notes": "sem piece Dynamics CRM; receber o webhook Dataverse/HTTP."
     },
     "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-azure-ad","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-azure-ad",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/get_group_members": {
       "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
@@ -1613,8 +2051,18 @@
       "manual": false
     },
     "microsoft_graph/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "Microsoft Graph"
@@ -1627,8 +2075,18 @@
       "notes": "Microsoft Graph"
     },
     "microsoft_graph_api_connector_863224_1675962687/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "Microsoft Graph"
@@ -1641,9 +2099,21 @@
       "notes": "Microsoft Graph"
     },
     "microsoft_sharepoint/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-sharepoint",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "microsoft_sharepoint/add_row_in_sharepoint_list": {
       "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_create_list_item","kind":"action"},
@@ -1724,9 +2194,16 @@
       "manual": false
     },
     "mysql/insert_row": {
-      "target": {"piece":"@activepieces/piece-mysql","name":"insert_row","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-mysql",
+        "name": "insert_row",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "columns": "values"
+      }
     },
     "mysql/new_row_v2": {
       "target": {"piece":"@activepieces/piece-schedule","name":"cron_expression","kind":"trigger"},
@@ -1796,8 +2273,18 @@
       "manual": false
     },
     "new_connector_21_connector_186728_1637676748/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "adhoc HTTP do conector"
@@ -1867,8 +2354,18 @@
       "notes": "PipeSign getDocument. O motor emite POST GraphQL na Autentique (files.signed). Nao usar piece-pdf extractText."
     },
     "new_connector_6_connector_186728_1628717731/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method",
+        "input": "body",
+        "input.data": "body",
+        "api_call": "body"
+      },
       "fixedProps": {
         "method": "POST",
         "url": "https://api.pipefy.com/graphql",
@@ -1963,8 +2460,18 @@
       "notes": "piece-notion nao esta na KB desta instancia; migrar via HTTP."
     },
     "omie/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "low",
       "manual": false,
       "notes": "adhoc HTTP do conector"
@@ -2033,9 +2540,17 @@
       "manual": false
     },
     "onedrive/upload_file": {
-      "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"upload_onedrive_file","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-onedrive",
+        "name": "upload_onedrive_file",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "filename": "fileName",
+        "body": "file"
+      }
     },
     "onedrive/upload_file_from_url": {
       "target": {"piece":"@activepieces/piece-microsoft-onedrive","name":"upload_onedrive_file","kind":"action"},
@@ -2048,14 +2563,31 @@
       "manual": false
     },
     "outlook/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-outlook",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "outlook/create_event": {
-      "target": {"piece":"@activepieces/piece-microsoft-outlook-calendar","name":"create_event","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-microsoft-outlook-calendar",
+        "name": "create_event",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (calendarId, timezone); escolher na importacao."
     },
     "outlook/get_attachments": {
       "target": {"piece":"@activepieces/piece-microsoft-outlook","name":"downloadAttachment","kind":"action"},
@@ -2115,9 +2647,21 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (Personio REST)."
     },
     "pipedrive/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipedrive","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-pipedrive",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "pipedrive/create_deal_v2": {
       "target": {"piece":"@activepieces/piece-pipedrive","name":"create-deal","kind":"action"},
@@ -2157,8 +2701,18 @@
       "manual": false
     },
     "pipefy/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method",
+        "input": "body",
+        "input.data": "body",
+        "api_call": "body"
+      },
       "fixedProps": {
         "method": "POST",
         "url": "https://api.pipefy.com/graphql",
@@ -2415,8 +2969,18 @@
       "manual": false
     },
     "pipefy_connector_186728_1590691380/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method",
+        "input": "body",
+        "input.data": "body",
+        "api_call": "body"
+      },
       "fixedProps": {
         "method": "POST",
         "url": "https://api.pipefy.com/graphql",
@@ -2519,8 +3083,18 @@
       "manual": false
     },
     "pipefy_connector_3349067_1757704577/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method",
+        "input": "body",
+        "input.data": "body",
+        "api_call": "body"
+      },
       "fixedProps": {
         "method": "POST",
         "url": "https://api.pipefy.com/graphql",
@@ -2622,8 +3196,18 @@
       "manual": false
     },
     "pipefy_legacy_v2_connector_186728_1723750715/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-pipefy","name":"custom_api_call","kind":"action"},
-      "propMap": {"path":"url","verb":"method","input":"body","input.data":"body","api_call":"body"},
+      "target": {
+        "piece": "@activepieces/piece-pipefy",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
+      "propMap": {
+        "path": "url",
+        "verb": "method",
+        "input": "body",
+        "input.data": "body",
+        "api_call": "body"
+      },
       "fixedProps": {
         "method": "POST",
         "url": "https://api.pipefy.com/graphql",
@@ -2721,7 +3305,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "quickbooks/add_line_item_estimate": {
       "target": {
@@ -2886,9 +3478,18 @@
       "manual": false
     },
     "salesforce/upload_file_content": {
-      "target": {"piece":"@activepieces/piece-salesforce","name":"add_file_to_record","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "add_file_to_record",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "body": "file",
+        "filename": "file_name"
+      },
+      "notes": "object e record_id nao estao na receita (vem do contexto Workato); preencher na importacao."
     },
     "salesforce/upsert_sobject": {
       "target": {"piece":"@activepieces/piece-salesforce","name":"upsert_by_external_id","kind":"action"},
@@ -2896,9 +3497,21 @@
       "manual": false
     },
     "salesforce_secondary/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-salesforce","name":"custom_api_call","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-salesforce",
+        "name": "custom_api_call",
+        "kind": "action"
+      },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "sap_sf_saml2_2_step_o_auth_connector_863224_1764678478/odata_custom_action": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
@@ -2913,9 +3526,22 @@
       "manual": false
     },
     "sendgrid/send_email": {
-      "target": {"piece":"@activepieces/piece-sendgrid","name":"send_email","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-sendgrid",
+        "name": "send_email",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "personalizations.to.email": "to",
+        "from.email": "from",
+        "reply_to.email": "reply_to",
+        "subject": "subject",
+        "content.value": "content",
+        "content.type": "content_type"
+      },
+      "notes": "to e lista no iPaaS; cc/bcc de personalizations nao sao migrados."
     },
     "service_now/search_objects_v2": {
       "target": {"piece":"@activepieces/piece-service-now","name":"find_record","kind":"action"},
@@ -2933,9 +3559,16 @@
       "manual": false
     },
     "sftp/get_file_content": {
-      "target": {"piece":"@activepieces/piece-sftp","name":"read_file_content","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "read_file_content",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "file_name": "filePath"
+      }
     },
     "sftp/new_file_in_dir": {
       "target": {"piece":"@activepieces/piece-sftp","name":"new_file","kind":"trigger"},
@@ -2948,9 +3581,17 @@
       "manual": false
     },
     "sftp/upload": {
-      "target": {"piece":"@activepieces/piece-sftp","name":"upload_file","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-sftp",
+        "name": "upload_file",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "filename": "fileName",
+        "content": "fileContent"
+      }
     },
     "single_tenant_legacy_upload_attachment_connector_955712_1688134977/upload_attachment": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
@@ -2984,16 +3625,40 @@
       "manual": false
     },
     "slack/new_event": {
-      "target": {"piece":"@activepieces/piece-slack","name":"new-message","kind":"trigger"},
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "new-message",
+        "kind": "trigger"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "fixedProps": {
+        "ignoreBots": true
+      },
+      "notes": "ignoreBots=true evita o flow disparar com mensagens de bot (padrao seguro)."
     },
     "slack/post_bot_message": {
-      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
-      "alt": {"piece":"@activepieces/piece-slack","name":"send_direct_message","kind":"action","when":"channel e um user id (DM) -> usar send_direct_message (userId)"},
-      "propMap": {"channel":"channel","text":"text","blocks":"blocks"},
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
+      "alt": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_direct_message",
+        "kind": "action",
+        "when": "channel e um user id (DM) -> usar send_direct_message (userId)"
+      },
+      "propMap": {
+        "channel": "channel",
+        "text": "text",
+        "blocks": "blocks"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "fixedProps": {
+        "sendAsBot": true
+      }
     },
     "slack/post_bot_reply_v2": {
       "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
@@ -3023,15 +3688,30 @@
       "manual": false
     },
     "slack_bot/new_event": {
-      "target": {"piece":"@activepieces/piece-slack","name":"new-message","kind":"trigger"},
-      "difficulty": "low",
-      "manual": false
-    },
-    "slack_bot/post_bot_reply_v2": {
-      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "new-message",
+        "kind": "trigger"
+      },
       "difficulty": "low",
       "manual": false,
-      "notes": "thread/reply"
+      "fixedProps": {
+        "ignoreBots": true
+      },
+      "notes": "ignoreBots=true evita o flow disparar com mensagens de bot (padrao seguro)."
+    },
+    "slack_bot/post_bot_reply_v2": {
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
+      "difficulty": "low",
+      "manual": false,
+      "notes": "thread/reply channel vem do evento do Workbot; informar o canal.",
+      "fixedProps": {
+        "sendAsBot": true
+      }
     },
     "slack_bot/update_blocks_by_block_id": {
       "target": {"piece":"@activepieces/piece-slack","name":"updateMessage","kind":"action"},
@@ -3049,14 +3729,26 @@
       "manual": false
     },
     "slack_secondary/post_message_to_channel": {
-      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-slack",
+        "name": "send_channel_message",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "fixedProps": {
+        "sendAsBot": true
+      }
     },
     "snowflake/insert_row": {
-      "target": {"piece":"@activepieces/piece-snowflake","name":"insert-row","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-snowflake",
+        "name": "insert-row",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (database, schema); escolher na importacao."
     },
     "snowflake/run_custom_sql": {
       "target": {"piece":"@activepieces/piece-snowflake","name":"runQuery","kind":"action"},
@@ -3079,8 +3771,18 @@
       "manual": false
     },
     "success_factors/__adhoc_http_action": {
-      "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},
-      "propMap": {"request.method":"method","request.url":"url","request.body":"body"},
+      "target": {
+        "piece": "@activepieces/piece-http",
+        "name": "send_request",
+        "kind": "action"
+      },
+      "propMap": {
+        "request.method": "method",
+        "request.url": "url",
+        "request.body": "body",
+        "path": "url",
+        "verb": "method"
+      },
       "difficulty": "high",
       "manual": false,
       "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
@@ -3218,9 +3920,18 @@
       "manual": false
     },
     "twilio/send_sms": {
-      "target": {"piece":"@activepieces/piece-twilio","name":"send_sms","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-twilio",
+        "name": "send_sms",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "From": "from",
+        "To": "to",
+        "Body": "body"
+      }
     },
     "twilio/sms_received": {
       "target": {"piece":"@activepieces/piece-twilio","name":"new_incoming_sms","kind":"trigger"},
@@ -3249,10 +3960,18 @@
       "manual": false
     },
     "workato_db_table/add_record": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-create-records",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Data Table"
+      "notes": "recriar Data Table",
+      "propMap": {
+        "table_id": "table_id",
+        "parameters": "values"
+      }
     },
     "workato_db_table/create_records_batch": {
       "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
@@ -3285,10 +4004,19 @@
       "notes": "recriar Data Table"
     },
     "workato_db_table/update_record": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-update-record","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-tables",
+        "name": "tables-update-record",
+        "kind": "action"
+      },
       "difficulty": "medium",
       "manual": false,
-      "notes": "recriar Data Table"
+      "notes": "recriar Data Table",
+      "propMap": {
+        "table_id": "table_id",
+        "record_id": "record_id",
+        "parameters": "values"
+      }
     },
     "workato_mapper/map": {
       "target": {"piece":"@activepieces/piece-data-mapper","name":"advanced_mapping","kind":"action"},
@@ -3357,10 +4085,18 @@
       "notes": "aprox. de Smart List"
     },
     "workato_template/create_document": {
-      "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-google-docs",
+        "name": "create_document_based_on_template",
+        "kind": "action"
+      },
       "difficulty": "low",
       "manual": false,
-      "notes": "ou piece-pdf"
+      "notes": "ou piece-pdf template e o id do template Workato; escolher o Google Doc modelo.",
+      "propMap": {
+        "template_id": "template",
+        "template_input": "values"
+      }
     },
     "workato_variable/clear_list": {
       "target": null,
@@ -3377,24 +4113,48 @@
       "notes": "step CODE"
     },
     "xml/create_xml": {
-      "target": {"piece":"@activepieces/piece-xml","name":"convert-json-to-xml","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-xml",
+        "name": "convert-json-to-xml",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "xml_message e um template XML; o iPaaS espera JSON em json. Converter manualmente."
     },
     "xml/parse_xml": {
-      "target": {"piece":"@activepieces/piece-xml","name":"convert-xml-to-json","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-xml",
+        "name": "convert-xml-to-json",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "document": "xml"
+      }
     },
     "xml_creator_connector_3349067_1743439260/create_xml": {
-      "target": {"piece":"@activepieces/piece-xml","name":"convert-json-to-xml","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-xml",
+        "name": "convert-json-to-xml",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "xml_message e um template XML; o iPaaS espera JSON em json. Converter manualmente."
     },
     "xml_parser/parse_xml": {
-      "target": {"piece":"@activepieces/piece-xml","name":"convert-xml-to-json","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-xml",
+        "name": "convert-xml-to-json",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "document": "xml"
+      }
     },
     "zendesk/create_ticket": {
       "target": {"piece":"@activepieces/piece-zendesk","name":"create-ticket","kind":"action"},
@@ -3432,9 +4192,16 @@
       "manual": false
     },
     "zendesk/update_ticket": {
-      "target": {"piece":"@activepieces/piece-zendesk","name":"update-ticket","kind":"action"},
+      "target": {
+        "piece": "@activepieces/piece-zendesk",
+        "name": "update-ticket",
+        "kind": "action"
+      },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "id": "ticket_id"
+      }
     },
     "zendesk/updated_ticket_polling": {
       "target": {"piece":"@activepieces/piece-zendesk","name":"updated_ticket","kind":"trigger"},
@@ -3471,7 +4238,10 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "columns": "values"
+      }
     },
     "mssql/insert_rows_batch": {
       "target": {
@@ -3591,7 +4361,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "zendesk/create_user": {
       "target": {
@@ -3618,7 +4396,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "zendesk_sunshine/list_custom_record": {
       "target": {
@@ -3691,7 +4477,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "jira/create_comment": {
       "target": {
@@ -3774,7 +4568,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "azure_ai/completion": {
       "target": {
@@ -3783,7 +4585,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (deploymentId, maxTokens); escolher na importacao."
     },
     "azure_ad/update_user": {
       "target": {
@@ -3959,7 +4762,19 @@
       },
       "difficulty": "medium",
       "manual": false,
-      "notes": "conector e-mail Pipefy; se a conta for SMTP, trocar para piece-smtp."
+      "notes": "conector e-mail Pipefy; se a conta for SMTP, trocar para piece-smtp.",
+      "propMap": {
+        "to": "receiver",
+        "cc": "cc",
+        "bcc": "bcc",
+        "subject": "subject",
+        "body": "body",
+        "attachments": "attachments"
+      },
+      "fixedProps": {
+        "body_type": "plain_text",
+        "draft": false
+      }
     },
     "workday/get_report": {
       "target": {
@@ -3968,7 +4783,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (reportId); escolher na importacao."
     },
     "workday/__adhoc_http_action": {
       "target": {
@@ -3977,7 +4793,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "workday/Search_business_object": {
       "target": {
@@ -4005,7 +4829,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "workday_rest/get_worker": {
       "target": {
@@ -4134,7 +4966,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "service_now/update_object": {
       "target": {
@@ -4188,7 +5028,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "hubspot/new_or_updated_object": {
       "target": {
@@ -4226,7 +5074,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (base, tableId); escolher na importacao."
     },
     "airtable/update_record": {
       "target": {
@@ -4345,7 +5194,7 @@
       },
       "difficulty": "medium",
       "manual": false,
-      "notes": "Workato new+updated; piece tem new_list_item e updated_list_item separados."
+      "notes": "Workato new+updated; piece tem new_list_item e updated_list_item separados. Prop obrigatoria que depende da conta do cliente (siteId, listId); escolher na importacao."
     },
     "smartsheet/get_row_by_id": {
       "target": {
@@ -4489,7 +5338,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "box/search_files": {
       "target": {
@@ -4561,7 +5418,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "docusign/resend_envelope": {
       "target": {
@@ -4607,7 +5472,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "zoom/schedule_object": {
       "target": {
@@ -4707,7 +5580,10 @@
         "kind": "trigger"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "id": "list_id"
+      }
     },
     "notion/new_updated_record": {
       "target": {
@@ -4725,7 +5601,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (appId, tableId); escolher na importacao."
     },
     "quickbase/search_records": {
       "target": {
@@ -4734,7 +5611,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (appId, tableId); escolher na importacao."
     },
     "quickbase/__adhoc_http_action": {
       "target": {
@@ -4743,7 +5621,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "word_press/__adhoc_http_action": {
       "target": {
@@ -4752,7 +5638,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "fresh_desk/create_company": {
       "target": {
@@ -4788,7 +5682,15 @@
         "kind": "action"
       },
       "difficulty": "medium",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "path": "url",
+        "verb": "method"
+      },
+      "fixedProps": {
+        "headers": {},
+        "queryParams": {}
+      }
     },
     "freshdesk/get_record": {
       "target": {
@@ -4824,7 +5726,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (document_id); escolher na importacao."
     },
     "azure_dev_ops/create_record": {
       "target": {
@@ -4833,7 +5736,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Prop obrigatoria que depende da conta do cliente (project, work_item_type, title); escolher na importacao."
     },
     "azure_dev_ops/search_records": {
       "target": {
@@ -4903,7 +5807,10 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "roomId": "destination"
+      }
     },
     "success_factors/upsert_record_object": {
       "target": {
@@ -5122,7 +6029,10 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "propMap": {
+        "message": "text"
+      }
     }
   }
 }

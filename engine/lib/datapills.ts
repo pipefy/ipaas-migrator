@@ -803,6 +803,35 @@ export function renderApTemplate(base: string, segments: string[] = []): string 
   return `{{${base}${segments.map(formatApSegment).join('')}}}`;
 }
 
+/** Propriedade de conta Workato (`pdf_generator_api_key`) vira a variavel iPaaS `PDF_GENERATOR_API_KEY`. */
+export function accountPropertyVariable(name: string): string {
+  return name.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toUpperCase();
+}
+
+const DOTTED_STEP_PILL = /\{\{([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)+)((?:\[[^\]]*\])*)\}\}/g;
+
+/**
+ * Pills internas do motor (`formula_1.f1`, `loop_2.item['id']`, `step_3.a.b`) saem em colchete.
+ * Depois do import v21 o ponto vira `['output'].f1` (JS valido, mas amarelo so com colchete).
+ * Nao mexe em `sourceCode` nem em `notes`: ali a pill e so documentacao.
+ */
+export function bracketizePills<T>(value: T, key?: string): T {
+  if (key === 'sourceCode' || key === 'notes') return value;
+  if (typeof value === 'string') {
+    return value.replace(DOTTED_STEP_PILL, (_m, name: string, dots: string, rest: string) => {
+      const segs = dots.split('.').filter(Boolean).map(formatApSegment).join('');
+      return `{{${name}${segs}${rest}}}`;
+    }) as T;
+  }
+  if (Array.isArray(value)) return value.map((item) => bracketizePills(item)) as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = bracketizePills(v, k);
+    return out as T;
+  }
+  return value;
+}
+
 /** `lowercase` / `uppercase` no catalogo AP, depois que as pills ja viraram `{{...}}`. */
 export function wrapApCase(value: string, method: 'upcase' | 'downcase'): string {
   const fn = apCaseFn(method);
@@ -847,6 +876,9 @@ function renderDataPill(
     if (job !== null) return job;
     // Sem `line`. Usar o mapa emitia `{{undefined['…']}}`.
     return '';
+  }
+  if (dp.pill_type === 'account_property' && typeof dp.property_name === 'string') {
+    return `{{variables['${accountPropertyVariable(dp.property_name)}']}}`;
   }
   const line = dp.line ?? dp.provider;
   const mapped = asToName.get(line);

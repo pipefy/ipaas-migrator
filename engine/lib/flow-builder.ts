@@ -39,6 +39,7 @@ import {
   CATCH_ERROR_TOKEN,
   stepBindingName,
   wrapApCase,
+  bracketizePills,
   type JobContextHits,
   type StepBinding,
   type StepNameMap,
@@ -123,11 +124,12 @@ interface Ctx {
   subflowResultLabels: Map<string, string>;
   /** Fases do schema Workato, para trocar phase_id "0" pelo id do formulário inicial. */
   phasesByPipe: PipePhase[];
+  connectionsByProvider: Record<string, string>;
 }
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION';
   content: string;
   anchorStepName?: string;
 }
@@ -476,7 +478,9 @@ function convInput(
   const out: Record<string, any> = {};
   const map = entry?.propMap ?? {};
   const fixed = entry?.fixedProps ?? {};
-  const hasMap = Object.keys(map).length > 0 || Object.keys(fixed).length > 0;
+  const compose = entry?.composeProps ?? {};
+  const hasMap =
+    Object.keys(map).length > 0 || Object.keys(fixed).length > 0 || Object.keys(compose).length > 0;
   const targetTypes = targetPropTypes(ctx, entry?.target);
 
   if (!hasMap) {
@@ -503,6 +507,17 @@ function convInput(
   }
   for (const [apProp, value] of Object.entries(fixed)) {
     out[apProp] = deepConvert(value, ctx);
+  }
+  for (const [apProp, spec] of Object.entries(compose)) {
+    const parts: string[] = [];
+    for (const src of spec.parts) {
+      const v = getPath(input, src);
+      if (v === undefined || v === '=skip' || v === '') continue;
+      const converted = deepConvert(v, ctx);
+      if (typeof converted === 'string') parts.push(converted);
+      consumedRoots.add(src.split('.')[0]!);
+    }
+    if (parts.length) out[apProp] = parts.join(spec.separator ?? '');
   }
 
   // 2) carrega chaves que ja sao props validas da piece (nao mapeadas nem consumidas)
@@ -1061,6 +1076,7 @@ export const REVIEW_EMAIL_LABEL = 'REVISAR: email';
 export const REVIEW_SMS_LABEL = 'REVISAR: sms';
 export const REVIEW_SCHEDULE_LABEL = 'AVISO: agenda quinzenal';
 export const REVIEW_EMPTY_UPDATE_LABEL = 'AVISO: update sem campos';
+export const REVIEW_CONNECTION_LABEL = 'REVISAR: conexão';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1213,7 +1229,18 @@ function stepDepth(root: any, name: string | undefined): number | undefined {
 
 function pushReviewNote(
   ctx: Ctx,
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE',
+  kind:
+    | 'CATCH'
+    | 'STOP'
+    | 'JOB'
+    | 'SECRET'
+    | 'FORMULA'
+    | 'SUBFLOW'
+    | 'EMAIL'
+    | 'SMS'
+    | 'SCHEDULE'
+    | 'UPDATE'
+    | 'CONNECTION',
   message: string,
   lost = '',
   anchorStepName?: string,
@@ -1237,7 +1264,9 @@ function pushReviewNote(
                   ? REVIEW_SCHEDULE_LABEL
                   : kind === 'UPDATE'
                     ? REVIEW_EMPTY_UPDATE_LABEL
-                    : REVIEW_JOB_CONTEXT_LABEL;
+                    : kind === 'CONNECTION'
+                      ? REVIEW_CONNECTION_LABEL
+                      : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
     kind === 'CATCH'
       ? 'review_catch'
@@ -1257,7 +1286,9 @@ function pushReviewNote(
                     ? 'review_schedule'
                     : kind === 'UPDATE'
                       ? 'review_update'
-                      : 'review_job';
+                      : kind === 'CONNECTION'
+                        ? 'review_connection'
+                        : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -2181,6 +2212,20 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
   if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
     input = fillHttpSend(input, sourceInput, ctx);
+    const connection = ctx.connectionsByProvider[step.provider ?? ''];
+    if (connection) {
+      pushReviewNote(
+        ctx,
+        'CONNECTION',
+        [
+          `Passo Workato ${step.number ?? '?'} (${step.comment || step.name || opKey}) usava uma conexão HTTP (${connection}).`,
+          'O piece HTTP do iPaaS não importa conexão: o flow sai com authType "none".',
+          'Recriar a autenticação (Basic, Bearer ou headers) neste step. Credenciais não vêm na receita.',
+        ].join('\n'),
+        '',
+        name,
+      );
+    }
   }
   input = fillSheetsInsertRow(t, input, sourceInput);
   input = fillSheetsFindRows(t, input, sourceInput, ctx);
@@ -3249,6 +3294,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     vars: indexVariables(recipe.root),
     subflowResultLabels: new Map(),
     phasesByPipe: recipe.phasesByPipe ?? [],
+    connectionsByProvider: recipe.connectionsByProvider ?? {},
   };
   assignNames(recipe.root, ctx, true);
   const trigger = buildTrigger(recipe.root, ctx);
@@ -3276,5 +3322,5 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     ],
     status: 'PUBLISHED',
   };
-  return { flow, todos: [...new Set(ctx.todos)] };
+  return { flow: bracketizePills(flow), todos: [...new Set(ctx.todos)] };
 }

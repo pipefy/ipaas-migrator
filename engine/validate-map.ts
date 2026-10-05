@@ -48,6 +48,14 @@ function checkEntry(opKey: string, entry: MapEntry, index: Map<string, SlimPiece
         errs.push(`${opKey}: collectRemainingTo "${entry.collectRemainingTo}" nao existe em ${entry.target.piece}/${entry.target.name}`);
       }
     }
+    if (entry.composeProps && index.has(entry.target.piece)) {
+      const valid = validPropNames(entry.target, index);
+      for (const apProp of Object.keys(entry.composeProps)) {
+        if (!valid.has(apProp)) {
+          errs.push(`${opKey}: composeProps "${apProp}" nao existe em ${entry.target.piece}/${entry.target.name}`);
+        }
+      }
+    }
     if (entry.fixedProps && index.has(entry.target.piece)) {
       const valid = validPropNames(entry.target, index);
       for (const apProp of Object.keys(entry.fixedProps)) {

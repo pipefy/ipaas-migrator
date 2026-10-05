@@ -25,6 +25,8 @@ export interface MapEntry {
   builtin?: string; // 'code' | 'router' | 'loop'
   propMap?: Record<string, string>;
   fixedProps?: Record<string, unknown>;
+  /** Prop AP = concatenacao de varias props Workato (ex.: path = folder_path + "/" + filename). */
+  composeProps?: Record<string, { parts: string[]; separator?: string }>;
   collectRemainingTo?: string;
   ignoreSourceProps?: string[];
   difficulty?: 'low' | 'medium' | 'high';
@@ -109,6 +111,8 @@ export interface ParsedRecipe {
   description?: string;
   root: ParsedStep; // trigger
   connections: string[];
+  /** Provider Workato -> rótulo da conexão (`account_id`) usada pela receita. */
+  connectionsByProvider?: Record<string, string>;
   opCounts: Record<string, number>; // opKey -> count
   formulas: FormulaHit[];
   hasRuby: boolean;

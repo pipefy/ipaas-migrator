@@ -93,9 +93,19 @@ export function parseRecipe(json: any, file = 'recipe.json'): ParsedRecipe {
   const connections: string[] = [];
   const rawConfig = json.config ?? [];
   const config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
+  const connectionsByProvider: Record<string, string> = {};
   for (const c of Array.isArray(config) ? config : []) {
     const zip = c?.account_id?.zip_name;
     if (zip) connections.push(String(zip).replace(/^Connections\//, ''));
+    const account = c?.account_id;
+    const provider = c?.provider ?? c?.name;
+    if (provider && account != null && account !== '') {
+      connectionsByProvider[String(provider)] = zip
+        ? String(zip).replace(/^Connections\//, '')
+        : typeof account === 'object'
+          ? String(account.name ?? account.id ?? 'sem nome')
+          : `account_id ${account}`;
+    }
   }
 
   // formulas (varre todas as strings da receita)
@@ -118,6 +128,7 @@ export function parseRecipe(json: any, file = 'recipe.json'): ParsedRecipe {
     description: json.description,
     root,
     connections: [...new Set(connections)],
+    connectionsByProvider,
     opCounts,
     formulas,
     hasRuby,
