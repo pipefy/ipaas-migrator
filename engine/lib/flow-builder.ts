@@ -46,6 +46,8 @@ import {
 import {
   compileRubyExpression,
   CURRENCY_NOTE,
+  DECODE_B64_NOTE,
+  EQ_NOTE,
   MULTIPLY_NOTE,
   PHONE_NOTE,
   newBindingRegistry,
@@ -886,6 +888,12 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any): any {
       harvest.uncompiled.push(original);
       return value;
     }
+    if (compiled.constant) {
+      harvest.approximations.push(...compiled.approximations);
+      const evaluated = compiled.value;
+      if (evaluated === null || evaluated === undefined) return '';
+      return evaluated;
+    }
     const key = `f${harvest.fields.length + 1}`;
     harvest.fields.push({ key, ruby: wrapped[1]!, expr: compiled.expr });
     for (const helper of compiled.helpers) harvest.helpers.add(helper);
@@ -900,7 +908,12 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any): any {
   if (value && typeof value === 'object') {
     const out: Record<string, any> = {};
     const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
-    for (const [k, v] of Object.entries(value)) out[k] = replaceResidualRuby(v, harvest, (src as any)[k]);
+    for (const [k, v] of Object.entries(value)) {
+      const key = k.includes('TODO_FORMULA')
+        ? String(replaceResidualRuby(k, harvest, (src as any)[k]) ?? '')
+        : k;
+      out[key] = replaceResidualRuby(v, harvest, (src as any)[k]);
+    }
     return out;
   }
   return value;
@@ -982,24 +995,34 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
       owner,
     );
   }
-  if (!harvest.fields.length) return replaced;
+  const notes = [...new Set(harvest.approximations)];
+  const review = (note: string, step: string) => {
+    if (
+      note === MULTIPLY_NOTE ||
+      note === CURRENCY_NOTE ||
+      note === PHONE_NOTE ||
+      note === EQ_NOTE ||
+      note === DECODE_B64_NOTE
+    ) {
+      pushReviewNote(ctx, 'FORMULA', `Passo \`${owner}\`, step \`${step}\`.\n\n${note}`, step, step);
+    }
+  };
+  if (!harvest.fields.length) {
+    for (const note of notes) {
+      ctx.todos.push(`FORMULA (${owner}): ${note}.`);
+      review(note, owner);
+    }
+    return replaced;
+  }
 
   ctx.pendingCode.push(formulaCodeStep(harvest));
   ctx.todos.push(
     `FORMULA (${owner}): ${harvest.fields.length} formula(s) Workato viraram JS no step ` +
       `${harvest.name()} — conferir a traducao.`,
   );
-  for (const note of [...new Set(harvest.approximations)]) {
+  for (const note of notes) {
     ctx.todos.push(`FORMULA (${harvest.name()}): ${note}.`);
-    if (note === MULTIPLY_NOTE || note === CURRENCY_NOTE || note === PHONE_NOTE) {
-      pushReviewNote(
-        ctx,
-        'FORMULA',
-        `Passo \`${owner}\`, step \`${harvest.name()}\`.\n\n${note}`,
-        harvest.name(),
-        harvest.name(),
-      );
-    }
+    review(note, harvest.name());
   }
   return replaced;
 }
@@ -2148,10 +2171,11 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
 
   const t = entry.target;
   ctx.piecesUsed.add(t.piece);
-  // callFlow/returnResponse remontam o input e resolvem a formula lá dentro.
-  // Resolver antes criava um step CODE órfão com a mesma expressão.
   const shaped = t.piece === SUBFLOW_PIECE ? applySubflowAction(opKey, t.name, sourceInput, ctx, name) : null;
-  let input = shaped ?? resolveFormulas(convInput(sourceInput, entry, ctx), ctx, name, sourceInput);
+  // callFlow/returnResponse ja resolvem a formula la dentro. Resolver de novo
+  // criava um step CODE orfao. Nos outros passos a formula espera os fill*:
+  // headers, searchValue e props copiadas entram no mesmo step CODE.
+  let input = shaped ?? convInput(sourceInput, entry, ctx);
   const omie = fillOmieHttp(opKey, t, input, sourceInput, ctx, name);
   if (omie) input = omie;
   if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
@@ -2161,6 +2185,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   input = fillSheetsInsertRow(t, input, sourceInput);
   input = fillSheetsFindRows(t, input, sourceInput, ctx);
   input = fillKnownProps(t, input, sourceInput);
+  if (!shaped && !omie) input = resolveFormulas(input, ctx, name, sourceInput);
   if (t.piece === PIPEFY_PIECE && t.name === 'updateCard' && phaseFieldsBlank(input.phaseFields)) {
     const original = JSON.stringify(step.input ?? {}, null, 2);
     pushReviewNote(

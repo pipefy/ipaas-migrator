@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.0 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.1 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.1 — 5 out 2026
+
+O compilador de fórmulas cobre mais Ruby e resolve a fórmula só depois de o passo receber todas as props. Fórmula constante é avaliada na tradução e deixa de gerar passo de código.
+
+- Fórmula sem pill que dá valor fixo vira o valor no campo, sem passo de código.
+- `strftime` respeita o fuso. Índice negativo em lista, `where` com nulo, `to_currency` com unidade, precisão e separador, e `decode_base64` entram no catálogo. Código de país vira ISO.
+- Comparar pill com literal numérico aceita a string numérica do outro lado e deixa nota.
+- A fórmula espera os preenchimentos do passo (cabeçalhos, `searchValue`, props copiadas). Antes, isso criava um passo de código órfão.
+- `migrador-workato-cliente-navegador-0.6.1.tgz`
 
 ## 0.6.0 — 1 out 2026
 
