@@ -3599,10 +3599,17 @@
       "manual": false
     },
     "slack/block_kit_modals": {
-      "target": {"piece":"@activepieces/piece-slack","name":"new-modal-interaction","kind":"trigger"},
-      "difficulty": "low",
+      "target": {"piece":"@activepieces/piece-slack","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
       "manual": false,
-      "notes": "trigger) + request_action_message; kind ajustado para trigger (KB)."
+      "notes": "Abrir modal (views.open/update/push). Era new-modal-interaction (trigger); a piece Slack nao tem essa acao. O motor monta method, headers, body e a url a partir de modal_action_type.",
+      "fixedProps": {
+        "method": "POST",
+        "headers": {"Content-Type": "application/json"},
+        "queryParams": {},
+        "body_type": "json",
+        "useUserToken": false
+      }
     },
     "slack/bot_command_v2": {
       "target": {"piece":"@activepieces/piece-slack","name":"new_command","kind":"trigger"},
@@ -3677,10 +3684,17 @@
       "manual": false
     },
     "slack_bot/block_kit_modals": {
-      "target": {"piece":"@activepieces/piece-slack","name":"new-modal-interaction","kind":"trigger"},
-      "difficulty": "low",
+      "target": {"piece":"@activepieces/piece-slack","name":"custom_api_call","kind":"action"},
+      "difficulty": "high",
       "manual": false,
-      "notes": "trigger) + request_action_message; kind ajustado para trigger (KB)."
+      "notes": "Abrir modal (views.open/update/push). Era new-modal-interaction (trigger); a piece Slack nao tem essa acao. O motor monta method, headers, body e a url a partir de modal_action_type.",
+      "fixedProps": {
+        "method": "POST",
+        "headers": {"Content-Type": "application/json"},
+        "queryParams": {},
+        "body_type": "json",
+        "useUserToken": false
+      }
     },
     "slack_bot/delete_message": {
       "target": {"piece":"@activepieces/piece-slack","name":"delete-message","kind":"action"},

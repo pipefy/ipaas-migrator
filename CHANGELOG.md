@@ -6,12 +6,21 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.2 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.3 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.3 — 5 out 2026
+
+O modal do Slack que abre a view vira `views.open`, `views.update` ou `views.push`. Propriedade de projeto vira variável do iPaaS e o canvas lista o que criar.
+
+- `block_kit_modals` (Slack e Slack bot) deixa de ser o trigger New Modal Interaction. Esse trigger começa um flow quando a pessoa envia ou fecha o modal; não abre o modal. O passo que abre sai como `custom_api_call`.
+- A nota `AVISO: modal virou callback` lembra que os campos preenchidos saem nesse trigger, não na resposta do POST.
+- Propriedade de projeto vira `{{variables['NOME']}}`. A nota `AVISO: variáveis` lista conta, projeto, token no código e credencial Omie.
+- `migrador-workato-cliente-navegador-0.6.3.tgz`
 
 ## 0.6.2 — 5 out 2026
 

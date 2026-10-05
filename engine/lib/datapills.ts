@@ -672,6 +672,8 @@ export type PillOptions = {
    * o step pulado nao precisa da referencia para revisar.
    */
   omitDangling?: boolean;
+  /** Nome iPaaS → origem Workato. Propriedade de conta e de projeto. */
+  projectVariables?: Map<string, string>;
 };
 
 /** Marcador interno. `convertPills` tira do texto antes de devolver. */
@@ -803,9 +805,21 @@ export function renderApTemplate(base: string, segments: string[] = []): string 
   return `{{${base}${segments.map(formatApSegment).join('')}}}`;
 }
 
-/** Propriedade de conta Workato (`pdf_generator_api_key`) vira a variavel iPaaS `PDF_GENERATOR_API_KEY`. */
+/** Propriedade de conta ou de projeto (`pdf_generator_api_key`, `d4sign.prd.url`) vira a variavel iPaaS `PDF_GENERATOR_API_KEY`. */
 export function accountPropertyVariable(name: string): string {
   return name.trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toUpperCase();
+}
+
+function renderPropertyVariable(kind: 'conta' | 'projeto', propertyName: string, options?: PillOptions): string {
+  const name = accountPropertyVariable(propertyName);
+  const origin = `propriedade de ${kind} \`${propertyName}\``;
+  const known = options?.projectVariables;
+  if (known) {
+    const prev = known.get(name);
+    if (!prev) known.set(name, origin);
+    else if (!prev.includes(propertyName)) known.set(name, `${prev}; ${origin}`);
+  }
+  return `{{variables['${name}']}}`;
 }
 
 const DOTTED_STEP_PILL = /\{\{([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)+)((?:\[[^\]]*\])*)\}\}/g;
@@ -877,8 +891,12 @@ function renderDataPill(
     // Sem `line`. Usar o mapa emitia `{{undefined['…']}}`.
     return '';
   }
-  if (dp.pill_type === 'account_property' && typeof dp.property_name === 'string') {
-    return `{{variables['${accountPropertyVariable(dp.property_name)}']}}`;
+  if (
+    (dp.pill_type === 'account_property' || dp.pill_type === 'project_property') &&
+    typeof dp.property_name === 'string'
+  ) {
+    const kind = dp.pill_type === 'account_property' ? 'conta' : 'projeto';
+    return renderPropertyVariable(kind, dp.property_name, options);
   }
   const line = dp.line ?? dp.provider;
   const mapped = asToName.get(line);

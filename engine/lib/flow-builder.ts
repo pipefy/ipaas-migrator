@@ -125,11 +125,13 @@ interface Ctx {
   /** Fases do schema Workato, para trocar phase_id "0" pelo id do formulário inicial. */
   phasesByPipe: PipePhase[];
   connectionsByProvider: Record<string, string>;
+  /** Variavel iPaaS (`CLIENT_ID`) → origem (propriedade de projeto, token, Omie). */
+  projectVariables: Map<string, string>;
 }
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS';
   content: string;
   anchorStepName?: string;
 }
@@ -191,6 +193,7 @@ function pills(input: string, ctx: Ctx, resolve = loopItemResolver(ctx)): string
     recipeId: ctx.recipeId,
     jobContextHits: ctx.jobContextHits,
     skippedAs: ctx.skippedAs,
+    projectVariables: ctx.projectVariables,
   });
 }
 
@@ -1077,6 +1080,8 @@ export const REVIEW_SMS_LABEL = 'REVISAR: sms';
 export const REVIEW_SCHEDULE_LABEL = 'AVISO: agenda quinzenal';
 export const REVIEW_EMPTY_UPDATE_LABEL = 'AVISO: update sem campos';
 export const REVIEW_CONNECTION_LABEL = 'REVISAR: conexão';
+export const REVIEW_MODAL_LABEL = 'AVISO: modal virou callback';
+export const REVIEW_VARIABLES_LABEL = 'AVISO: variáveis';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1116,6 +1121,7 @@ function liftCodeSecrets(
       ) {
         const name = secretVariableName(key, source, used);
         found.push({ raw: inner, name });
+        if (!ctx.projectVariables.has(name)) ctx.projectVariables.set(name, 'token no código');
         out[key] = `{{variables['${name}']}}`;
       } else {
         out[key] = walk(inner);
@@ -1240,7 +1246,9 @@ function pushReviewNote(
     | 'SMS'
     | 'SCHEDULE'
     | 'UPDATE'
-    | 'CONNECTION',
+    | 'CONNECTION'
+    | 'MODAL'
+    | 'VARS',
   message: string,
   lost = '',
   anchorStepName?: string,
@@ -1266,7 +1274,11 @@ function pushReviewNote(
                     ? REVIEW_EMPTY_UPDATE_LABEL
                     : kind === 'CONNECTION'
                       ? REVIEW_CONNECTION_LABEL
-                      : REVIEW_JOB_CONTEXT_LABEL;
+                      : kind === 'MODAL'
+                        ? REVIEW_MODAL_LABEL
+                        : kind === 'VARS'
+                          ? REVIEW_VARIABLES_LABEL
+                          : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
     kind === 'CATCH'
       ? 'review_catch'
@@ -1288,7 +1300,11 @@ function pushReviewNote(
                       ? 'review_update'
                       : kind === 'CONNECTION'
                         ? 'review_connection'
-                        : 'review_job';
+                        : kind === 'MODAL'
+                          ? 'review_modal'
+                          : kind === 'VARS'
+                            ? 'review_variables'
+                            : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -1297,6 +1313,20 @@ function pushReviewNote(
     content: `**${title}**\n\n${message}`,
     anchorStepName,
   });
+}
+
+function noteProjectVariables(ctx: Ctx, anchorStepName?: string): void {
+  if (!ctx.projectVariables.size) return;
+  const lines = [...ctx.projectVariables.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, origin]) => `- \`${name}\` — ${origin}`);
+  pushReviewNote(
+    ctx,
+    'VARS',
+    `A receita usa variáveis do projeto. Criar no iPaaS:\n\n${lines.join('\n')}`,
+    '',
+    anchorStepName,
+  );
 }
 
 function placeCanvasNotes(trigger: any, pending: PendingCanvasNote[]): any[] {
@@ -1629,6 +1659,8 @@ function fillOmieHttp(
     return null;
   }
   envelopeDynamicProps(filled, ctx, target);
+  ctx.projectVariables.set(OMIE_APP_KEY, 'credencial Omie');
+  ctx.projectVariables.set(OMIE_APP_SECRET, 'credencial Omie');
   if (!ctx.canvasNotes.some((note) => note.content.includes(OMIE_APP_KEY))) {
     pushReviewNote(
       ctx,
@@ -2072,6 +2104,165 @@ function fillSheetsFindRows(
   return input;
 }
 
+const SLACK_VIEWS = 'https://slack.com/api/views.';
+
+function slackPlain(text: unknown, ctx: Ctx): { type: 'plain_text'; text: unknown; emoji: true } | undefined {
+  if (text == null || text === '') return undefined;
+  return { type: 'plain_text', text: deepConvert(text, ctx), emoji: true };
+}
+
+function slackFlag(value: unknown): boolean | undefined {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return undefined;
+}
+
+function slackOptions(options: unknown, ctx: Ctx): Array<{ text: { type: 'plain_text'; text: unknown; emoji: true }; value: unknown }> | undefined {
+  if (!Array.isArray(options) || !options.length) return undefined;
+  return options.map((option) => ({
+    text: slackPlain(option?.title ?? option?.value ?? '', ctx)!,
+    value: deepConvert(option?.value ?? '', ctx),
+  }));
+}
+
+function slackModalElement(block: Record<string, any>, ctx: Ctx): Record<string, any> {
+  const actionId = block.block_id || 'action';
+  if (block.block_type === 'plain_text_input' || block.block_type === 'multiline_plain_text_input') {
+    const element: Record<string, any> = { type: 'plain_text_input', action_id: actionId };
+    if (block.block_type === 'multiline_plain_text_input') element.multiline = true;
+    const placeholder = slackPlain(block.placeholder_text, ctx);
+    if (placeholder) element.placeholder = placeholder;
+    if (block.max_length != null && block.max_length !== '') element.max_length = Number(block.max_length);
+    return element;
+  }
+  if (block.block_type === 'datepicker_input') {
+    const element: Record<string, any> = { type: 'datepicker', action_id: actionId };
+    const placeholder = slackPlain(block.placeholder_text, ctx);
+    if (placeholder) element.placeholder = placeholder;
+    return element;
+  }
+  const menu = String(block.menu_type || (block.block_type === 'radio_buttons_input' ? 'radio_buttons' : 'static_select'));
+  const element: Record<string, any> = {
+    type: block.block_type === 'radio_buttons_input' ? 'radio_buttons' : menu,
+    action_id: actionId,
+  };
+  const placeholder = slackPlain(block.placeholder_text, ctx);
+  if (placeholder) element.placeholder = placeholder;
+  const users = menu.includes('users');
+  const external = menu.includes('external');
+  if (!users && !external) {
+    const options = slackOptions(block.options, ctx);
+    if (options) element.options = options;
+  }
+  if (external) element.min_query_length = 0;
+  if (block.max_selected_items != null && block.max_selected_items !== '') {
+    element.max_selected_items = Number(block.max_selected_items);
+  }
+  return element;
+}
+
+function slackModalBlock(block: Record<string, any>, ctx: Ctx): Record<string, any> | undefined {
+  if (!block || typeof block !== 'object') return undefined;
+  if (block.block_type === 'divider') return { type: 'divider' };
+  if (block.block_type === 'section_with_text') {
+    return { type: 'section', text: { type: 'mrkdwn', text: deepConvert(block.section_text ?? '', ctx) } };
+  }
+  if (block.block_type === 'section_with_button') {
+    return {
+      type: 'section',
+      text: { type: 'mrkdwn', text: deepConvert(block.section_text ?? '', ctx) },
+      accessory: {
+        type: 'button',
+        text: slackPlain(block.button_title ?? 'Abrir', ctx),
+        ...(block.url != null && block.url !== '' ? { url: deepConvert(block.url, ctx) } : {}),
+        action_id: block.block_id || 'button',
+      },
+    };
+  }
+  const label = slackPlain(block.label_text, ctx);
+  if (!label) return undefined;
+  const input: Record<string, any> = {
+    type: 'input',
+    block_id: block.block_id,
+    label,
+    element: slackModalElement(block, ctx),
+  };
+  const optional = slackFlag(block.optional);
+  if (optional != null) input.optional = optional;
+  const hint = slackPlain(block.hint_text, ctx);
+  if (hint) input.hint = hint;
+  return input;
+}
+
+function slackModalView(view: Record<string, any>, ctx: Ctx): Record<string, any> {
+  const submit = view.submit_view && typeof view.submit_view === 'object' ? view.submit_view : {};
+  const out: Record<string, any> = {
+    type: 'modal',
+    title: slackPlain(view.modal_title ?? 'Modal', ctx),
+    blocks: (Array.isArray(view.blocks) ? view.blocks : [])
+      .map((block) => slackModalBlock(block, ctx))
+      .filter(Boolean),
+  };
+  const submitText = slackPlain(submit.submit_text, ctx);
+  if (submitText) out.submit = submitText;
+  const closeText = slackPlain(submit.close_text, ctx);
+  if (closeText) out.close = closeText;
+  const notify = slackFlag(submit.notify_on_close);
+  if (notify != null) out.notify_on_close = notify;
+  const clear = slackFlag(submit.clear_on_close);
+  if (clear != null) out.clear_on_close = clear;
+  return out;
+}
+
+function triggerLine(ctx: Ctx): string | undefined {
+  for (const [line, bound] of ctx.asToName) {
+    const name = typeof bound === 'string' ? bound : bound.name;
+    if (name === 'trigger') return line;
+  }
+  return undefined;
+}
+
+/** Workato `block_kit_modals` abre/atualiza um modal. Vira `views.open` / `views.update` / `views.push`. */
+function fillSlackModal(input: Record<string, any>, sourceInput: Record<string, any>, ctx: Ctx): Record<string, any> {
+  const action = String(sourceInput.modal_action_type || 'open');
+  const urlAction = action === 'update' || action === 'push' ? action : 'open';
+  let view = sourceInput.view;
+  if (typeof view === 'string') {
+    try {
+      view = JSON.parse(view);
+    } catch {
+      view = {};
+    }
+  }
+  const slackView = slackModalView(view && typeof view === 'object' ? view : {}, ctx);
+  const body: Record<string, any> = { view: slackView };
+  if (urlAction === 'update') {
+    if (sourceInput.view_id != null && sourceInput.view_id !== '') body.view_id = deepConvert(sourceInput.view_id, ctx);
+  } else {
+    const triggerId = sourceInput.trigger_id;
+    if (triggerId != null && triggerId !== '') body.trigger_id = deepConvert(triggerId, ctx);
+    else {
+      const line = triggerLine(ctx);
+      if (line) {
+        body.trigger_id = deepConvert(
+          `#{_dp('${JSON.stringify({ pill_type: 'output', provider: 'slack_bot', line, path: ['context', 'trigger_id'] })}')}`,
+          ctx,
+        );
+      }
+    }
+  }
+  return {
+    ...input,
+    method: 'POST',
+    url: `${SLACK_VIEWS}${urlAction}`,
+    headers: { 'Content-Type': 'application/json' },
+    queryParams: {},
+    body_type: 'json',
+    useUserToken: false,
+    body,
+  };
+}
+
 function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, any>, ctx: Ctx): Record<string, any> {
   const request = sourceInput.request && typeof sourceInput.request === 'object' ? sourceInput.request : sourceInput;
   if (input.headers == null || (typeof input.headers === 'object' && !Object.keys(input.headers).length)) {
@@ -2210,6 +2401,16 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   const omie = fillOmieHttp(opKey, t, input, sourceInput, ctx, name);
   if (omie) input = omie;
   if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
+  if (collapseOpKey(opKey) === 'slack/block_kit_modals' && t.name === 'custom_api_call') {
+    input = fillSlackModal(input, sourceInput, ctx);
+    pushReviewNote(
+      ctx,
+      'MODAL',
+      'A doc do Slack lista o trigger New Modal Interaction (new-modal-interaction): ele começa um flow quando o usuário envia (view_submission) ou fecha (view_closed) o modal. Não abre o modal. Este passo Workato abre o modal (block_kit_modals), então foi convertido para callback views.open/update/push. Os campos preenchidos saem nesse trigger, não na resposta do POST.',
+      '',
+      name,
+    );
+  }
   if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
     input = fillHttpSend(input, sourceInput, ctx);
     const connection = ctx.connectionsByProvider[step.provider ?? ''];
@@ -3295,10 +3496,12 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     subflowResultLabels: new Map(),
     phasesByPipe: recipe.phasesByPipe ?? [],
     connectionsByProvider: recipe.connectionsByProvider ?? {},
+    projectVariables: new Map(),
   };
   assignNames(recipe.root, ctx, true);
   const trigger = buildTrigger(recipe.root, ctx);
   notePendingJobContext(ctx, lastStepName(trigger));
+  noteProjectVariables(ctx, lastStepName(trigger));
 
   const flow = {
     name: recipe.name,
