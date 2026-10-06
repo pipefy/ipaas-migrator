@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.4 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.5 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.5 — 6 out 2026
+
+Planilha, Drive, calendário, Docs, Outlook, Entra, QuickBooks e o delete da lookup table passam a preencher as props que a receita já trazia.
+
+- Google Sheets aceita `spreadsheet` ou `spreadsheet_id`, e `sheet` ou `sheet_name`.
+- Drive copia arquivo, e-mail, papel e pasta. Calendar copia o calendário, a busca e o intervalo. Docs copia o documento.
+- Outlook copia calendário, título e horário ao criar, listar ou apagar evento. Membros de grupo do Entra copiam o grupo.
+- QuickBooks copia cliente, fornecedor, documento, datas e contas em invoice, bill, expense e vendor. Delete de lookup table copia a tabela e os ids.
+- `migrador-workato-cliente-navegador-0.6.5.tgz`
 
 ## 0.6.4 — 6 out 2026
 

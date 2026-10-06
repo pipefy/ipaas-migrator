@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.6.4**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.6.5**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + atualização no GitHub + smoke → idioma (inferir) → API ou JSON → pipe → conexão → motor → Downloads do `*.flow.json` (com ok) → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → teste.
 
@@ -115,7 +115,7 @@ Esse comando existe só no helper (`workato_migrator_helper`), não no kit publi
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.6.4.tgz
+# dist/migrador-workato-cliente-navegador-0.6.5.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

@@ -440,20 +440,20 @@
 
     "google_sheets/add_spreadsheet_row_v4": {
       "target": { "piece": "@activepieces/piece-google-sheets", "name": "insert_row", "kind": "action" },
-      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "medium",
       "manual": false,
       "notes": "first_row_headers/as_string dependem do formato da planilha na importacao."
     },
     "google_sheets/update_row_v4_new": {
       "target": { "piece": "@activepieces/piece-google-sheets", "name": "update_row", "kind": "action" },
-      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "row_number": "row_id", "data": "values", "team_drives": "includeTeamDrives" },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "row_number": "row_id", "data": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "medium",
       "manual": false
     },
     "google_sheets/search_spreadsheet_rows_v4_new": {
       "target": { "piece": "@activepieces/piece-google-sheets", "name": "find_rows", "kind": "action" },
-      "propMap": { "spreadsheet": "spreadsheetId", "sheet": "sheetId", "team_drives": "includeTeamDrives", "count": "numberOfRows" },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "team_drives": "includeTeamDrives", "count": "numberOfRows" },
       "difficulty": "medium",
       "manual": false,
       "notes": "coluna de busca (columnName) e searchValue nao vem com nomes estaveis no Workato — revisar na importacao."
@@ -807,6 +807,7 @@
         "name": "list_group_members",
         "kind": "action"
       },
+      "propMap": { "group_id": "groupId" },
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (groupId); escolher na importacao."
@@ -845,6 +846,7 @@
     },
     "azure_ad/get_group_members": {
       "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "propMap": { "group_id": "groupId" },
       "difficulty": "low",
       "manual": false
     },
@@ -1372,6 +1374,7 @@
     },
     "google_calendar/search_events": {
       "target": {"piece":"@activepieces/piece-google-calendar","name":"google_calendar_get_events","kind":"action"},
+      "propMap": { "id": "calendar_id", "q": "search", "timeMin": "start_date", "timeMax": "end_date" },
       "difficulty": "low",
       "manual": false
     },
@@ -1441,6 +1444,7 @@
     },
     "google_docs/get_doc": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"read_document","kind":"action"},
+      "propMap": { "document_id": "documentId" },
       "difficulty": "low",
       "manual": false
     },
@@ -1475,6 +1479,7 @@
     },
     "google_docs_connector_186728_1621263423/get_doc": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"read_document","kind":"action"},
+      "propMap": { "document_id": "documentId" },
       "difficulty": "low",
       "manual": false
     },
@@ -1553,11 +1558,13 @@
     },
     "google_drive/add_permission": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"update_permissions","kind":"action"},
+      "propMap": { "fileId": "fileId", "emailAddress": "user_email", "role": "permission_name", "sendNotificationEmail": "send_invitation_email" },
       "difficulty": "low",
       "manual": false
     },
     "google_drive/create_folder": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"create_new_gdrive_folder","kind":"action"},
+      "propMap": { "name": "folderName", "folderId": "parentFolder" },
       "difficulty": "low",
       "manual": false
     },
@@ -1585,6 +1592,7 @@
     },
     "google_drive/move_rename_file": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"google-drive-move-file","kind":"action"},
+      "propMap": { "file_id": "fileId", "parents": "folderId" },
       "difficulty": "low",
       "manual": false
     },
@@ -1655,11 +1663,13 @@
     },
     "google_sheets/add_row_v4_bulk": {
       "target": {"piece":"@activepieces/piece-google-sheets","name":"google-sheets-insert-multiple-rows","kind":"action"},
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "rows": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "low",
       "manual": false
     },
     "google_sheets/get_spreadsheet_rows_v4": {
       "target": {"piece":"@activepieces/piece-google-sheets","name":"get-many-rows","kind":"action"},
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "team_drives": "includeTeamDrives" },
       "difficulty": "low",
       "manual": false
     },
@@ -1685,6 +1695,7 @@
     },
     "google_sheets/update_row_v4_bulk": {
       "target": {"piece":"@activepieces/piece-google-sheets","name":"update-multiple-rows","kind":"action"},
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "rows": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "low",
       "manual": false
     },
@@ -1911,12 +1922,14 @@
     },
     "lookup_table/delete_entries": {
       "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
+      "propMap": { "lookup_table_id": "table_id", "ids": "records_ids" },
       "difficulty": "medium",
       "manual": false,
       "notes": "recriar Lookup Table"
     },
     "lookup_table/delete_entry": {
       "target": {"piece":"@activepieces/piece-tables","name":"tables-delete-record","kind":"action"},
+      "propMap": { "lookup_table_id": "table_id", "id": "records_ids" },
       "difficulty": "medium",
       "manual": false,
       "notes": "recriar Lookup Table"
@@ -2042,6 +2055,7 @@
     },
     "microsoft_entra_id_azure_active_directory__connector_5247756_1743530603/get_group_members": {
       "target": {"piece":"@activepieces/piece-azure-ad","name":"list_group_members","kind":"action"},
+      "propMap": { "group_id": "groupId" },
       "difficulty": "low",
       "manual": false
     },
@@ -2585,6 +2599,7 @@
         "name": "create_event",
         "kind": "action"
       },
+      "propMap": { "Calendar": "calendarId", "Subject": "title", "Start": "start", "End": "end" },
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (calendarId, timezone); escolher na importacao."
@@ -3349,6 +3364,7 @@
         "name": "create_invoice",
         "kind": "action"
       },
+      "propMap": { "CustomerRef": "customerRef", "DocNumber": "docNumber", "DueDate": "dueDate" },
       "difficulty": "low",
       "manual": false
     },
@@ -4888,6 +4904,7 @@
         "name": "new_event",
         "kind": "trigger"
       },
+      "propMap": { "id": "calendar_id" },
       "difficulty": "low",
       "manual": false
     },
@@ -4906,6 +4923,7 @@
         "name": "update_row",
         "kind": "action"
       },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "low",
       "manual": false
     },
@@ -5179,6 +5197,7 @@
         "name": "list_events",
         "kind": "action"
       },
+      "propMap": { "calendar": "calendarId" },
       "difficulty": "low",
       "manual": false
     },
@@ -5188,6 +5207,7 @@
         "name": "delete_event",
         "kind": "action"
       },
+      "propMap": { "calendar": "calendarId", "event_id": "eventId" },
       "difficulty": "low",
       "manual": false
     },
@@ -5889,6 +5909,7 @@
         "name": "create_bill",
         "kind": "action"
       },
+      "propMap": { "VendorRef": "vendorRef", "DocNumber": "docNumber", "TxnDate": "txnDate", "PrivateNote": "privateNote" },
       "difficulty": "low",
       "manual": false
     },
@@ -5908,6 +5929,7 @@
         "name": "create_vendor",
         "kind": "action"
       },
+      "propMap": { "DisplayName": "displayName", "CompanyName": "companyName", "BillAddr_Line1": "billAddrLine1", "BillAddr_PostalCode": "billAddrPostalCode" },
       "difficulty": "low",
       "manual": false
     },
@@ -5953,6 +5975,7 @@
         "name": "create_expense",
         "kind": "action"
       },
+      "propMap": { "AccountRef": "accountRef", "EntityRef": "entityRef", "TxnDate": "txnDate", "PrivateNote": "privateNote" },
       "difficulty": "low",
       "manual": false
     },
