@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.3 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.4 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.4 — 6 out 2026
+
+Repeat while com lista ou teto de voltas vira loop. Sleep com unidade vira espera. O Python que só sorteia nove dígitos sai traduzido.
+
+- Repeat while que compara índice com o tamanho da lista, ou que tem um teto de voltas, vira `LOOP_ON_ITEMS`. A nota amarela `AVISO: repeat adaptado` diz o que mudou. Paginação, espera de relatório e espera de flag deixam o corpo em seguida, uma vez, com a mesma nota.
+- `sleep 2.minutes` (e as outras unidades) vira espera em segundos. `sleep rand(...)` vira passo de código que sorteia na execução. `sleep(30);` continua espera.
+- Python que só sorteia um número de nove dígitos (`randint(100000000, 999999999)`) vira o mesmo passo em JavaScript.
+- Busca de registros da base Pipefy copia organização, tabela e o flag de concluídos para as props da peça.
+- `migrador-workato-cliente-navegador-0.6.4.tgz`
 
 ## 0.6.3 — 5 out 2026
 

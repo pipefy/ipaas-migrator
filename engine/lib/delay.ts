@@ -37,30 +37,82 @@ export function parseRelativeFromNow(raw: unknown): { seconds: number } | null {
   return { seconds: amount * factor };
 }
 
-/** `sleep N` (literal) ou `sleep(input['chave'])`, o intervalo vindo do `code_input`. */
+/** `sleep N`, `sleep(2.minutes)` ou `sleep(input['chave'])`. Unidade vira segundos. */
 export type RubySleep = { seconds: number } | { inputKey: string };
+
+/** `rand(5)` é 0..4. `rand(3..10)` é 3..10. `n` sorteado, segundos = n * factor. */
+export type RubyRandomSleep = { min: number; span: number; factor: number };
 
 const RUBY_SLEEP = /^(?:Kernel\.)?sleep\s*(?:\(\s*(.+?)\s*\)|([^(].*?))\s*(?:#.*)?$/i;
 const SLEEP_LITERAL = /^\d+(?:\.\d+)?$/;
+const SLEEP_DURATION = /^(\d+(?:\.\d+)?)\.(seconds?|minutes?|hours?|days?|weeks?)$/i;
+/** `rand(5)` ou `rand(3..10).minutes`. O número é inteiro, como o Kernel#rand da Workato. */
+const SLEEP_RAND = /^rand\s*\(\s*(\d+)(?:\s*\.\.\s*(\d+))?\s*\)(?:\.(seconds?|minutes?|hours?|days?|weeks?))?$/i;
 const SLEEP_INPUT = /^input\[\s*(['"])([^'"]+)\1\s*\]$/;
 
+/** `30` já está em segundos. `2.minutes` vale 120. Singular e plural. */
+function durationSeconds(arg: string): number | null {
+  if (SLEEP_LITERAL.test(arg)) return Number(arg);
+  const duration = arg.match(SLEEP_DURATION);
+  if (!duration) return null;
+  const amount = Number(duration[1]);
+  const factor = UNIT_SECONDS[duration[2]!.toLowerCase()];
+  if (!Number.isFinite(amount) || factor == null) return null;
+  return amount * factor;
+}
+
 /**
- * Corpo Ruby que só dorme. O boilerplate de comentário que a Workato coloca em
- * todo step de código não conta; qualquer outra instrução invalida o recorte,
- * porque aí o passo faz mais do que esperar.
+ * Corpo Ruby que só dorme um tempo fixo. O boilerplate de comentário que a
+ * Workato coloca em todo step de código não conta; qualquer outra instrução
+ * invalida o recorte, porque aí o passo faz mais do que esperar.
+ * `sleep rand(...)` não entra aqui: continua step CODE e sorteia na execução.
  */
 export function parseRubySleep(raw: unknown): RubySleep | null {
+  const arg = rubySleepArg(raw);
+  if (arg == null) return null;
+  const seconds = durationSeconds(arg);
+  if (seconds != null) return { seconds };
+  const fromInput = arg.match(SLEEP_INPUT);
+  return fromInput ? { inputKey: fromInput[2]! } : null;
+}
+
+/** `sleep rand(5)` → 0..4. `sleep rand(3..10)` → 3..10. Unidade multiplica o inteiro sorteado. */
+export function parseRubyRandomSleep(raw: unknown): RubyRandomSleep | null {
+  const arg = rubySleepArg(raw);
+  if (arg == null) return null;
+  const rand = arg.match(SLEEP_RAND);
+  if (!rand) return null;
+  const factor = rand[3] ? UNIT_SECONDS[rand[3].toLowerCase()] : 1;
+  if (factor == null) return null;
+  const upper = Number(rand[2] ?? rand[1]);
+  const lower = rand[2] != null ? Number(rand[1]) : 0;
+  const span = rand[2] != null ? upper - lower + 1 : upper;
+  if (!Number.isInteger(lower) || !Number.isInteger(span) || span < 1 || lower < 0) return null;
+  return { min: lower, span, factor };
+}
+
+export function randomSleepCode(sleep: RubyRandomSleep): string {
+  return [
+    'export const code = async () => {',
+    `  const n = ${sleep.min} + Math.floor(Math.random() * ${sleep.span});`,
+    `  const seconds = n * ${sleep.factor};`,
+    '  await new Promise((resolve) => setTimeout(resolve, Math.round(seconds * 1000)));',
+    '  return { seconds };',
+    '};',
+  ].join('\n');
+}
+
+function rubySleepArg(raw: unknown): string | null {
   if (raw == null) return null;
   const body = String(raw)
     .split('\n')
     .filter((line) => line.trim() !== '' && !/^\s*#/.test(line));
   if (body.length !== 1) return null;
-  const match = body[0]!.trim().match(RUBY_SLEEP);
+  // `sleep(30);` é o mesmo sleep. O ponto-e-vírgula não é outra instrução.
+  const line = body[0]!.trim().replace(/;\s*(#.*)?$/, (_full, comment: string | undefined) => comment ?? '');
+  const match = line.match(RUBY_SLEEP);
   if (!match) return null;
-  const arg = (match[1] ?? match[2] ?? '').trim();
-  if (SLEEP_LITERAL.test(arg)) return { seconds: Number(arg) };
-  const fromInput = arg.match(SLEEP_INPUT);
-  return fromInput ? { inputKey: fromInput[2]! } : null;
+  return (match[1] ?? match[2] ?? '').trim();
 }
 
 /**

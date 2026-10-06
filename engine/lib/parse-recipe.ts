@@ -2,7 +2,7 @@
 import { basename } from 'node:path';
 import type { FormulaHit, ParsedRecipe, ParsedStep, WorkatoInputField } from './types.ts';
 import { analyzeFormula } from './datapills.ts';
-import { parseRubySleep } from './delay.ts';
+import { parseRubyRandomSleep, parseRubySleep } from './delay.ts';
 import { collectPipePhases } from './phase-id.ts';
 
 function walkStrings(node: any, visit: (s: string) => void): void {
@@ -72,7 +72,11 @@ function collect(
 
 /** Custom Ruby que exige tradução para JS. Corpo que é só sleep vira delayFor, não CODE. */
 function hasTranslatableRuby(step: ParsedStep): boolean {
-  if (step.opKey?.endsWith('/invoke_custom_ruby_code') && !parseRubySleep(step.input?.code)) {
+  if (
+    step.opKey?.endsWith('/invoke_custom_ruby_code') &&
+    !parseRubySleep(step.input?.code) &&
+    !parseRubyRandomSleep(step.input?.code)
+  ) {
     return true;
   }
   return step.children.some(hasTranslatableRuby);

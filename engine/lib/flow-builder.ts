@@ -28,7 +28,7 @@ import {
   shapeReturnResponse,
   SUBFLOW_PIECE_VERSION,
 } from './subflow.ts';
-import { resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
+import { parseRubyRandomSleep, randomSleepCode, resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
 import {
   convertPills,
   detectRubyMethods,
@@ -171,8 +171,6 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
  * (o step tem de ficar invalido), mas se distingue de uma operacao que faltou
  * mapear: aqui a limitacao e da plataforma, o AP so itera colecao.
  */
-const REPEAT_ACTION = 'REPEAT_UNSUPPORTED';
-
 /** resolve pill de "item atual" contra o foreach mais interno da colecao. */
 function loopItemResolver(ctx: Ctx) {
   return (collection: string): string | undefined => {
@@ -1082,6 +1080,7 @@ export const REVIEW_EMPTY_UPDATE_LABEL = 'AVISO: update sem campos';
 export const REVIEW_CONNECTION_LABEL = 'REVISAR: conexão';
 export const REVIEW_MODAL_LABEL = 'AVISO: modal virou callback';
 export const REVIEW_VARIABLES_LABEL = 'AVISO: variáveis';
+export const REVIEW_REPEAT_LABEL = 'AVISO: repeat adaptado';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1248,13 +1247,16 @@ function pushReviewNote(
     | 'UPDATE'
     | 'CONNECTION'
     | 'MODAL'
-    | 'VARS',
+    | 'VARS'
+    | 'REPEAT',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'CATCH'
+    kind === 'REPEAT'
+      ? REVIEW_REPEAT_LABEL
+      : kind === 'CATCH'
       ? REVIEW_CATCH_LABEL
       : kind === 'STOP'
         ? REVIEW_STOP_LABEL
@@ -1280,7 +1282,9 @@ function pushReviewNote(
                           ? REVIEW_VARIABLES_LABEL
                           : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'CATCH'
+    kind === 'REPEAT'
+      ? 'review_repeat'
+      : kind === 'CATCH'
       ? 'review_catch'
       : kind === 'STOP'
         ? 'review_stop'
@@ -1775,6 +1779,33 @@ function businessDaysCode(): string {
   ].join('\n');
 }
 
+/**
+ * Python que só importa `random`, sorteia `randint(100000000, 999999999)`
+ * e devolve `random_number`. Comentário de amostra do Workato não conta.
+ * Outro corpo fica no stub.
+ */
+function pythonRandomNineDigits(python: string): boolean {
+  const lines = python
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+  if (lines.length !== 4) return false;
+  if (lines[0] !== 'import random') return false;
+  if (!/^def\s+main\s*\(\s*[A-Za-z_]\w*\s*\)\s*:$/.test(lines[1]!)) return false;
+  if (!/^random_number\s*=\s*random\.randint\(\s*100000000\s*,\s*999999999\s*\)$/.test(lines[2]!)) return false;
+  return /^return\s+\{\s*['"]random_number['"]\s*:\s*random_number\s*\}$/.test(lines[3]!);
+}
+
+function pythonRandomNineDigitsCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async () => {',
+    '  const random_number = Math.floor(Math.random() * 900000000) + 100000000;',
+    '  return { random_number };',
+    '};',
+  ].join('\n');
+}
+
 function buildPythonSleep(name: string, display: string, step: ParsedStep, ctx: Ctx, ms: number): any {
   const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
@@ -1996,6 +2027,22 @@ function fillKnownProps(
         fields[String(id)] = item.value;
       }
       if (Object.keys(fields).length) input.phaseFields = fields;
+    }
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'getRecordsByFilter') {
+    // organization_id e table_id no proprio passo viram as props da piece.
+    // Organizacao so no gatilho, e qual string vai em `order`, ficam em aberto.
+    copyProp(input, 'organizationId', 'organization_id');
+    if (!blankProp(input.organizationId)) delete input.organization_id;
+    copyProp(input, 'databaseId', 'table_id');
+    if (!blankProp(input.databaseId)) delete input.table_id;
+    if (blankProp(input.includeDone) && !blankProp(input.include_done)) {
+      const flag = asEnableFlag(input.include_done);
+      if (typeof flag === 'boolean') {
+        input.includeDone = flag;
+        delete input.include_done;
+      }
     }
   }
 
@@ -2322,7 +2369,11 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     return buildNodeIdsPython(name, display, step, ctx);
   }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code') {
-    const sleepMs = pythonSleepMs(String(step.input?.code ?? ''));
+    const python = String(step.input?.code ?? '');
+    if (pythonRandomNineDigits(python)) {
+      return codeStep(name, display, {}, pythonRandomNineDigitsCode(), true);
+    }
+    const sleepMs = pythonSleepMs(python);
     if (sleepMs != null) return buildPythonSleep(name, display, step, ctx, sleepMs);
   }
   if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
@@ -2367,6 +2418,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const lifted = liftCodeSecrets(codeInput, source, ctx, name);
     if (isRuby && isBusinessDaysRuby(lifted.source)) {
       return codeStep(name, display, lifted.input, businessDaysCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isRuby) {
+      const random = parseRubyRandomSleep(lifted.source);
+      if (random) return codeStep(name, display, {}, randomSleepCode(random), true);
     }
     if (isJs) {
       const wrapped = wrapJsEvalMain(lifted.source);
@@ -3009,6 +3064,156 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
  * Os outros casos ficam como step sem piece com o corpo encadeado depois do
  * marcador.
  */
+function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
+  pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
+}
+
+function firstDpJson(raw: unknown): string | null {
+  const match = String(raw ?? '').match(/_dp\('(.+?)'\)/);
+  return match?.[1] ?? null;
+}
+
+function integerBound(raw: unknown): number | null {
+  const match = String(raw ?? '').trim().match(/^=?(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function loopOverKnownList(step: ParsedStep, ctx: Ctx, name: string, listJson: string, message: string): any {
+  const loop = buildIndexedListRepeat(step, ctx, name, listJson);
+  noteRepeatAdapted(ctx, name, message);
+  return loop;
+}
+
+function loopOverTurnCount(
+  step: ParsedStep,
+  ctx: Ctx,
+  name: string,
+  bound: string,
+  extraOne: boolean,
+  message: string,
+): any {
+  const codeName = nextName('var_turns');
+  const code = codeStep(
+    codeName,
+    'Voltas do repeat',
+    { bound: pills(bound.replace(/^=/, ''), ctx), extra: extraOne ? '1' : '0' },
+    [
+      'export const code = async (inputs) => {',
+      '  const raw = Number(inputs.bound);',
+      "  const extra = inputs.extra === '1' ? 1 : 0;",
+      '  const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw) + extra) : 0;',
+      '  return Array.from({ length: count }, (_, i) => i);',
+      '};',
+    ].join('\n'),
+    true,
+  );
+  code.nextAction = {
+    name,
+    skip: false,
+    type: 'LOOP_ON_ITEMS',
+    valid: true,
+    settings: { items: `{{${codeName}}}` },
+    displayName: step.comment || 'Para cada volta',
+    firstLoopAction: buildChain(step.children, ctx),
+    lastUpdatedDate: NOW,
+  };
+  noteRepeatAdapted(ctx, name, message);
+  return code;
+}
+
+const TURN_OPERANDS = new Set([
+  'less_than',
+  'greater_than',
+  'not_equals_to',
+  'less_than_or_equal',
+  'greater_than_or_equal',
+]);
+
+function lengthJsonOf(raw: unknown): string | null {
+  if (!/\.length\b/.test(String(raw ?? ''))) return null;
+  return firstDpJson(raw);
+}
+
+function repeatBound(cond: { lhs?: unknown; rhs?: unknown; operand?: string }): { expr: string; extraOne: boolean; literal: number | null } | null {
+  if (!TURN_OPERANDS.has(String(cond.operand ?? ''))) return null;
+  const rightN = integerBound(cond.rhs);
+  const leftN = integerBound(cond.lhs);
+  if (rightN != null) {
+    return { expr: String(rightN), extraOne: cond.operand === 'less_than', literal: rightN };
+  }
+  if (leftN != null) {
+    return { expr: String(leftN), extraOne: false, literal: leftN };
+  }
+  if (lengthJsonOf(cond.lhs) || lengthJsonOf(cond.rhs)) return null;
+  const expr = firstDpJson(cond.rhs) ? String(cond.rhs ?? '') : firstDpJson(cond.lhs) ? String(cond.lhs ?? '') : '';
+  if (!expr) return null;
+  return { expr, extraOne: cond.operand === 'less_than' && Boolean(firstDpJson(cond.rhs)), literal: null };
+}
+
+/**
+ * Repeat while cuja saída descreve uma lista ou um teto de voltas.
+ * Paginação, relatório e flag não entram aqui.
+ */
+function adaptRepeatToLoop(step: ParsedStep, exit: ParsedStep | undefined, ctx: Ctx, name: string): any | null {
+  const conds = conditionsOf(asConditionsInput(exit?.input));
+  if (!conds.length) return null;
+  const size = conds.filter((cond) => repeatSizeClause(cond));
+  const cond = size.find((item) => lengthJsonOf(item.lhs) || lengthJsonOf(item.rhs)) ?? size[0];
+  if (!cond) return null;
+  const extra =
+    conds.length > 1
+      ? ' As outras condições ficaram de fora do teto: o loop não para no meio; conferir um if dentro da volta.'
+      : '';
+  const listSide = [cond.lhs, cond.rhs].find((side) => lengthJsonOf(side));
+  const listJson = listSide ? lengthJsonOf(listSide) : null;
+  if (listJson) {
+    const filtered = /\.(where|pluck|flatten)\b/.test(String(listSide));
+    const minus = /length\s*-\s*1\s*$/.test(String(listSide));
+    return loopOverKnownList(
+      step,
+      ctx,
+      name,
+      listJson,
+      `O Repeat while comparava um índice com o tamanho da lista. Virou LOOP_ON_ITEMS dessa lista.${extra} ${minus ? 'Lista vazia: o Workato entra uma vez; o loop do iPaaS não entra.' : 'A condição usava .length, não .length - 1: conferir a última volta.'} O índice do iPaaS começa em 1.${filtered ? ' O .length vinha depois de where/pluck; a lista do loop é a lista base.' : ''}`,
+    );
+  }
+  const bound = repeatBound(cond);
+  if (!bound) return null;
+  const turns = bound.literal != null && bound.extraOne ? bound.literal + 1 : bound.literal;
+  return loopOverTurnCount(
+    step,
+    ctx,
+    name,
+    bound.expr,
+    bound.extraOne,
+    turns != null
+      ? `O Repeat while tinha teto ${bound.literal}. A lista do LOOP_ON_ITEMS tem ${turns} voltas. O índice do iPaaS começa em 1.${extra}`
+      : `O Repeat while tinha teto num campo. A lista do LOOP_ON_ITEMS usa esse valor${bound.extraOne ? ' mais um, porque N voltas se escreve Index < N - 1' : ''}. O índice do iPaaS começa em 1.${extra}`,
+  );
+}
+
+function repeatSizeClause(cond: { lhs?: unknown; rhs?: unknown; operand?: string }): boolean {
+  if (lengthJsonOf(cond.lhs) || lengthJsonOf(cond.rhs)) return true;
+  return repeatBound(cond) != null;
+}
+
+function repeatBlob(exit: ParsedStep | undefined): string {
+  return JSON.stringify(exit?.input ?? '').toLowerCase();
+}
+
+function chainRepeatBody(step: ParsedStep, ctx: Ctx, name: string, message: string): any {
+  const code = codeStep(
+    name,
+    'Repeat adaptado',
+    {},
+    ['export const code = async (inputs) => {', '  return inputs;', '};'].join('\n'),
+    true,
+  );
+  code.nextAction = buildChain(step.children, ctx);
+  noteRepeatAdapted(ctx, name, message);
+  return code;
+}
+
 function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   const name = stepName(step, ctx);
   const exit = step.children.find((child) => child.keyword === 'while_condition');
@@ -3016,33 +3221,26 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   if (listJson && bodyIndexesList(step, listJson)) {
     return buildIndexedListRepeat(step, ctx, name, listJson);
   }
-  const bound = countedBound(step, exit, ctx);
-
-  ctx.todos.push(
-    bound
-      ? `REPEAT (${name}): laco CONTADO — roda enquanto o indice ${bound}. ${loopHint(bound)} ` +
-          'Corpo encadeado abaixo; conferir a base do indice.'
-      : `REPEAT (${name}): laco por CONDICAO de saida (${describeReadable(asConditionsInput(exit?.input), ctx)}) — ` +
-          'o AP so itera colecao, nao ha equivalente. Corpo encadeado abaixo; precisa reestruturar.',
-  );
-
-  return {
-    name,
-    skip: false,
-    type: 'PIECE',
-    valid: true,
-    settings: {
-      input: step.input,
-      pieceName: TODO_PIECE,
-      actionName: REPEAT_ACTION,
-      pieceVersion: '~latest',
-      propertySettings: {},
-      errorHandlingOptions: ERR(),
-    },
-    displayName: step.comment || 'Repetir enquanto (rever)',
-    nextAction: buildChain(step.children, ctx),
-    lastUpdatedDate: NOW,
-  };
+  if (listJson) {
+    return loopOverKnownList(
+      step,
+      ctx,
+      name,
+      listJson,
+      'O Repeat while contava voltas com Index e lista.length - 1, mas o corpo não lia lista[Index]. Virou LOOP_ON_ITEMS dessa lista. Lista vazia: o Workato entra uma vez; o loop do iPaaS não entra.',
+    );
+  }
+  const adapted = adaptRepeatToLoop(step, exit, ctx, name);
+  if (adapted) return adapted;
+  const blob = repeatBlob(exit);
+  const message = /last_cursor|hasnextpage|has_next|pageinfo|next_page/.test(blob)
+    ? 'Paginação por cursor. O corpo ficou em seguida e roda uma vez. Para percorrer os registros, acumule as páginas num array e use LOOP_ON_ITEMS. A página seguinte depende da resposta anterior.'
+    : /pipereportexport|reportexport/.test(blob)
+      ? 'Espera de relatório. O corpo ficou em seguida e roda uma vez. A espera até state = done fica num CODE com teto de tentativas; o LOOP_ON_ITEMS só entra se o arquivo for uma lista.'
+      : /blank|is_true|is_false|is_not_true|finished|success/.test(blob)
+        ? 'Espera de flag. O corpo ficou em seguida e roda uma vez. A espera fica num CODE com teto; o LOOP_ON_ITEMS só entra se o resultado for uma lista.'
+        : 'Não havia lista nem teto de voltas. O corpo ficou encadeado uma vez.';
+  return chainRepeatBody(step, ctx, name, message);
 }
 
 /** Router no fim de cada bloco monitor. O verificador reconhece pelo displayName. */
