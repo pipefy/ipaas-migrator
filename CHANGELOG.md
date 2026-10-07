@@ -6,12 +6,24 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.5 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.6 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.6 — 7 out 2026
+
+O kit passa a levar a skill que reescreve o passo de código e os scripts que ela chama. O motor desta leva trata variável escalar, lista, CSV, Docs, GraphQL, template e tabelas do Workato.
+
+- Entram `migrador-workato-traduzir-code`, `listar-code-stubs.mjs`, `aplicar-code-traduzido.mjs` e `conferir-code-traduzido.mjs`. O instalador copia essa skill junto com a de tirar dependência npm. No kit cliente os arquivos da receita ficam em `output/<id>/`.
+- Variável escalar vira um `put` por campo. Lista do Workato sai com `items`.
+- CSV cabe numa função só, para o sandbox do passo de código. BOM no início do arquivo sai antes do parse.
+- Google Docs com `requests` vira `batchUpdate`. Google Sheets copia `columns` para `values`. Outlook copia o fuso do evento.
+- GraphQL de registro, campos e card vira chamada no Pipefy. Message template e SOAP deixam nota: o corpo do template não está na receita.
+- Data table e lookup table deixam nota: a tabela do iPaaS não herda o id nem as linhas.
+- `migrador-workato-cliente-navegador-0.6.6.tgz`
 
 ## 0.6.5 — 6 out 2026
 

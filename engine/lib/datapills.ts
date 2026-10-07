@@ -751,6 +751,13 @@ export type StepBinding = string | {
   stripHead?: string;
   /** Ação da piece. `getCardsByFieldValue` não tem `cards_count`; a contagem é `count(data.cards)`. */
   actionName?: string;
+  /** Primeiro segmento Workato (`list`) vira a chave do array no output do Code. */
+  headAlias?: { from: string; to: string };
+  /**
+   * Variavel escalar no Storage: cada campo e um `get` e o valor e o escalar.
+   * A pill Workato ainda traz o campo no path; o primeiro segmento escolhe o get.
+   */
+  scalarFields?: ReadonlyMap<string, string>;
 };
 
 export type StepNameMap = Map<string, StepBinding>;
@@ -765,11 +772,37 @@ export function stepOutputRoot(binding: StepBinding | undefined): string | undef
   return binding.outputRoot;
 }
 
+/** `list` do Lists by Workato vira `items` no Code. O resto do path fica. */
+function aliasListHead(binding: StepBinding | undefined, segments: string[]): string[] {
+  if (!binding || typeof binding === 'string' || !binding.headAlias) return segments;
+  const { from, to } = binding.headAlias;
+  const head = segments[0];
+  if (!head) return segments;
+  if (head === from) return [to, ...segments.slice(1)];
+  if (head.startsWith(`${from}[`)) return [`${to}${head.slice(from.length)}`, ...segments.slice(1)];
+  return segments;
+}
+
 /** O Storage guarda a lista crua. A pill Workato ainda diz `list_items`. */
 export function withoutStripHead(binding: StepBinding | undefined, segments: string[]): string[] {
   const head = !binding || typeof binding === 'string' ? undefined : binding.stripHead;
   if (head && segments[0] === head) return segments.slice(1);
   return segments;
+}
+
+/**
+ * O Storage guarda o escalar na chave do campo. A pill Workato ainda diz
+ * `variavel.campo`; o campo sai do path e o step do `get` entra no lugar.
+ */
+function redirectScalarField(
+  binding: StepBinding | undefined,
+  base: string,
+  segments: string[],
+): { base: string; segments: string[] } {
+  if (!binding || typeof binding === 'string' || !binding.scalarFields?.size) return { base, segments };
+  const step = binding.scalarFields.get(segments[0] ?? '');
+  if (!step) return { base, segments };
+  return { base: step, segments: segments.slice(1) };
 }
 
 /** Segmentos do envelope da piece. Evita `data.card.card` se o path Workato ja comeca com `card`. */
@@ -935,7 +968,7 @@ function renderDataPill(
   }
   const pathHead = path.find((element) => typeof element === 'string') as string | undefined;
   let segments: string[] = outputRootSegments(mapped, pathHead);
-  const render = () => renderApTemplate(base, segments);
+  const render = () => renderApTemplate(base, aliasListHead(mapped, segments));
 
   for (const element of path) {
     if (!element || typeof element !== 'object') {
@@ -962,7 +995,8 @@ function renderDataPill(
     }
     return '{{TODO_pill}}';
   }
-  return renderApTemplate(base, withoutStripHead(mapped, segments));
+  const stored = redirectScalarField(mapped, base, withoutStripHead(mapped, aliasListHead(mapped, segments)));
+  return renderApTemplate(stored.base, stored.segments);
 }
 
 function extraHashPath(brackets: string): string {
@@ -1105,11 +1139,12 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
     if (counted) return counted;
   }
   const pathHead = path.split('.')[0];
-  const segs = withoutStripHead(binding, [
+  const segs = withoutStripHead(binding, aliasListHead(binding, [
     ...outputRootSegments(binding, pathHead),
     ...path.split('.').filter(Boolean),
-  ]);
-  return renderApTemplate(mapped, segs);
+  ]));
+  const stored = redirectScalarField(binding, mapped, segs);
+  return renderApTemplate(stored.base, stored.segments);
 }
 
 /**

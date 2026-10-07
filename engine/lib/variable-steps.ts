@@ -1,7 +1,8 @@
 // Steps do piece-store para variavel Workato.
 //
-// Escalar fica `{campo: valor}` no `put`. Lista fica um array de strings JSON
-// no `add_to_list`. A pill de leitura aponta para o `get`.
+// Escalar: um `put` por campo, chave = nome do campo, valor = escalar.
+// Lista fica um array de strings JSON no `add_to_list`. A pill de leitura
+// aponta para o `get`.
 import type { ParsedStep } from './types.ts';
 import { SOURCE_KEY, itemSuffix, type VarDecl, type VarOp } from './variables.ts';
 

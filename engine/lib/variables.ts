@@ -2,8 +2,11 @@
 //
 // No Workato a variavel vive no job e e MUTAVEL. No Activepieces o output de
 // um step nao muda depois que ele roda, entao toda variavel vai para o
-// piece-store com escopo RUN (isola a execucao). Lista entra por add_to_list
-// como array de strings JSON.
+// piece-store com escopo RUN (isola a execucao).
+//
+// Escalar: um `put` por campo. A chave e o nome do campo (Numero_grupo_ADC) e
+// o valor e o escalar. Lista entra por add_to_list como array de strings JSON
+// numa chave `wv_<as>`.
 import type { ParsedStep } from './types.ts';
 
 export type VarStrategy = 'static' | 'linear' | 'store';
@@ -17,7 +20,10 @@ export interface VarDecl {
   label: string;
   fields: string[];
   strategy: VarStrategy;
-  /** Chave no storage do AP. Toda variavel usa o piece-store. */
+  /**
+   * Chave no storage do AP. Lista: `wv_<as>`. Escalar: vazio — cada campo usa
+   * o proprio nome (`scalarStorageKey`).
+   */
   storeKey: string;
 }
 
@@ -62,6 +68,11 @@ const OPS: Record<string, VarOp> = {
 const RESERVED_INPUT_KEYS = new Set(['name', 'input_mode', 'location', 'list_item', 'list_items']);
 
 export const VAR_PROVIDER = 'workato_variable';
+
+/** Chave do `put`/`get` de um campo escalar: o nome do campo no Workato. */
+export function scalarStorageKey(field: string): string {
+  return field;
+}
 
 /** Chave que o Workato usa no batch para apontar a colecao de origem. */
 export const SOURCE_KEY = '____source';
@@ -143,7 +154,7 @@ export function indexVariables(root: ParsedStep): VarIndex {
         label: declLabel(step, kind),
         fields: declFields(step),
         strategy: 'store',
-        storeKey: `wv_${step.as}`,
+        storeKey: kind === 'list' ? `wv_${step.as}` : '',
       });
       if (!step.skip) writes.push({ declareAs: step.as, step, op, contained });
     } else if (op) {
@@ -203,14 +214,25 @@ export function itemSuffix(value: unknown): string[] | null {
  * leitura do Workato: `_('data.workato_variable.<as>.<campo>')` e a pill
  * estruturada `_dp({provider:"workato_variable", line:"<as>"})`.
  */
-export function readsOf(step: ParsedStep): Set<string> {
-  const found = new Set<string>();
+function visitVariableRefs(
+  step: ParsedStep,
+  onAs: (as: string) => void,
+  onScalarField: (as: string, field: string) => void,
+): void {
   const visit = (s: string): void => {
-    for (const m of s.matchAll(/_\('data\.workato_variable\.([^.']+)/g)) found.add(m[1]!);
+    for (const m of s.matchAll(/_\('data\.workato_variable\.([^.']+)(?:\.([^.'\)]+))?/g)) {
+      onAs(m[1]!);
+      if (m[2]) onScalarField(m[1]!, m[2]!);
+    }
     for (const m of s.matchAll(/_dp\('(.+?)'\)/g)) {
       try {
         const dp = JSON.parse(m[1]!);
-        if (dp?.provider === VAR_PROVIDER && dp?.line) found.add(String(dp.line));
+        if (dp?.provider !== VAR_PROVIDER || !dp?.line) continue;
+        const as = String(dp.line);
+        onAs(as);
+        const path = Array.isArray(dp.path) ? dp.path : [];
+        const field = path.find((part) => typeof part === 'string');
+        if (typeof field === 'string') onScalarField(as, field);
       } catch {
         // pill malformada: nao da para saber a origem, segue
       }
@@ -221,5 +243,29 @@ export function readsOf(step: ParsedStep): Set<string> {
   walkStrings(rest, visit);
   if (step.source) visit(step.source);
   walkStrings(step.filter, visit);
+}
+
+export function readsOf(step: ParsedStep): Set<string> {
+  const found = new Set<string>();
+  visitVariableRefs(step, (as) => found.add(as), () => {});
+  return found;
+}
+
+/**
+ * Campos escalares lidos por este passo (`as` do declare -> nomes dos campos).
+ * `list_items` fica de fora: a lista continua numa chave so.
+ */
+export function scalarFieldReads(step: ParsedStep): Map<string, Set<string>> {
+  const found = new Map<string, Set<string>>();
+  visitVariableRefs(
+    step,
+    () => {},
+    (as, field) => {
+      if (!field || field === 'list_items') return;
+      const set = found.get(as) ?? new Set<string>();
+      set.add(field);
+      found.set(as, set);
+    },
+  );
   return found;
 }

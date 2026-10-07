@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 const SKILL_SEM = 'migrador-workato-cliente';
 const SKILL_NAV = 'migrador-workato-cliente-navegador';
 const SKILL_DEPS = 'migrador-workato-sem-dependencia';
+const SKILL_CODE = 'migrador-workato-traduzir-code';
 
 function flag(name) {
   return process.argv.includes(name);
@@ -73,7 +74,7 @@ function openaiYaml(skill) {
       ? '  display_name: "Migrador Workato (cliente, com navegador)"'
       : '  display_name: "Migrador Workato (cliente)"',
     nav
-      ? '  short_description: "Tutor 0.6.5: atualiza antes de traduzir, API ou JSON, conexao e Downloads"'
+      ? '  short_description: "Tutor 0.6.6: atualiza antes de traduzir, API ou JSON, conexao e Downloads"'
       : '  short_description: "Tutor: idioma, chave ou JSON, traduz, guia o Import"',
     nav
       ? '  default_prompt: "Instale o migrador com navegador e vamos migrar a receita."'
@@ -113,14 +114,15 @@ function main() {
       }
     }
     written.push({ host: dest.host, dest: target, action: dry ? 'would-copy' : 'copied' });
-    const depsSrc = join(root, '.cursor', 'skills', SKILL_DEPS);
-    if (existsSync(join(depsSrc, 'SKILL.md'))) {
-      const depsTarget = join(dest.path, SKILL_DEPS);
+    for (const extra of [SKILL_DEPS, SKILL_CODE]) {
+      const extraSrc = join(root, '.cursor', 'skills', extra);
+      if (!existsSync(join(extraSrc, 'SKILL.md'))) continue;
+      const extraTarget = join(dest.path, extra);
       if (!dry) {
-        rmSync(depsTarget, { recursive: true, force: true });
-        cpSync(depsSrc, depsTarget, { recursive: true });
+        rmSync(extraTarget, { recursive: true, force: true });
+        cpSync(extraSrc, extraTarget, { recursive: true });
       }
-      written.push({ host: dest.host, dest: depsTarget, action: dry ? 'would-copy' : 'copied', skill: SKILL_DEPS });
+      written.push({ host: dest.host, dest: extraTarget, action: dry ? 'would-copy' : 'copied', skill: extra });
     }
   }
   console.log(JSON.stringify({ ok: true, root, skill, written }, null, 2));

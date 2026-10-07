@@ -39,7 +39,11 @@ export function csvParsePlan(input: Record<string, unknown>): CsvParsePlan {
   };
 }
 
-/** Parser embutido no step. ECMAScript puro, sem pacote (sandbox ST). */
+/**
+ * Parser embutido no step. ECMAScript puro, sem pacote.
+ * Uma so funcao: o sandbox do Code rejeita `function` aninhada
+ * (e o compilador trata o helper depois do return como codigo morto).
+ */
 export function csvParseCode(columns: string[]): string {
   const listed = JSON.stringify(columns);
   return `/**
@@ -48,75 +52,73 @@ export function csvParseCode(columns: string[]): string {
  * Por nome, as chaves sao o name do schema. ECMAScript puro, sem pacote.
  */
 export const code = async (inputs) => {
-  const text = inputs.csv == null ? '' : String(inputs.csv);
-  const sep = inputs.separator == null || inputs.separator === '' ? ',' : String(inputs.separator);
-  const quote = inputs.quote == null ? '"' : String(inputs.quote);
-  const skipFirst = inputs.skipFirstLine === true || inputs.skipFirstLine === 'true';
+  const box = inputs == null ? {} : inputs;
+  let text = box.csv == null ? '' : String(box.csv);
+  if (text.charCodeAt(0) === 65279) text = text.slice(1);
+  const sep = box.separator == null || box.separator === '' ? ',' : String(box.separator);
+  const quote = box.quote == null ? '"' : String(box.quote);
+  const skipFirst = box.skipFirstLine === true || box.skipFirstLine === 'true';
   const columns = ${listed};
-  const rows = parseRows(text, sep, quote);
-  const body = skipFirst ? rows.slice(1) : rows;
-  const lines = body.map((cells) => {
-    const row = {};
-    const width = Math.max(columns.length, cells.length);
-    for (let i = 0; i < width; i++) {
-      const key = columns[i] || ('column_' + i);
-      row[key] = cells[i] == null ? '' : String(cells[i]);
-    }
-    return row;
-  });
-  return { lines };
-
-  function parseRows(src, separator, quoteChar) {
-    const out = [];
-    let row = [];
-    let cell = '';
-    let quoted = false;
-    const value = String(src).replace(/^\\uFEFF/, '');
-    const sepCh = separator || ',';
-    const q = quoteChar || '';
-    for (let i = 0; i < value.length; i++) {
-      const ch = value[i];
-      if (quoted) {
-        if (q && value.substr(i, q.length) === q) {
-          if (value.substr(i + q.length, q.length) === q) {
-            cell += q;
-            i += q.length * 2 - 1;
-          } else {
-            quoted = false;
-            i += q.length - 1;
-          }
+  const q = quote || '';
+  const sepCh = sep || ',';
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (quoted) {
+      if (q && text.slice(i, i + q.length) === q) {
+        if (text.slice(i + q.length, i + q.length + q.length) === q) {
+          cell += q;
+          i += q.length * 2 - 1;
         } else {
-          cell += ch;
+          quoted = false;
+          i += q.length - 1;
         }
-        continue;
+      } else {
+        cell += ch;
       }
-      if (q && cell === '' && value.substr(i, q.length) === q) {
-        quoted = true;
-        i += q.length - 1;
-        continue;
-      }
-      if (value.substr(i, sepCh.length) === sepCh) {
-        row.push(cell);
-        cell = '';
-        i += sepCh.length - 1;
-        continue;
-      }
-      if (ch === '\\n' || ch === '\\r') {
-        if (ch === '\\r' && value[i + 1] === '\\n') i++;
-        row.push(cell);
-        out.push(row);
-        row = [];
-        cell = '';
-        continue;
-      }
-      cell += ch;
+      continue;
     }
-    if (cell.length || row.length) {
+    if (q && cell === '' && text.slice(i, i + q.length) === q) {
+      quoted = true;
+      i += q.length - 1;
+      continue;
+    }
+    if (text.slice(i, i + sepCh.length) === sepCh) {
       row.push(cell);
-      out.push(row);
+      cell = '';
+      i += sepCh.length - 1;
+      continue;
     }
-    return out;
+    if (ch === '\\n' || ch === '\\r') {
+      if (ch === '\\r' && text.charAt(i + 1) === '\\n') i += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+    cell += ch;
   }
+  if (quoted || cell.length || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  const body = skipFirst ? rows.slice(1) : rows;
+  const lines = [];
+  for (let r = 0; r < body.length; r++) {
+    const cells = body[r] || [];
+    const line = {};
+    const width = columns.length > cells.length ? columns.length : cells.length;
+    for (let c = 0; c < width; c++) {
+      const key = columns[c] || ('column_' + c);
+      line[key] = c < cells.length && cells[c] != null ? String(cells[c]) : '';
+    }
+    lines.push(line);
+  }
+  return { lines };
 };
 `;
 }

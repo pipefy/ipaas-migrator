@@ -440,7 +440,7 @@
 
     "google_sheets/add_spreadsheet_row_v4": {
       "target": { "piece": "@activepieces/piece-google-sheets", "name": "insert_row", "kind": "action" },
-      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "columns": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "medium",
       "manual": false,
       "notes": "first_row_headers/as_string dependem do formato da planilha na importacao."
@@ -1452,13 +1452,13 @@
       "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox.; update rico via custom_api_call"
+      "notes": "requests vira documents.batchUpdate em custom_api_call"
     },
     "google_docs/update_document": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox.; update rico via custom_api_call"
+      "notes": "requests vira documents.batchUpdate em custom_api_call"
     },
     "google_docs_connector_186728_1621263423/__adhoc_http_action": {
       "target": {
@@ -1487,13 +1487,13 @@
       "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox.; update rico via custom_api_call"
+      "notes": "requests vira documents.batchUpdate em custom_api_call"
     },
     "google_docs_connector_4920693_1760972100/update_document": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"append_text","kind":"action"},
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox.; update rico via custom_api_call"
+      "notes": "requests vira documents.batchUpdate em custom_api_call"
     },
     "google_docs_connector_655187_1769338407/create_document_from_template": {
       "target": {"piece":"@activepieces/piece-google-docs","name":"create_document_based_on_template","kind":"action"},
@@ -2599,7 +2599,7 @@
         "name": "create_event",
         "kind": "action"
       },
-      "propMap": { "Calendar": "calendarId", "Subject": "title", "Start": "start", "End": "end" },
+      "propMap": { "Calendar": "calendarId", "Subject": "title", "Start": "start", "End": "end", "StartTimeZone": "timezone" },
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (calendarId, timezone); escolher na importacao."
@@ -4923,7 +4923,7 @@
         "name": "update_row",
         "kind": "action"
       },
-      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "team_drives": "includeTeamDrives" },
+      "propMap": { "spreadsheet": "spreadsheetId", "spreadsheet_id": "spreadsheetId", "sheet": "sheetId", "sheet_name": "sheetId", "data": "values", "columns": "values", "team_drives": "includeTeamDrives" },
       "difficulty": "low",
       "manual": false
     },

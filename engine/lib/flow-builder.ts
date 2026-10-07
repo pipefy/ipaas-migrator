@@ -32,7 +32,6 @@ import { parseRubyRandomSleep, randomSleepCode, resolveRubySleep, resolveWaitUnt
 import {
   convertPills,
   detectRubyMethods,
-  formatApSegment,
   isRubyExpression,
   parseIncludeFormula,
   peelTrailingCaseMethod,
@@ -61,6 +60,8 @@ import {
   indexVariables,
   parseVarName,
   readsOf,
+  scalarFieldReads,
+  scalarStorageKey,
   SOURCE_KEY,
   variableOp,
   type VarDecl,
@@ -97,6 +98,8 @@ interface Ctx {
   asToName: StepNameMap;
   /** `as` de passos `skip: true` — convertPills nao emite pill para eles. */
   skippedAs: Set<string>;
+  /** `as` de workato_list que um foreach percorre. */
+  loopedListLines: Set<string>;
   /**
    * Foreach abertos no ponto atual da construcao, de fora para dentro. Pills de
    * "item atual" resolvem contra o mais interno que itera aquela colecao.
@@ -127,11 +130,13 @@ interface Ctx {
   connectionsByProvider: Record<string, string>;
   /** Variavel iPaaS (`CLIENT_ID`) → origem (propriedade de projeto, token, Omie). */
   projectVariables: Map<string, string>;
+  /** Ids de data table Workato que já ganharam sticky note neste flow. */
+  notedDataTableIds: Set<string>;
 }
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER';
   content: string;
   anchorStepName?: string;
 }
@@ -151,6 +156,15 @@ function pipefyOutputRoot(targetName: string | undefined): string {
 function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep): void {
   if (!as) return;
   const opKey = step.opKey ?? (step.provider && step.name ? `${step.provider}/${step.name}` : undefined);
+  const collapsed = opKey ? collapseOpKey(opKey) : undefined;
+  if (collapsed === 'workato_list/create_list') {
+    ctx.asToName.set(as, { name, headAlias: { from: 'list', to: 'items' } });
+    return;
+  }
+  if (collapsed === 'workato_list/accumulate_list_items' && ctx.loopedListLines.has(as)) {
+    ctx.asToName.set(as, { name, headAlias: { from: 'list_items', to: 'items' } });
+    return;
+  }
   const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
   const cardsByField =
     target?.name === 'getCardsByFieldValue' && !includeDoneIsFalse(step.input ?? {});
@@ -364,6 +378,35 @@ function missingRequiredProps(ctx: Ctx, target: MapTarget, input: Record<string,
   return (operationDef(ctx, target)?.props ?? [])
     .filter((prop) => prop.required && (input[prop.name] === undefined || input[prop.name] === ''))
     .map((prop) => prop.name);
+}
+
+/** Props que a receita Workato não traz nesse formato. Não inventa valor. */
+function waivedMissing(
+  target: MapTarget,
+  input: Record<string, any>,
+  sourceInput: Record<string, any>,
+  missing: string[],
+): string[] {
+  let out = missing;
+  if (target.piece === '@activepieces/piece-google-drive' && target.name === 'update_permissions') {
+    const type = String(sourceInput.type ?? '').trim().toLowerCase();
+    if (type === 'anyone' || type === 'domain') out = out.filter((name) => name !== 'user_email');
+  }
+  if (
+    target.piece === PIPEFY_PIECE &&
+    target.name === 'updateCard' &&
+    !blankProp(input.cardId) &&
+    !phaseFieldsBlank(input.phaseFields)
+  ) {
+    out = out.filter((name) => name !== 'organizationId' && name !== 'pipeId' && name !== 'phaseId');
+  }
+  if (target.piece === PIPEFY_PIECE && (target.name === 'cardFieldUpdated' || target.name === 'recordFieldUpdated')) {
+    const raw = sourceInput.field_ids;
+    if (raw == null || raw === '' || (Array.isArray(raw) && raw.length === 0)) {
+      out = out.filter((name) => name !== 'fieldIds');
+    }
+  }
+  return out;
 }
 
 function normalizeTargetValue(value: any, propType?: string, src?: string): any {
@@ -721,9 +764,9 @@ function buildSkipped(step: ParsedStep, ctx: Ctx): any | null {
 }
 
 /** Step `store/get`, encadeado ANTES do passo que le a variavel. */
-function injectStoreGet(decl: VarDecl, ctx: Ctx): string {
+function injectStoreGet(key: string, label: string, ctx: Ctx): string {
   const name = nextName('var_get');
-  const input = { key: decl.storeKey, store_scope: STORE_SCOPE };
+  const input = { key, store_scope: STORE_SCOPE };
   ctx.piecesUsed.add(STORE_PIECE);
   ctx.pendingCode.push({
     name,
@@ -738,7 +781,7 @@ function injectStoreGet(decl: VarDecl, ctx: Ctx): string {
       propertySettings: propertySettings(input),
       errorHandlingOptions: ERR(),
     },
-    displayName: `Ler variavel "${decl.label}"`,
+    displayName: `Ler variavel "${label}"`,
     lastUpdatedDate: NOW,
   });
   return name;
@@ -755,24 +798,36 @@ function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, StepBinding> |
   const overlay = new Map<string, StepBinding>(step.varSnapshot ?? []);
 
   const reads = readsOf(step);
+  const fieldsByAs = scalarFieldReads(step);
   // As condicoes de `elsif` sao avaliadas no proprio router, mas moram nos
   // filhos: sem varrer aqui, a leitura delas ficaria sem `get`.
   if (step.keyword === 'if') {
     for (const child of step.children) {
       if (child.keyword !== 'elsif' && child.keyword !== 'elseif') continue;
       for (const as of readsOf(child)) reads.add(as);
+      for (const [as, fields] of scalarFieldReads(child)) {
+        const set = fieldsByAs.get(as) ?? new Set<string>();
+        for (const field of fields) set.add(field);
+        fieldsByAs.set(as, set);
+      }
     }
   }
-  // Update de escalar copia os campos que esta escrita nao mexe.
-  const written = step.skip ? undefined : writtenVariable(step, ctx);
-  const op = variableOp(step);
-  if (written?.kind === 'scalar' && op && op !== 'declare') reads.add(written.as);
 
   for (const as of reads) {
     const decl = ctx.vars.decls.get(as);
     if (!decl) continue;
-    const getName = storeGetRef(injectStoreGet(decl, ctx));
-    overlay.set(as, decl.kind === 'list' ? { name: getName, stripHead: 'list_items' } : getName);
+    if (decl.kind === 'list') {
+      const getName = storeGetRef(injectStoreGet(decl.storeKey, decl.label, ctx));
+      overlay.set(as, { name: getName, stripHead: 'list_items' });
+      continue;
+    }
+    const fields = fieldsByAs.get(as);
+    if (!fields?.size) continue;
+    const scalarFields = new Map<string, string>();
+    for (const field of fields) {
+      scalarFields.set(field, storeGetRef(injectStoreGet(scalarStorageKey(field), field, ctx)));
+    }
+    overlay.set(as, { name: scalarFields.values().next().value!, scalarFields });
   }
   return overlay.size ? overlay : null;
 }
@@ -1081,6 +1136,15 @@ export const REVIEW_CONNECTION_LABEL = 'REVISAR: conexão';
 export const REVIEW_MODAL_LABEL = 'AVISO: modal virou callback';
 export const REVIEW_VARIABLES_LABEL = 'AVISO: variáveis';
 export const REVIEW_REPEAT_LABEL = 'AVISO: repeat adaptado';
+export const REVIEW_TEMPLATE_LABEL = 'REVISAR: message template';
+export const REVIEW_TABLE_LABEL = 'REVISAR: data table';
+export const REVIEW_LOOKUP_LABEL = 'AVISO: lookup table';
+export const REVIEW_SOAP_LABEL = 'REVISAR: soap';
+export const REVIEW_GRAPHQL_LABEL = 'REVISAR: graphql';
+export const REVIEW_MAPPER_LABEL = 'AVISO: mapper sem data';
+/** Frase estável da sticky note: o motor não entrega o arquivo de linhas. */
+export const LOOKUP_IMPORT_NOT_GENERATED =
+  'O arquivo de importação com os dados da lookup table não foi gerado.';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1248,13 +1312,29 @@ function pushReviewNote(
     | 'CONNECTION'
     | 'MODAL'
     | 'VARS'
-    | 'REPEAT',
+    | 'REPEAT'
+    | 'LOOKUP'
+    | 'TABLE'
+    | 'TEMPLATE'
+    | 'SOAP'
+    | 'GRAPHQL'
+    | 'MAPPER',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'REPEAT'
+    kind === 'MAPPER'
+      ? REVIEW_MAPPER_LABEL
+      : kind === 'GRAPHQL'
+      ? REVIEW_GRAPHQL_LABEL
+      : kind === 'SOAP'
+      ? REVIEW_SOAP_LABEL
+      : kind === 'LOOKUP'
+      ? REVIEW_LOOKUP_LABEL
+      : kind === 'TABLE'
+        ? REVIEW_TABLE_LABEL
+        : kind === 'REPEAT'
       ? REVIEW_REPEAT_LABEL
       : kind === 'CATCH'
       ? REVIEW_CATCH_LABEL
@@ -1280,9 +1360,21 @@ function pushReviewNote(
                         ? REVIEW_MODAL_LABEL
                         : kind === 'VARS'
                           ? REVIEW_VARIABLES_LABEL
-                          : REVIEW_JOB_CONTEXT_LABEL;
+                          : kind === 'TEMPLATE'
+                            ? REVIEW_TEMPLATE_LABEL
+                            : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'REPEAT'
+    kind === 'MAPPER'
+      ? 'review_mapper'
+      : kind === 'GRAPHQL'
+      ? 'review_graphql'
+      : kind === 'SOAP'
+      ? 'review_soap'
+      : kind === 'LOOKUP'
+      ? 'review_lookup'
+      : kind === 'TABLE'
+        ? 'review_table'
+        : kind === 'REPEAT'
       ? 'review_repeat'
       : kind === 'CATCH'
       ? 'review_catch'
@@ -1308,7 +1400,9 @@ function pushReviewNote(
                           ? 'review_modal'
                           : kind === 'VARS'
                             ? 'review_variables'
-                            : 'review_job';
+                            : kind === 'TEMPLATE'
+                              ? 'review_template'
+                              : 'review_job';
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
@@ -1317,6 +1411,27 @@ function pushReviewNote(
     content: `**${title}**\n\n${message}`,
     anchorStepName,
   });
+}
+
+/** Uma nota por `table_id`. A piece Tables continua mapeada; a nota avisa que as linhas não vieram. */
+function noteWorkatoDataTable(ctx: Ctx, step: ParsedStep, anchorStepName: string): void {
+  const opKey = collapseOpKey(step.opKey ?? `${step.provider ?? ''}/${step.name ?? ''}`);
+  if (!opKey.startsWith('workato_db_table/')) return;
+  const raw = step.input?.table_id;
+  const tableId = raw == null ? '' : String(raw).trim();
+  if (!tableId || ctx.notedDataTableIds.has(tableId)) return;
+  ctx.notedDataTableIds.add(tableId);
+  pushReviewNote(
+    ctx,
+    'TABLE',
+    [
+      `Data table Workato \`${tableId}\`.`,
+      'A Table do iPaaS não herda esse id e não inclui as linhas originais.',
+      'O migrador não gerou um arquivo com as linhas dessa data table para importação. Exporte essa data table na Workato.',
+    ].join('\n\n'),
+    '',
+    anchorStepName,
+  );
 }
 
 function noteProjectVariables(ctx: Ctx, anchorStepName?: string): void {
@@ -1428,17 +1543,20 @@ function resolvedWrite(
   return { fields, valid: !ruby.length && !hasTodoMarker(fields) };
 }
 
+/** Declare escalar sem valor: o passo nao vira Storage nem stub CODE. */
+const OMIT_STEP = Symbol('omit-variable-step');
+
 /**
  * Variavel Workato vira piece-store, escopo RUN.
  *
- * Escalar: `put` do objeto `{campo: valor}`. Update copia do `get` os campos
- * que esta escrita nao mexe.
+ * Escalar: um `put` por campo com valor. Chave = nome do campo, valor = escalar.
+ * Declare vazio nao emite `put`. Update grava so o campo novo, sem juntar o objeto.
  *
  * Lista: `put` de `[]` no declare vazio e no clear. Insert e `add_to_list`
  * com um array de strings JSON. Lote com `current_item` calcula as strings
  * num Code e o Storage grava o array.
  */
-function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null {
+function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null | typeof OMIT_STEP {
   const op = variableOp(step);
   const decl = writtenVariable(step, ctx);
   // Escrita sem declare correspondente na receita: sem saber a forma do valor,
@@ -1465,23 +1583,23 @@ function buildScalarStore(
   skip: boolean,
 ): any {
   const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
-  const previous = op === 'declare' ? undefined : stepBindingName(ctx.asToName.get(decl.as));
-  const keys = [...new Set([...decl.fields, ...Object.keys(fields)])];
-  const value: Record<string, unknown> = {};
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(fields, key)) value[key] = fields[key];
-    else if (previous) value[key] = `{{${previous}${formatApSegment(key)}}}`;
-    else value[key] = null;
+  const entries = Object.entries(fields).filter(([, value]) => value != null);
+  if (!entries.length) return OMIT_STEP;
+
+  let head: any;
+  for (const [index, [field, value]] of entries.entries()) {
+    const put = storeActionStep(
+      index === 0 ? name : nextName('var_put'),
+      'put',
+      { key: scalarStorageKey(field), value, store_scope: STORE_SCOPE },
+      entries.length === 1 ? display : `Gravar variavel "${field}"`,
+      valid,
+      skip,
+      ctx,
+    );
+    head = appendToChain(head, put);
   }
-  return storeActionStep(
-    name,
-    'put',
-    { key: decl.storeKey, value, store_scope: STORE_SCOPE },
-    display,
-    valid,
-    skip,
-    ctx,
-  );
+  return head;
 }
 
 function buildListStore(
@@ -1700,6 +1818,67 @@ function buildParseCsv(
   return codeStep(name, display, input, csvParseCode(plan.columns), true);
 }
 
+/** Message template do Workato: o corpo fica na conta, fora da receita. */
+function templateInputFields(value: unknown): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, any> = {};
+  for (const [key, item] of Object.entries(value as Record<string, any>)) {
+    if (item === '=skip' || key === '') continue;
+    out[key] = item;
+  }
+  return out;
+}
+
+function messageTemplateCode(keys: string[]): string {
+  const lines = keys.map((key) => `    ${JSON.stringify(key)}: inputs[${JSON.stringify(key)}],`);
+  return ['export const code = async (inputs) => {', '  return {', ...lines, '  };', '};'].join('\n');
+}
+
+function messageTemplateNote(templateId: unknown): string {
+  const id = templateId == null || String(templateId).trim() === ''
+    ? 'O id do message template não veio na receita.'
+    : `Message template do Workato, id ${String(templateId).trim()}.`;
+  return [
+    id,
+    'O corpo do template não está na receita, então o texto não foi montado. Copie o template no Workato.',
+  ].join('\n\n');
+}
+
+function buildMessageTemplate(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  const fields = templateInputFields(sourceInput.template_input);
+  const input = resolveFormulas(convInput(fields, undefined, ctx), ctx, name, fields);
+  pushReviewNote(ctx, 'TEMPLATE', messageTemplateNote(sourceInput.template_id), '', name);
+  return codeStep(name, display, input, messageTemplateCode(Object.keys(input)), !hasTodoMarker(input));
+}
+
+/** SOAP tools by Workato monta o XML a partir do template. O corpo não vem na receita. */
+function soapCreateMessageNote(templateId: unknown): string {
+  const id = templateId == null || String(templateId).trim() === ''
+    ? 'O id do template SOAP não veio na receita.'
+    : `Template SOAP do Workato, id ${String(templateId).trim()}.`;
+  return [
+    id,
+    'O corpo do template SOAP não veio na receita, então o XML do request não foi montado. Copie o template no Workato.',
+  ].join('\n\n');
+}
+
+function buildSoapCreateMessage(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  const fields = templateInputFields(sourceInput.template_input);
+  const input = resolveFormulas(convInput(fields, undefined, ctx), ctx, name, fields);
+  pushReviewNote(ctx, 'SOAP', soapCreateMessageNote(sourceInput.template_id), '', name);
+  return codeStep(name, display, input, messageTemplateCode(Object.keys(input)), !hasTodoMarker(input));
+}
+
 function includeDoneIsFalse(input: Record<string, any>): boolean {
   const raw = input.include_done ?? input.includeDone;
   return raw === false || raw === 0 || /^(false|no|0)$/i.test(String(raw ?? '').trim());
@@ -1715,17 +1894,70 @@ function buildLogger(name: string, display: string, sourceInput: Record<string, 
   return codeStep(name, display, { message }, code, !hasTodoMarker({ message }));
 }
 
+const CREATE_LIST_CODE = 'export const code = async (inputs) => { return { items: [] }; };';
+
+/** Payload de itens no input. `size` sozinho nao e item — a lista sai vazia. */
+function createListPayload(source: Record<string, any>): unknown | undefined {
+  const keys = Object.keys(source).filter((key) => {
+    if (key === 'size') return false;
+    const value = source[key];
+    return value != null && value !== '' && value !== '=skip';
+  });
+  if (!keys.length) return undefined;
+  if (keys.length === 1) return source[keys[0]!];
+  return Object.fromEntries(keys.map((key) => [key, source[key]]));
+}
+
+function accumulateItem(raw: unknown): unknown {
+  let value = raw;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        return raw;
+      }
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'data' in value) {
+    return (value as Record<string, unknown>).data;
+  }
+  return value;
+}
+
+/**
+ * Lists by Workato `create_list` vira Code com array em `items`.
+ * Storage `[]` quebra o Loop on items. `size` sozinho (forma real das receitas) devolve `[]`.
+ */
 function buildCreateList(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
-  const key = `wl_${step.as || name}`;
-  return storeActionStep(
-    name,
-    'put',
-    { key, value: '[]', store_scope: STORE_SCOPE },
-    display,
-    true,
-    false,
-    ctx,
-  );
+  const payload = createListPayload(step.input ?? {});
+  if (payload === undefined) return codeStep(name, display, {}, CREATE_LIST_CODE, true);
+  const items = resolveFormulas(deepConvert(payload, ctx), ctx, name);
+  const code = [
+    'export const code = async (inputs) => {',
+    '  const raw = inputs.items;',
+    '  const items = Array.isArray(raw) ? raw : raw == null || raw === "" ? [] : [raw];',
+    '  return { items };',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, { items }, code, !hasTodoMarker({ items }));
+}
+
+/**
+ * `accumulate_list_items` que alimenta um foreach: o loop le o array deste Code.
+ * Acumulo que ninguem percorre continua no caminho generico.
+ */
+function buildAccumulateList(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const item = resolveFormulas(deepConvert(accumulateItem(step.input?.list_item), ctx), ctx, name);
+  const code = [
+    'export const code = async (inputs) => {',
+    '  if (Array.isArray(inputs.item)) return { items: inputs.item };',
+    '  if (inputs.item == null || inputs.item === "") return { items: [] };',
+    '  return { items: [inputs.item] };',
+    '};',
+  ].join('\n');
+  return codeStep(name, display, { item }, code, !hasTodoMarker({ item }));
 }
 
 /** Python que só importa `time` e dorme um literal. Outro corpo fica no stub. */
@@ -1908,6 +2140,19 @@ function workatoHeaders(raw: unknown, ctx: Ctx): Record<string, any> {
 
 const GOOGLE_SHEETS_PIECE = '@activepieces/piece-google-sheets';
 
+/** Workato `columns` usa `col_<cabeçalho>`. A piece lê o nome do cabeçalho. */
+function sheetHeaderValues(value: unknown): Record<string, any> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, any> = {};
+  for (const [key, item] of Object.entries(value as Record<string, any>)) {
+    if (item === '=skip') continue;
+    const name = key.startsWith('col_') ? key.slice(4) : key;
+    if (!name) continue;
+    out[name] = item;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Workato `is_top_left` + `col_N` sem `column_headers` = colunas posicionais. */
 function sheetsTopLeftCols(sourceInput: Record<string, any>): boolean {
   if (asEnableFlag(sourceInput.is_top_left) !== true) return false;
@@ -1959,15 +2204,20 @@ function fillKnownProps(
   }
 
   if (target.piece === GOOGLE_SHEETS_PIECE) {
-    copyProp(input, 'spreadsheetId', 'spreadsheet');
-    copyProp(input, 'sheetId', 'sheet');
+    copyProp(input, 'spreadsheetId', 'spreadsheet', 'spreadsheet_id');
+    copyProp(input, 'sheetId', 'sheet', 'sheet_name');
+    if (blankProp(input.spreadsheetId) && !blankProp(sourceInput.spreadsheet_id)) input.spreadsheetId = sourceInput.spreadsheet_id;
+    if (blankProp(input.sheetId) && !blankProp(sourceInput.sheet_name)) input.sheetId = sourceInput.sheet_name;
     copyProp(input, 'values', 'data', 'rows');
+    if (blankProp(input.values)) {
+      const columns = sheetHeaderValues(input.columns ?? sourceInput.columns);
+      if (columns) input.values = columns;
+    }
     if (
       (target.name === 'insert_row' || target.name === 'update_row' || target.name === 'get-many-rows') &&
       blankProp(input.first_row_headers)
     ) {
-      if (target.name === 'insert_row' && sheetsTopLeftCols(sourceInput)) input.first_row_headers = false;
-      else if (target.name !== 'insert_row' || blankProp(sourceInput.column_headers)) input.first_row_headers = true;
+      input.first_row_headers = !(target.name === 'insert_row' && sheetsTopLeftCols(sourceInput));
     }
   }
 
@@ -1987,6 +2237,10 @@ function fillKnownProps(
     if (blankProp(input.expandRecurringEvent)) input.expandRecurringEvent = false;
   }
 
+  if (target.piece === '@activepieces/piece-google-drive' && target.name === 'update_permissions') {
+    if (blankProp(input.send_invitation_email)) input.send_invitation_email = false;
+  }
+
   if (target.piece === '@activepieces/piece-google-drive' && target.name === 'upload_gdrive_file') {
     copyProp(input, 'fileName', 'name');
     copyProp(input, 'file', 'fileContent');
@@ -1999,6 +2253,16 @@ function fillKnownProps(
 
   if (target.piece === '@activepieces/piece-google-docs' && target.name === 'append_text') {
     copyProp(input, 'documentId', 'document_id');
+    if (blankProp(input.text) && blankProp(input.requests) && !blankProp(sourceInput.requests)) {
+      input.requests = sourceInput.requests;
+    }
+  }
+
+  if (target.piece === '@activepieces/piece-microsoft-outlook-calendar' && target.name === 'create_event') {
+    if (blankProp(input.timezone)) {
+      const zone = sourceInput.StartTimeZone ?? sourceInput.startTimeZone ?? input.StartTimeZone;
+      if (!blankProp(zone)) input.timezone = zone;
+    }
   }
 
   if (target.piece === PIPEFY_PIECE && target.name === 'cardExpired') {
@@ -2017,6 +2281,21 @@ function fillKnownProps(
     copyProp(input, 'organizationId', 'organization_id');
     copyProp(input, 'pipeId', 'pipe_id');
     copyProp(input, 'phaseId', 'phase_id');
+    if (phaseFieldsBlank(input.phaseFields)) {
+      const fieldId = input.field_id ?? sourceInput.field_id;
+      const value = input.new_value !== undefined ? input.new_value : sourceInput.new_value;
+      if (!blankProp(fieldId) && value !== undefined && value !== '') {
+        input.phaseFields = { [String(fieldId)]: value };
+        delete input.field_id;
+        delete input.new_value;
+      }
+    } else if (input.phaseFields && typeof input.phaseFields === 'object' && !Array.isArray(input.phaseFields)) {
+      const packed = input.phaseFields as Record<string, any>;
+      const keys = Object.keys(packed);
+      if (!blankProp(packed.field_id) && packed.new_value !== undefined && keys.every((key) => key === 'field_id' || key === 'new_value')) {
+        input.phaseFields = { [String(packed.field_id)]: packed.new_value };
+      }
+    }
     // Workato manda [{fieldId, value}] em Fields_to_update. A piece espera { slug: valor }.
     if (Array.isArray(input.phaseFields)) {
       const fields: Record<string, any> = {};
@@ -2047,6 +2326,20 @@ function fillKnownProps(
   }
 
   return input;
+}
+
+/** `update_document` manda `requests` de batchUpdate, não um texto para append. */
+function googleDocsBatchUpdate(target: MapTarget, input: Record<string, any>): Record<string, any> | null {
+  if (target.piece !== '@activepieces/piece-google-docs' || target.name !== 'append_text') return null;
+  if (!blankProp(input.text) || blankProp(input.requests) || blankProp(input.documentId)) return null;
+  return {
+    method: 'POST',
+    url: `https://docs.googleapis.com/v1/documents/${input.documentId}:batchUpdate`,
+    headers: {},
+    queryParams: {},
+    body_type: 'json',
+    body: { requests: input.requests },
+  };
 }
 
 function fillSheetsInsertRow(
@@ -2327,8 +2620,184 @@ function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, an
   return input;
 }
 
+const PIPEFY_GRAPHQL_URL = 'https://api.pipefy.com/graphql';
+const PIPEFY_GRAPHQL_TARGET: MapTarget = { piece: PIPEFY_PIECE, name: 'custom_api_call', kind: 'action' };
+
+/**
+ * Documentos do conector GraphQL da Workato. O objeto da receita é o campo
+ * (`updateTableRecord{}` → updateTableRecord). `$input` recebe `argument_input`.
+ */
+const PIPEFY_GRAPHQL_DOCUMENTS: Record<string, { kind: 'query' | 'mutation'; document: string; variables: 'input' | 'id' }> = {
+  updateTableRecord: {
+    kind: 'mutation',
+    variables: 'input',
+    document: `mutation updateTableRecord($input: UpdateTableRecordInput!) {
+  updateTableRecord(input: $input) {
+    clientMutationId
+    table_record { id title due_date }
+  }
+}`,
+  },
+  updateFieldsValues: {
+    kind: 'mutation',
+    variables: 'input',
+    document: `mutation updateFieldsValues($input: UpdateFieldsValuesInput!) {
+  updateFieldsValues(input: $input) {
+    success
+    clientMutationId
+  }
+}`,
+  },
+  card: {
+    kind: 'query',
+    variables: 'id',
+    document: `query card($id: ID!) {
+  card(id: $id) {
+    id
+    title
+    current_phase { id name }
+    fields { name value report_value }
+    parent_relations { name cards { id title } }
+  }
+}`,
+  },
+  createInboxEmail: {
+    kind: 'mutation',
+    variables: 'input',
+    document: `mutation createInboxEmail($input: CreateInboxEmailInput!) {
+  createInboxEmail(input: $input) {
+    clientMutationId
+    inbox_email { id }
+  }
+}`,
+  },
+  createComment: {
+    kind: 'mutation',
+    variables: 'input',
+    document: `mutation createComment($input: CreateCommentInput!) {
+  createComment(input: $input) {
+    clientMutationId
+    comment { id text }
+  }
+}`,
+  },
+};
+
+function graphqlObjectName(object: unknown): string {
+  return String(object ?? '')
+    .trim()
+    .replace(/\{\}\s*$/, '')
+    .trim();
+}
+
+function graphqlFieldName(objectName: string): string {
+  const cleaned = objectName.replace(/[^A-Za-z0-9_]/g, '');
+  if (!cleaned) return 'unknownOperation';
+  if (/^[0-9]/.test(cleaned)) return `op_${cleaned}`;
+  return cleaned;
+}
+
+function convertArgumentInput(raw: unknown, ctx: Ctx): Record<string, any> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === '=skip') continue;
+    out[key] = deepConvert(value, ctx);
+  }
+  return out;
+}
+
+/** Conector GraphQL da Workato usa a conexão do Pipefy, não o piece-graphql. */
+function buildPipefyGraphql(
+  name: string,
+  display: string,
+  opKey: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  const objectName = graphqlObjectName(sourceInput.object);
+  const known = PIPEFY_GRAPHQL_DOCUMENTS[objectName];
+  const field = graphqlFieldName(objectName);
+  const op = collapseOpKey(opKey).split('/')[1] ?? '';
+  const kind = known?.kind ?? (op === 'query' ? 'query' : 'mutation');
+  const variableMode = known?.variables ?? (kind === 'query' ? 'id' : 'input');
+  const document =
+    known?.document ??
+    (kind === 'query'
+      ? `query ${field}($id: ID) {\n  ${field}(id: $id) {\n    id\n  }\n}`
+      : `mutation ${field}($input: JSON) {\n  ${field}(input: $input) {\n    clientMutationId\n  }\n}`);
+  const args = convertArgumentInput(sourceInput.argument_input, ctx);
+  const idRaw = sourceInput.argument_id;
+  const id = idRaw != null && idRaw !== '' && idRaw !== '=skip' ? deepConvert(idRaw, ctx) : undefined;
+  let variables: Record<string, any>;
+  if (variableMode === 'id') variables = { id: id ?? args.id ?? '' };
+  else {
+    if (id != null && args.id == null) args.id = id;
+    variables = { input: args };
+  }
+  if (!known) {
+    const shown = objectName || '(vazio)';
+    ctx.todos.push(`GRAPHQL (${name}): objeto "${shown}" sem documento conhecido.`);
+    pushReviewNote(
+      ctx,
+      'GRAPHQL',
+      `Passo \`${name}\`. Objeto GraphQL desconhecido: \`${shown}\`. O passo usa custom_api_call do Pipefy; conferir o schema antes de publicar.`,
+      shown,
+      name,
+    );
+  }
+  ctx.piecesUsed.add(PIPEFY_PIECE);
+  let input: Record<string, any> = {
+    method: 'POST',
+    url: PIPEFY_GRAPHQL_URL,
+    headers: {},
+    queryParams: {},
+    body_type: 'json',
+    body: { query: document, variables },
+  };
+  input = resolveFormulas(input, ctx, name, sourceInput);
+  envelopeDynamicProps(input, ctx, PIPEFY_GRAPHQL_TARGET);
+  const missing = missingRequiredProps(ctx, PIPEFY_GRAPHQL_TARGET, input);
+  if (missing.length) {
+    ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
+  }
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: missing.length === 0,
+    settings: {
+      input,
+      pieceName: PIPEFY_PIECE,
+      actionName: 'custom_api_call',
+      pieceVersion: pieceVersion(ctx, PIPEFY_PIECE),
+      propertySettings: pipefyPropertySettings(input, undefined),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+  };
+}
+
+const DATA_MAPPER_PIECE = '@activepieces/piece-data-mapper';
+
+/**
+ * Mapper by Workato: `input.data` é o mapa campo de saída → fórmula/pill.
+ * Cada chave entra em `mapping`, inclusive quando a pill aponta para o Pipefy.
+ */
+function workatoMapperMapping(data: unknown, ctx: Ctx): { mapping: Record<string, any>; empty: boolean } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { mapping: {}, empty: true };
+  const mapping: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data as Record<string, any>)) {
+    if (value === '=skip') continue;
+    mapping[key] = deepConvert(value, ctx);
+  }
+  return { mapping, empty: Object.keys(mapping).length === 0 };
+}
+
 function buildAction(step: ParsedStep, ctx: Ctx): any {
   const variable = buildVariableStep(step, ctx);
+  if (variable === OMIT_STEP) return null;
   if (variable) return variable;
 
   const opKey = step.opKey ?? `${step.provider}/${step.name}`;
@@ -2348,6 +2817,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     sourceInput = rubySleep.input;
   }
   const name = stepName(step, ctx);
+  noteWorkatoDataTable(ctx, step, name);
   const display =
     step.comment ||
     (collapseOpKey(opKey) === 'file_connector/read_file' ? 'Get file from URL' : step.name) ||
@@ -2356,11 +2826,24 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'csv_parser/parse_csv') {
     return buildParseCsv(name, display, sourceInput, ctx);
   }
+  if (collapseOpKey(opKey) === 'soap/create_message') {
+    return buildSoapCreateMessage(name, display, sourceInput, ctx);
+  }
+  if (collapseOpKey(opKey) === 'workato_template/create_document') {
+    return buildMessageTemplate(name, display, sourceInput, ctx);
+  }
   if (collapseOpKey(opKey) === 'logger/log_message') {
     return buildLogger(name, display, sourceInput, ctx);
   }
   if (collapseOpKey(opKey) === 'workato_list/create_list') {
     return buildCreateList(name, display, step, ctx);
+  }
+  if (
+    collapseOpKey(opKey) === 'workato_list/accumulate_list_items' &&
+    step.as &&
+    ctx.loopedListLines.has(step.as)
+  ) {
+    return buildAccumulateList(name, display, step, ctx);
   }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isXlsxToCsvPython(String(step.input?.code ?? ''))) {
     return buildXlsxPython(name, display, step, ctx);
@@ -2433,6 +2916,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     return codeStep(name, display, lifted.input, buildCodeStub(opKey, lifted.source, language));
   }
 
+  if (collapseOpKey(opKey).startsWith('graphql/')) {
+    return buildPipefyGraphql(name, display, opKey, sourceInput, ctx);
+  }
+
   if (!entry || !entry.target) {
     // Passo desligado que nao tem piece: o cartao vazio do bloco de erro
     // ("Select an app and action", skip: true). Nao vira TODO no flow.
@@ -2448,6 +2935,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
 
   const t = entry.target;
   ctx.piecesUsed.add(t.piece);
+  noteLookupTable(ctx, opKey, sourceInput, name);
   const shaped = t.piece === SUBFLOW_PIECE ? applySubflowAction(opKey, t.name, sourceInput, ctx, name) : null;
   // callFlow/returnResponse ja resolvem a formula la dentro. Resolver de novo
   // criava um step CODE orfao. Nos outros passos a formula espera os fill*:
@@ -2486,7 +2974,40 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   input = fillSheetsInsertRow(t, input, sourceInput);
   input = fillSheetsFindRows(t, input, sourceInput, ctx);
   input = fillKnownProps(t, input, sourceInput);
-  if (!shaped && !omie) input = resolveFormulas(input, ctx, name, sourceInput);
+  const workatoMapper = t.piece === DATA_MAPPER_PIECE && t.name === 'advanced_mapping';
+  let mapperEmpty = false;
+  if (workatoMapper) {
+    const mapped = workatoMapperMapping(sourceInput.data, ctx);
+    input = { mapping: mapped.mapping };
+    mapperEmpty = mapped.empty;
+  }
+  if (!shaped && !omie) {
+    input = resolveFormulas(input, ctx, name, workatoMapper ? { mapping: sourceInput.data } : sourceInput);
+  }
+  if (mapperEmpty) {
+    pushReviewNote(ctx, 'MAPPER', 'O Mapper by Workato não tinha data.', '', name);
+  }
+  const docsBatch = googleDocsBatchUpdate(t, input);
+  if (docsBatch) {
+    const batchTarget: MapTarget = { piece: t.piece, name: 'custom_api_call', kind: 'action' };
+    const batchMissing = missingRequiredProps(ctx, batchTarget, docsBatch);
+    return {
+      name,
+      skip: false,
+      type: 'PIECE',
+      valid: batchMissing.length === 0 && !hasTodoMarker(docsBatch),
+      settings: {
+        input: docsBatch,
+        pieceName: t.piece,
+        actionName: 'custom_api_call',
+        pieceVersion: pieceVersion(ctx, t.piece),
+        propertySettings: settingsFor(t.piece, 'custom_api_call', docsBatch),
+        errorHandlingOptions: ERR(),
+      },
+      displayName: display,
+      lastUpdatedDate: NOW,
+    };
+  }
   if (t.piece === PIPEFY_PIECE && t.name === 'updateCard' && phaseFieldsBlank(input.phaseFields)) {
     const original = JSON.stringify(step.input ?? {}, null, 2);
     pushReviewNote(
@@ -2511,7 +3032,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     delete input.compression_format;
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
-  const missing = missingRequiredProps(ctx, t, input);
+  const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
   if (missing.length) {
     ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
   }
@@ -3068,6 +3589,46 @@ function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
   pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
 }
 
+const LOOKUP_TABLE_OPS = new Set([
+  'get_entry',
+  'search_entries',
+  'add_entry',
+  'add_batch_of_entries',
+  'update_entry',
+  'delete_entry',
+  'delete_entries',
+  'get_entries',
+  'truncate',
+]);
+
+function lookupTableIdLabel(raw: unknown): string {
+  if (raw == null || (typeof raw === 'string' && raw.trim() === '')) return '(ausente no passo)';
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return String(raw).trim();
+  return JSON.stringify(raw);
+}
+
+/** Uma nota por id de lookup table. A piece Tables continua; o id e as linhas não vêm juntos. */
+function noteLookupTable(ctx: Ctx, opKey: string, sourceInput: Record<string, any>, anchor: string): void {
+  const collapsed = collapseOpKey(opKey);
+  if (!collapsed.startsWith('lookup_table/')) return;
+  const op = collapsed.slice('lookup_table/'.length);
+  if (!LOOKUP_TABLE_OPS.has(op)) return;
+  const id = lookupTableIdLabel(sourceInput.lookup_table_id);
+  const token = `Workato lookup_table_id: ${id}.`;
+  if (ctx.canvasNotes.some((note) => note.kind === 'LOOKUP' && note.content.includes(token))) return;
+  pushReviewNote(
+    ctx,
+    'LOOKUP',
+    [
+      token,
+      'A Table do iPaaS não herda esse id da Workato e não carrega as linhas nem o volume da tabela original. Recrie ou importe a tabela no iPaaS.',
+      `${LOOKUP_IMPORT_NOT_GENERATED} Exporte essa lookup table na Workato.`,
+    ].join('\n\n'),
+    '',
+    anchor,
+  );
+}
+
 function firstDpJson(raw: unknown): string | null {
   const match = String(raw ?? '').match(/_dp\('(.+?)'\)/);
   return match?.[1] ?? null;
@@ -3592,6 +4153,7 @@ function gateOnTriggerFilter(root: ParsedStep, nextAction: any | undefined, ctx:
 }
 
 function buildTrigger(root: ParsedStep, ctx: Ctx): any {
+  noteWorkatoDataTable(ctx, root, 'trigger');
   const opKey = root.opKey ?? `${root.provider}/${root.name}`;
   const entry = lookupMap(ctx.merged, opKey);
   if (String(root.provider ?? '').includes('recipe_function') && root.name === 'execute') {
@@ -3634,7 +4196,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
         if (note) ctx.todos.push(note);
       }
     }
-    const missing = missingRequiredProps(ctx, t, input);
+    const missing = waivedMissing(t, input, root.input ?? {}, missingRequiredProps(ctx, t, input));
     if (missing.length) {
       ctx.todos.push(`PROPS (trigger): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
     }
@@ -3672,6 +4234,14 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
   };
 }
 
+function collectLoopedListLines(step: ParsedStep, out: Set<string>): void {
+  if (step.keyword === 'foreach' && step.source) {
+    const line = firstPill(step.source)?.line;
+    if (line) out.add(String(line));
+  }
+  for (const child of step.children) collectLoopedListLines(child, out);
+}
+
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
   nameSeq = 0;
   NOW = new Date().toISOString();
@@ -3680,6 +4250,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     kb: new Map(kb.pieces.map((p) => [p.name, p])),
     asToName: new Map(),
     skippedAs: new Set(),
+    loopedListLines: new Set(),
     loopScope: [],
     piecesUsed: new Set(),
     todos: [],
@@ -3695,7 +4266,9 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     phasesByPipe: recipe.phasesByPipe ?? [],
     connectionsByProvider: recipe.connectionsByProvider ?? {},
     projectVariables: new Map(),
+    notedDataTableIds: new Set(),
   };
+  collectLoopedListLines(recipe.root, ctx.loopedListLines);
   assignNames(recipe.root, ctx, true);
   const trigger = buildTrigger(recipe.root, ctx);
   notePendingJobContext(ctx, lastStepName(trigger));
