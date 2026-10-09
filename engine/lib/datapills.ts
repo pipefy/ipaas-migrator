@@ -232,7 +232,7 @@ function convertKnownRubyAfterPills(out: string): string | null {
   if (pillObject) return pillObject;
 
   const catalog = convertCatalogFormula(s);
-  if (catalog) return wrapApFormula(catalog);
+  if (catalog) return catalog.startsWith('{{') ? catalog : wrapApFormula(catalog);
   return null;
 }
 
@@ -263,6 +263,10 @@ function isSafeFormulaArg(value: string): boolean {
  */
 function convertCatalogFormula(src: string): string | null {
   const s = src.trim();
+
+  // `{{lista}}[{{índice}}]['GUID']` — o acesso por índice já está na expressão.
+  // Não vira step CODE: o valor continua a pill da lista, o índice e a chave.
+  if (/^\{\{[^{}]+\}\}\[\{\{[^{}]+\}\}\](?:\[['"]\w+['"]\])+$/.test(s)) return s;
 
   // `today` / `today+5.days`
   if (/^today$/.test(s)) return 'today()';

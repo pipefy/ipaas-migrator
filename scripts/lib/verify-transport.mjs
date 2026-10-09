@@ -746,6 +746,23 @@ function matchesMapped(step, entry) {
   return opNameOf(step) === target.name;
 }
 
+/** O conector GraphQL sai no custom_api_call do Pipefy, na conexão que a receita já usa. */
+function matchesPipefyGraphql(step, entry) {
+  const target = entry?.target;
+  if (target?.piece !== '@activepieces/piece-graphql' || target?.name !== 'send_request') return false;
+  if (pieceNameOf(step) !== '@activepieces/piece-pipefy' || opNameOf(step) !== 'custom_api_call') return false;
+  const url = step.settings?.input?.url;
+  const href = typeof url === 'string' ? url : url?.url;
+  return href === 'https://api.pipefy.com/graphql';
+}
+
+function matchesLookupFind(step, action) {
+  if (!String(action.opKey ?? '').endsWith('/get_entry')) return false;
+  const parameters = action.input?.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  return pieceNameOf(step) === '@activepieces/piece-tables' && opNameOf(step) === 'tables-find-records';
+}
+
 function matchesCode(step, opKey) {
   if (step.type !== 'CODE') return false;
   return sourceCodeOf(step).includes(opKey);
@@ -870,7 +887,7 @@ export function findMissingActions(workatoActions, steps, operations) {
     const sleepEntry = rubySleepEntry(action, operations);
     const entry = sleepEntry ?? mapEntry;
     const found =
-      (entry?.target && take((step) => matchesMapped(step, entry))) ||
+      (entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action))) ||
       ((entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
         take((step) => matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action))) ||
       (!entry?.target &&
@@ -924,6 +941,17 @@ function inputBlob(step) {
   } catch {
     return '';
   }
+}
+
+/** Texto `erro` no valor. A chave de um campo Pipefy com esse id não é a pill. */
+function valueIsLiteralErro(value) {
+  if (typeof value === 'string') {
+    if (value.includes("['error']['message']")) return false;
+    return value === 'erro' || /:\s*erro\b/.test(value);
+  }
+  if (Array.isArray(value)) return value.some(valueIsLiteralErro);
+  if (value && typeof value === 'object') return Object.values(value).some(valueIsLiteralErro);
+  return false;
 }
 
 function codeUsesNpm(step) {
@@ -984,7 +1012,7 @@ export function collectRafaGaps(recipe, flow, steps) {
   const outputErrorSteps = [];
   for (const step of steps) {
     const blob = inputBlob(step);
-    if (/:\s*erro\b/.test(blob) || /"erro"/.test(blob)) erroSteps.push(step.name);
+    if (valueIsLiteralErro(step?.settings?.input)) erroSteps.push(step.name);
     if (/\['output'\]\['error'\]/.test(blob) || /output\.error/.test(blob)) outputErrorSteps.push(step.name);
   }
   if (erroSteps.length) {

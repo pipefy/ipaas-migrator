@@ -209,6 +209,58 @@ export function itemSuffix(value: unknown): string[] | null {
   return dp.path.slice(at + 1).filter((p): p is string => typeof p === 'string');
 }
 
+/** Marcador interno: o indice da linha no `.map` do lote, nao uma pill do flow. */
+export const BATCH_INDEX_PILL = '{{__batch_index__}}';
+
+function currentIndexPrefix(path: unknown[]): string[] | null {
+  if (!path.length) return null;
+  const last = path[path.length - 1];
+  if (!last || typeof last !== 'object' || (last as { path_element_type?: string }).path_element_type !== 'current_index') {
+    return null;
+  }
+  const prefix = path.slice(0, -1);
+  if (!prefix.every((part) => typeof part === 'string')) return null;
+  return prefix as string[];
+}
+
+function sameStringPath(left: unknown[], right: string[]): boolean {
+  return left.length === right.length && left.every((part, i) => part === right[i]);
+}
+
+/**
+ * Formula de campo do `insert_to_list_batch` cujo `current_index` e o da lista
+ * `____source`. Troca esse `_dp` pelo marcador do `.map`. Outro `current_index`
+ * (lista diferente, ou chave que o JSON nao nomeia) fica de fora.
+ */
+export function rewriteBatchIndex(value: unknown, source: unknown): string | null {
+  if (typeof value !== 'string' || !value.includes('current_index')) return null;
+  const src = firstPill(source);
+  if (!src?.line) return null;
+  const sourcePath = src.path.filter((part): part is string => typeof part === 'string');
+  if (sourcePath.length !== src.path.length) return null;
+
+  let indexes = 0;
+  let mismatched = false;
+  const out = value.replace(/_dp\('(.+?)'\)/g, (full, json: string) => {
+    let dp: { line?: string; path?: unknown[] };
+    try {
+      dp = JSON.parse(json);
+    } catch {
+      return full;
+    }
+    const prefix = currentIndexPrefix(Array.isArray(dp.path) ? dp.path : []);
+    if (!prefix) return full;
+    indexes += 1;
+    if (String(dp.line ?? '') !== String(src.line) || !sameStringPath(prefix, sourcePath)) {
+      mismatched = true;
+      return full;
+    }
+    return BATCH_INDEX_PILL;
+  });
+  if (!indexes || mismatched || !out.includes(BATCH_INDEX_PILL)) return null;
+  return out;
+}
+
 /**
  * Variaveis LIDAS por este passo (sem olhar os filhos). Cobre as duas formas de
  * leitura do Workato: `_('data.workato_variable.<as>.<campo>')` e a pill

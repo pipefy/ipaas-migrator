@@ -6,12 +6,24 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.7 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.8 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.8 — 9 out 2026
+
+Python de paginação, SLA e rodapé vira código. Repeat com condição vira loop. Busca e props acompanham o nome que a receita já usa.
+
+- Python que pagina `allCards`, calcula o SLA de um card ou em lote, resume quem assinou, acha o rodapé com `<chancela>` ou monta `deleteContentRange` sai em JavaScript. Outro corpo continua no stub.
+- Repeat com condição e sem lista ou teto vira loop de no máximo 20 voltas. O corpo só entra enquanto a condição vale. A nota diz que o JSON não traz esse teto.
+- `lookup` por coluna e `get_entry` com `parameters` viram busca na Tables. `find_rows` com várias colunas lê a planilha e filtra no passo seguinte.
+- Search folder busca pelo nome dentro da pasta. `view_type` image vira `format`. Cliente e fornecedor do QuickBooks, calendário, Drive, Slack, Teams, Zendesk, ServiceNow e o gatilho de card atualizado copiam a prop com o nome da peça.
+- `current_index` do lote entra no índice do map. `.keys` vira `Object.keys`. A prop obrigatória que o JSON não traz ganha nota, sem valor inventado. `update_doc` com `requests` deixa nota: `append_text` não foi usado.
+- Campo Pipefy de id `erro` não conta como a mensagem do catch. A verificação reconhece o GraphQL no Pipefy e o `get_entry` na busca da Tables.
+- `migrador-workato-cliente-navegador-0.6.8.tgz`
 
 ## 0.6.7 — 9 out 2026
 

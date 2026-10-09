@@ -1580,9 +1580,10 @@
     },
     "google_drive/export_file": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"save_file_as_pdf","kind":"action"},
+      "propMap": { "fileId": "documentId" },
       "difficulty": "medium",
       "manual": false,
-      "notes": "ou custom_api_call"
+      "notes": "fileId vira documentId. folderId e name nao vem nesse passo."
     },
     "google_drive/list_permission": {
       "target": {"piece":"@activepieces/piece-google-drive","name":"custom_api_call","kind":"action"},
@@ -2916,9 +2917,10 @@
     },
     "pipefy/new_updated_card": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"cardFieldUpdated","kind":"trigger"},
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "field_ids": "fieldIds" },
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox.; piece não tem cardUpdated genérico"
+      "notes": "aprox.; piece não tem cardUpdated genérico. organizationId e fieldIds so entram se a receita trouxer."
     },
     "pipefy/new_updated_record": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"recordFieldUpdated","kind":"trigger"},
@@ -3395,6 +3397,7 @@
         "name": "find_customer",
         "kind": "action"
       },
+      "propMap": { "DisplayName": "search_term" },
       "difficulty": "low",
       "manual": false
     },
@@ -3649,6 +3652,7 @@
     },
     "slack/invite_user_to_conversation": {
       "target": {"piece":"@activepieces/piece-slack","name":"invite-user-to-channel","kind":"action"},
+      "propMap": { "user": "userId" },
       "difficulty": "low",
       "manual": false
     },
@@ -3925,11 +3929,13 @@
     },
     "teams/post_blocks_message": {
       "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_send_channel_message","kind":"action"},
+      "propMap": { "channel": "channelId", "blocks": "content" },
       "difficulty": "low",
       "manual": false
     },
     "teams/post_blocks_reply_message": {
       "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_reply_to_channel_message","kind":"action"},
+      "propMap": { "channel": "channelId", "first_message": "messageId", "blocks": "content" },
       "difficulty": "low",
       "manual": false
     },
@@ -4205,6 +4211,8 @@
     },
     "zendesk/get_ticket_by_id": {
       "target": {"piece":"@activepieces/piece-zendesk","name":"find-tickets","kind":"action"},
+      "propMap": { "id": "ticket_id" },
+      "fixedProps": { "search_type": "ticket_id" },
       "difficulty": "low",
       "manual": false
     },
@@ -4237,7 +4245,8 @@
       "difficulty": "low",
       "manual": false,
       "propMap": {
-        "id": "ticket_id"
+        "id": "ticket_id",
+        "comment": "comment_body"
       }
     },
     "zendesk/updated_ticket_polling": {
@@ -4901,6 +4910,12 @@
         "name": "create_google_calendar_event",
         "kind": "action"
       },
+      "propMap": {
+        "calendar_name": "calendar_id",
+        "summary": "title",
+        "start": "start_date_time",
+        "sendNotifications": "send_notifications"
+      },
       "difficulty": "medium",
       "manual": false,
       "notes": "evento dia inteiro; ajustar start/end."
@@ -5021,6 +5036,7 @@
         "name": "update_record",
         "kind": "action"
       },
+      "propMap": { "sys_id": "record", "row": "fields" },
       "difficulty": "low",
       "manual": false
     },
@@ -5889,6 +5905,7 @@
         "name": "find_vendor",
         "kind": "action"
       },
+      "propMap": { "DisplayName": "search_term" },
       "difficulty": "low",
       "manual": false
     },
@@ -5982,7 +5999,7 @@
         "name": "create_expense",
         "kind": "action"
       },
-      "propMap": { "AccountRef": "accountRef", "EntityRef": "entityRef", "TxnDate": "txnDate", "PrivateNote": "privateNote" },
+      "propMap": { "AccountRef": "accountRef", "EntityRef": "entityRef", "TxnDate": "txnDate", "PrivateNote": "privateNote", "AccountLine": "lineItems", "PaymentMethodRef": "paymentType" },
       "difficulty": "low",
       "manual": false
     },

@@ -198,19 +198,37 @@ export function listBatchFields(step: ParsedStep): ListBatchField[] {
  * Code que devolve `string[]` para o `add_to_list`. Nao usa o cabecalho de
  * variavel em CODE: o passo que casa com a receita e o Storage.
  */
-export function listBatchCode(fields: ListBatchField[]): string {
+export interface ListBatchComputed {
+  field: string;
+  expr: string;
+}
+
+export function listBatchCode(
+  fields: ListBatchField[],
+  computed: ListBatchComputed[] = [],
+  extra?: { prelude?: string; locals?: string[] },
+): string {
+  const prelude = extra?.prelude?.trim();
+  const locals = extra?.locals ?? [];
+  const params = computed.length ? 'item, index' : 'item';
   const lines = [
     '/**',
     ' * Strings JSON de um insert em lote. O passo seguinte grava no Storage.',
     ' */',
+  ];
+  if (prelude) lines.push(prelude, '');
+  lines.push(
     'export const code = async (inputs) => {',
     '  const fonte = Array.isArray(inputs.__fonte) ? inputs.__fonte : [];',
     '  const fixos = inputs.__campos ?? {};',
-    '  return fonte.map((item) => JSON.stringify({',
-    '    ...fixos,',
-  ];
+  );
+  if (locals.length) lines.push(`  const { ${locals.join(', ')} } = inputs;`);
+  lines.push(`  return fonte.map((${params}) => JSON.stringify({`, '    ...fixos,');
   for (const field of fields) {
     lines.push(`    ${jsKey(field.field)}: ${jsItemAccess(field.path)},`);
+  }
+  for (const field of computed) {
+    lines.push(`    ${jsKey(field.field)}: ${field.expr},`);
   }
   lines.push('  }));', '};');
   return lines.join('\n');

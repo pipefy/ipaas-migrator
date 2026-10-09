@@ -62,6 +62,8 @@ import {
   readsOf,
   scalarFieldReads,
   scalarStorageKey,
+  BATCH_INDEX_PILL,
+  rewriteBatchIndex,
   SOURCE_KEY,
   VAR_PROVIDER,
   variableOp,
@@ -71,6 +73,7 @@ import {
 import {
   listBatchCode,
   listBatchFields,
+  type ListBatchComputed,
   listItemJson,
   listReadCode,
   storeGetRef,
@@ -137,7 +140,7 @@ interface Ctx {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'SHEETS' | 'DOCS' | 'PROP';
   content: string;
   anchorStepName?: string;
 }
@@ -413,6 +416,31 @@ function waivedMissing(
     out = out.filter((name) => name !== 'startFormFields');
   }
   return out;
+}
+
+function noteMissingProps(
+  ctx: Ctx,
+  name: string,
+  target: MapTarget,
+  missing: string[],
+  sourceInput: Record<string, any>,
+): void {
+  if (!missing.length) return;
+  if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
+    return;
+  }
+  const keys = Object.entries(sourceInput)
+    .filter(([, value]) => !blankProp(value) && value !== '=skip')
+    .map(([key]) => key)
+    .slice(0, 12);
+  const listed = keys.length ? ` Chaves no JSON: ${keys.join(', ')}.` : '';
+  pushReviewNote(
+    ctx,
+    'PROP',
+    `Passo ${name}. A piece pede ${missing.join(', ')} e o JSON não traz esse valor.${listed}`,
+    '',
+    name,
+  );
 }
 
 function normalizeTargetValue(value: any, propType?: string, src?: string): any {
@@ -981,10 +1009,18 @@ interface Harvest {
  * expressao JS equivalente. O que o compilador nao entende fica como estava —
  * marcador visivel vale mais que valor errado em silencio.
  */
-function replaceResidualRuby(value: any, harvest: Harvest, source: any): any {
+function replaceResidualRuby(value: any, harvest: Harvest, source: any, ctx: Ctx): any {
   if (typeof value === 'string') {
     const wrapped = value.match(/^TODO_FORMULA\((.*)\)$/s);
     if (!wrapped) return value;
+    const lookup = parseLookupFormula(wrapped[1]!);
+    if (lookup) {
+      const stepName = nextName('step');
+      ctx.piecesUsed.add(TABLES_PIECE);
+      ctx.pendingCode.push(lookupFindStep(stepName, lookup));
+      const field = lookup.field.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return field ? `{{${stepName}[0]['${field}']}}` : `{{${stepName}}}`;
+    }
     const compiled = compileRubyExpression(wrapped[1]!, harvest.registry);
     if (!compiled) {
       const original = typeof source === 'string' && source.trim() ? source.trim() : wrapped[1]!;
@@ -1005,7 +1041,7 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any): any {
   }
   if (Array.isArray(value)) {
     return value.map((item, index) =>
-      replaceResidualRuby(item, harvest, Array.isArray(source) ? source[index] : undefined),
+      replaceResidualRuby(item, harvest, Array.isArray(source) ? source[index] : undefined, ctx),
     );
   }
   if (value && typeof value === 'object') {
@@ -1013,9 +1049,9 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any): any {
     const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
     for (const [k, v] of Object.entries(value)) {
       const key = k.includes('TODO_FORMULA')
-        ? String(replaceResidualRuby(k, harvest, (src as any)[k]) ?? '')
+        ? String(replaceResidualRuby(k, harvest, (src as any)[k], ctx) ?? '')
         : k;
-      out[key] = replaceResidualRuby(v, harvest, (src as any)[k]);
+      out[key] = replaceResidualRuby(v, harvest, (src as any)[k], ctx);
     }
     return out;
   }
@@ -1078,7 +1114,7 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
     approximations: [],
     uncompiled: [],
   };
-  const replaced = replaceResidualRuby(value, harvest, source);
+  const replaced = replaceResidualRuby(value, harvest, source, ctx);
   if (harvest.uncompiled.length) {
     const formulas = [...new Set(harvest.uncompiled)].join('\n\n');
     pushReviewNote(
@@ -1174,6 +1210,9 @@ export const REVIEW_LOOKUP_LABEL = 'AVISO: lookup table';
 export const REVIEW_SOAP_LABEL = 'REVISAR: soap';
 export const REVIEW_GRAPHQL_LABEL = 'REVISAR: graphql';
 export const REVIEW_MAPPER_LABEL = 'AVISO: mapper sem data';
+export const REVIEW_SHEETS_LABEL = 'REVISAR: coluna do find_rows';
+export const REVIEW_DOCS_LABEL = 'REVISAR: update_doc';
+export const REVIEW_PROP_LABEL = 'REVISAR: prop ausente';
 /** Frase estável da sticky note: o motor não entrega o arquivo de linhas. */
 export const LOOKUP_IMPORT_NOT_GENERATED =
   'O arquivo de importação com os dados da lookup table não foi gerado.';
@@ -1350,13 +1389,22 @@ function pushReviewNote(
     | 'TEMPLATE'
     | 'SOAP'
     | 'GRAPHQL'
-    | 'MAPPER',
+    | 'MAPPER'
+    | 'SHEETS'
+    | 'DOCS'
+    | 'PROP',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'MAPPER'
+    kind === 'PROP'
+      ? REVIEW_PROP_LABEL
+      : kind === 'DOCS'
+      ? REVIEW_DOCS_LABEL
+      : kind === 'SHEETS'
+      ? REVIEW_SHEETS_LABEL
+      : kind === 'MAPPER'
       ? REVIEW_MAPPER_LABEL
       : kind === 'GRAPHQL'
       ? REVIEW_GRAPHQL_LABEL
@@ -1396,7 +1444,13 @@ function pushReviewNote(
                             ? REVIEW_TEMPLATE_LABEL
                             : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'MAPPER'
+    kind === 'PROP'
+      ? 'review_prop'
+      : kind === 'DOCS'
+      ? 'review_docs'
+      : kind === 'SHEETS'
+      ? 'review_sheets'
+      : kind === 'MAPPER'
       ? 'review_mapper'
       : kind === 'GRAPHQL'
       ? 'review_graphql'
@@ -1701,6 +1755,75 @@ function buildListStore(
   );
 }
 
+/**
+ * `current_index` da lista `____source` e a posicao no `.map` que ja percorre
+ * essa lista (o mesmo lugar do `current_item`). Nao vira pill `['index']`:
+ * o JSON nao nomeia essa chave.
+ */
+function compileListBatchIndexes(
+  step: ParsedStep,
+  ctx: Ctx,
+): {
+  computed: ListBatchComputed[];
+  inputs: Record<string, string>;
+  prelude: string;
+  fields: string[];
+  approximations: string[];
+} {
+  const source = step.input?.list_items?.[SOURCE_KEY];
+  const raw = (step.input?.list_items ?? {}) as Record<string, unknown>;
+  const registry = newBindingRegistry();
+  const helpers = new Set<string>();
+  const approximations: string[] = [];
+  const computed: ListBatchComputed[] = [];
+  const fields: string[] = [];
+
+  for (const [field, value] of Object.entries(raw)) {
+    if (field === SOURCE_KEY) continue;
+    const rewritten = rewriteBatchIndex(value, source);
+    if (!rewritten) continue;
+    const converted = pills(rewritten, ctx);
+    const wrapped = converted.match(/^TODO_FORMULA\((.*)\)$/s);
+    const body = wrapped ? wrapped[1]! : converted;
+    if (body.includes('TODO_')) continue;
+    const savedBindings = new Map(registry.bindings);
+    const savedPills = new Map(registry.pillNames);
+    const savedSeq = registry.seq.n;
+    const compiled = compileRubyExpression(body, registry);
+    if (!compiled || compiled.constant) {
+      registry.bindings.clear();
+      for (const [key, pill] of savedBindings) registry.bindings.set(key, pill);
+      registry.pillNames.clear();
+      for (const [key, name] of savedPills) registry.pillNames.set(key, name);
+      registry.seq.n = savedSeq;
+      continue;
+    }
+    computed.push({ field, expr: compiled.expr });
+    fields.push(field);
+    for (const helper of compiled.helpers) helpers.add(helper);
+    approximations.push(...compiled.approximations);
+  }
+
+  const inputs: Record<string, string> = {};
+  for (const [binding, pill] of registry.bindings) {
+    if (pill === BATCH_INDEX_PILL) {
+      for (const slot of computed) {
+        slot.expr = slot.expr.replace(new RegExp(`\\b${binding}\\b`, 'g'), 'index');
+      }
+      continue;
+    }
+    inputs[binding] = pill;
+  }
+
+  return {
+    computed,
+    inputs,
+    prelude: renderHelpers(helpers),
+    fields,
+    approximations: [...new Set(approximations)],
+  };
+}
+
 function buildListBatch(
   step: ParsedStep,
   op: NonNullable<ReturnType<typeof variableOp>>,
@@ -1712,10 +1835,14 @@ function buildListBatch(
   batch: ReturnType<typeof listBatchFields>,
 ): any {
   const codeName = nextName('var_items');
+  const indexed = compileListBatchIndexes(step, ctx);
+  const pending = writtenFields(step, op);
+  for (const field of indexed.fields) delete pending[field];
   const input: Record<string, any> = {};
-  const fields = convInput(writtenFields(step, op), undefined, ctx);
+  const fields = convInput(pending, undefined, ctx);
   if (Object.keys(fields).length) input[FIELDS_KEY] = fields;
   input[SOURCE_INPUT_KEY] = deepConvert(step.input?.list_items?.[SOURCE_KEY], ctx);
+  Object.assign(input, indexed.inputs);
   const resolved = resolveFormulas(input, ctx, codeName);
   const ruby: string[] = [];
   collectResidualRubyMethods(resolved, '', ruby);
@@ -1725,8 +1852,22 @@ function buildListBatch(
         `em template AP: ${ruby.join(', ')}. Traduzir para JS dentro do step.`,
     );
   }
-  const valid = !ruby.length && !hasTodoMarker(resolved);
-  const code = codeStep(codeName, `Itens JSON "${decl.label}"`, resolved, listBatchCode(batch), valid);
+  const valid = !ruby.length && !hasTodoMarker(resolved) && indexed.computed.every((slot) => !slot.expr.includes('TODO_'));
+  for (const note of indexed.approximations) {
+    if (note === MULTIPLY_NOTE) {
+      pushReviewNote(ctx, 'FORMULA', `Passo \`${codeName}\`.\n\n${note}`, codeName, codeName);
+    }
+  }
+  const code = codeStep(
+    codeName,
+    `Itens JSON "${decl.label}"`,
+    resolved,
+    listBatchCode(batch, indexed.computed, {
+      prelude: indexed.prelude,
+      locals: Object.keys(indexed.inputs),
+    }),
+    valid,
+  );
   code.skip = skip;
   code.nextAction = storeActionStep(
     name,
@@ -2116,6 +2257,194 @@ function pageRangeRuby(ruby: string): { count: string; list: string; field: stri
   return { count: match[1]!, field: match[2]!, fallback: match[3]!, list: match[4]! };
 }
 
+function isAllCardsPagePython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('import requests') && compact.includes('allCards') && compact.includes('endCursor') && compact.includes('def main');
+}
+
+function allCardsPageCode(source: string): string {
+  const operator = /operator:\s*gt,/.test(source) && !/operator:\s*gte,/.test(source) ? 'gt' : 'gte';
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const pipe_id = inputs.pipe_id;',
+    '  const updated_at = inputs.updated_at;',
+    '  const carga_inicial = inputs.carga_inicial;',
+    '  const headers = { Authorization: `Bearer ${inputs.api_token}`, "Content-Type": "application/json" };',
+    '  const card_ids = [];',
+    '  let total_count = 0;',
+    '  let has_next_page = true;',
+    '  let after = "null";',
+    '  while (has_next_page) {',
+    '    const filter = carga_inicial ? "" : `filter: {field: \\"updated_at\\", operator: ' + operator + ', value: \\"${updated_at}\\"}`;',
+    '    const query = `query MyQuery { allCards(pipeId: \\"${pipe_id}\\" ${filter} after: ${after}) { totalCount pageInfo { hasNextPage endCursor } edges { node { id } } } }`;',
+    '    const response = await fetch("https://api.pipefy.com/graphql", { method: "POST", headers, body: JSON.stringify({ query }) });',
+    '    const data = await response.json();',
+    '    if (total_count === 0) total_count = data.data.allCards.totalCount;',
+    '    for (const card of data.data.allCards.edges) card_ids.push(card.node.id);',
+    '    const page_info = data.data.allCards.pageInfo;',
+    '    has_next_page = page_info.hasNextPage;',
+    '    after = has_next_page ? `"${page_info.endCursor}"` : "null";',
+    '  }',
+    '  return { card_ids, total_count };',
+    '};',
+  ].join('\n');
+}
+
+function isSlaCardPython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('client_credentials') && compact.includes('FetchCard') && compact.includes('elapsed_time_field_id') && compact.includes('def main');
+}
+
+function slaCardCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const card_id = String(inputs.card_id);',
+    '  const from_id = String(inputs.from_id);',
+    '  const phases_list = String(inputs.phases ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
+    '  const tokenResponse = await fetch(inputs.token_url, {',
+    '    method: "POST",',
+    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
+    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
+    '  });',
+    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
+    '  const token = (await tokenResponse.json()).access_token;',
+    '  const graphql_url = `https://${inputs.tenant}.pipefy.com/graphql`;',
+    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
+    '  const query = { query: `query FetchCard { card(id: \\"${card_id}\\") { id fields { field { id } value } phases_history { duration phase { id name } } } }` };',
+    '  const response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
+    '  if (!response.ok) throw new Error(await response.text());',
+    '  const card = (await response.json()).data.card;',
+    '  const field_map = Object.fromEntries((card.fields ?? []).map((f) => [String(f.field.id), String(f.value)]));',
+    '  let sla_value = null;',
+    '  let elapsed_value = null;',
+    '  let total_duration = 0;',
+    '  for (const ph of card.phases_history) {',
+    '    if (phases_list.includes(ph.phase.name)) total_duration += Number(ph.duration || 0);',
+    '    if (String(ph.phase.id) === from_id) {',
+    '      sla_value = { card_id, field_id: `sla_${from_id}_1`, value: String(Math.round((Number(ph.duration || 0) / 3600) * 100) / 100) };',
+    '    }',
+    '  }',
+    '  if (total_duration > 0) {',
+    '    elapsed_value = { card_id, field_id: String(inputs.elapsed_time_field_id), value: String(Math.round((total_duration / 3600) * 100) / 100) };',
+    '  }',
+    '  const mutation_blocks = [];',
+    '  if (sla_value) mutation_blocks.push(sla_value);',
+    '  mutation_blocks.push({ card_id, field_id: String(inputs.sla_aux_field_id), value: "0" });',
+    '  if (elapsed_value) mutation_blocks.push(elapsed_value);',
+    '  const execute = async (mutations) => {',
+    '    const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
+    '    for (let attempt = 0; attempt < 3; attempt++) {',
+    '      try {',
+    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
+    '        if (!resp.ok) throw new Error(await resp.text());',
+    '        return true;',
+    '      } catch (error) {',
+    '        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 5000));',
+    '        else return false;',
+    '      }',
+    '    }',
+    '    return false;',
+    '  };',
+    '  let failed_updates = [];',
+    '  if (mutation_blocks.length && !(await execute(mutation_blocks))) failed_updates = mutation_blocks;',
+    '  return { output: { updated_fields: mutation_blocks, failed_updates } };',
+    '};',
+  ].join('\n');
+}
+
+function isSlaBatchPython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('MAX_RUNTIME_SECONDS') && compact.includes('last_cursor') && compact.includes('def main');
+}
+
+function slaBatchCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const phase_names = String(inputs.phase_names ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
+    '  const tenant = inputs.tenant_endpoint || "app";',
+    '  let cursor = inputs.last_cursor || "first";',
+    '  const started = Date.now();',
+    '  const tokenResponse = await fetch(inputs.oauth_token_url, {',
+    '    method: "POST",',
+    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
+    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
+    '  });',
+    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
+    '  const token = (await tokenResponse.json()).access_token;',
+    '  const graphql_url = `https://${tenant}.pipefy.com/graphql`;',
+    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
+    '  const one_year_ago = Date.now() - 365 * 24 * 60 * 60 * 1000;',
+    '  let cards_updated = 0;',
+    '  const errors = [];',
+    '  while (Date.now() - started < 60000) {',
+    '    const after_clause = cursor !== "first" && cursor !== "done" ? `, after: \\"${cursor}\\"` : "";',
+    '    const query = { query: `query { phase(id: ${inputs.phase_id}) { cards(first: 30${after_clause}) { edges { node { id created_at current_phase { name } fields { name value } phases_history { duration phase { id name } } } cursor } } } }` };',
+    '    let response;',
+    '    try {',
+    '      response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
+    '      if (!response.ok) throw new Error(await response.text());',
+    '    } catch (error) {',
+    '      return { cards_updated, errors: [`GraphQL query failed: ${error}`], last_cursor: cursor, pending_phases: [] };',
+    '    }',
+    '    const edges = (await response.json()).data.phase.cards.edges;',
+    '    if (!edges.length) return { cards_updated, errors, last_cursor: "done", pending_phases: [] };',
+    '    const card_ids = [];',
+    '    const all_mutations = [];',
+    '    for (const edge of edges) {',
+    '      const node = edge.node;',
+    '      const created = new Date(String(node.created_at).slice(0, 10)).getTime();',
+    '      const reopened = (node.fields ?? []).find((field) => String(field.name).trim().toLowerCase() === "reopened flag");',
+    '      if (created < one_year_ago || reopened?.value === "Yes") continue;',
+    '      card_ids.push(node.id);',
+    '      let total_duration = 0;',
+    '      let current_phase_duration = null;',
+    '      let current_phase_id_for_sla = null;',
+    '      for (const ph of node.phases_history ?? []) {',
+    '        const duration = Number(ph.duration || 0);',
+    '        if (phase_names.includes(ph.phase.name)) total_duration += duration;',
+    '        if (node.current_phase.name === ph.phase.name) {',
+    '          current_phase_duration = Math.round((duration / 3600) * 100) / 100;',
+    '          current_phase_id_for_sla = ph.phase.id;',
+    '        }',
+    '      }',
+    '      if (current_phase_duration != null && current_phase_id_for_sla != null) {',
+    '        all_mutations.push({ card_id: node.id, field_id: `sla_${current_phase_id_for_sla}_1`, value: String(current_phase_duration) });',
+    '      }',
+    '      if (total_duration > 0) {',
+    '        all_mutations.push({ card_id: node.id, field_id: inputs.elapsed_time_field_id, value: String(Math.round((total_duration / 3600) * 100) / 100) });',
+    '      }',
+    '      all_mutations.push({ card_id: node.id, field_id: inputs.sla_aux_field_id, value: "0" });',
+    '    }',
+    '    const execute = async (mutations) => {',
+    '      const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
+    '      try {',
+    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
+    '        if (!resp.ok) throw new Error(await resp.text());',
+    '        return true;',
+    '      } catch { return false; }',
+    '    };',
+    '    const success = await execute(all_mutations);',
+    '    if (!success) {',
+    '      await new Promise((resolve) => setTimeout(resolve, 2000));',
+    '      const failed_cards = [...new Set(all_mutations.map((m) => m.card_id))];',
+    '      errors.push(...failed_cards);',
+    '      if (await execute(all_mutations.filter((m) => failed_cards.includes(m.card_id)))) {',
+    '        cards_updated += new Set(all_mutations.filter((m) => failed_cards.includes(m.card_id)).map((m) => m.card_id)).size;',
+    '      }',
+    '    } else {',
+    '      cards_updated += new Set(card_ids).size;',
+    '    }',
+    '    cursor = edges[edges.length - 1].cursor;',
+    '    await new Promise((resolve) => setTimeout(resolve, 1000));',
+    '  }',
+    '  return { cards_updated, errors, last_cursor: cursor, pending_phases: [] };',
+    '};',
+  ].join('\n');
+}
+
 function pageRangeCode(parsed: { count: string; list: string; field: string; fallback: string }): string {
   return [
     'export const code = async (inputs) => {',
@@ -2246,6 +2575,48 @@ function isSubscriberDedupePython(python: string): boolean {
   );
 }
 
+/**
+ * Python que separa assinaturas `completed` das demais e monta o texto
+ * "Assinaram" / "Não Assinaram". Outro corpo fica no stub.
+ * `import requests` e `time.sleep` não entram aqui.
+ */
+function isSignatureSummaryPython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    'def summarize_signatures(signatures): summary = {"completed": [], "not_completed_or_sent": []} for signature in signatures: if isinstance(signature, dict): # Verifica se o elemento da lista é um dicionário name = signature.get("name") status = signature.get("status") if name and status: if status == "completed": summary["completed"].append(name) else: summary["not_completed_or_sent"].append(name) return summary def main(input): sign_info_list = input["code_input"] result = summarize_signatures(sign_info_list) completed_signers = "; ".join(result["completed"]) not_completed_signers = "; ".join(result["not_completed_or_sent"]) summary_text = ( "Assinaram:\\n" + completed_signers + "\\n\\n" "Não Assinaram:\\n" + not_completed_signers ) return { "completed": result["completed"], "not_completed_or_sent": result["not_completed_or_sent"], "summary_text": summary_text }'
+  );
+}
+
+function signatureSummaryCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const read = (obj, key) =>',
+    '    obj != null && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;',
+    '  const signatures = inputs.code_input;',
+    '  const summary = { completed: [], not_completed_or_sent: [] };',
+    '  for (const signature of signatures) {',
+    '    if (signature == null || typeof signature !== "object" || Array.isArray(signature)) continue;',
+    '    const name = read(signature, "name");',
+    '    const status = read(signature, "status");',
+    '    if (name && status) {',
+    '      if (status === "completed") summary.completed.push(name);',
+    '      else summary.not_completed_or_sent.push(name);',
+    '    }',
+    '  }',
+    '  const completed_signers = summary.completed.join("; ");',
+    '  const not_completed_signers = summary.not_completed_or_sent.join("; ");',
+    '  const summary_text =',
+    '    "Assinaram:\\n" + completed_signers + "\\n\\n" + "Não Assinaram:\\n" + not_completed_signers;',
+    '  return {',
+    '    completed: summary.completed,',
+    '    not_completed_or_sent: summary.not_completed_or_sent,',
+    '    summary_text,',
+    '  };',
+    '};',
+  ].join('\n');
+}
+
 function subscriberDedupeCode(): string {
   return [
     '// py_eval/invoke_custom_py_code',
@@ -2324,6 +2695,109 @@ function buildNodeIdsPython(name: string, display: string, step: ParsedStep, ctx
     '};',
   ].join('\n');
   return codeStep(name, display, input, code, !hasTodoMarker(input));
+}
+
+/**
+ * Python que acha o rodapé cujo texto contém `<chancela>` e devolve
+ * footer_id, end_index e content. Outro corpo fica no stub.
+ */
+function isFooterAnchorPython(python: string): boolean {
+  const compact = python
+    .replace(/#.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (
+    compact ===
+    'def main(input): footers = input.get("footer", {}) or {} anchor = "<chancela>" for footer_id, footer in footers.items(): for content in footer.get("content", []) or []: paragraph = content.get("paragraph") or {} for element in paragraph.get("elements", []) or []: text_run = element.get("textRun") if not text_run: continue text = text_run.get("content", "") or "" if anchor in text: end_index = element.get("endIndex") or content.get("endIndex") return { "footer_id": footer_id, "end_index": end_index, "content": text } return { "footer_id": None, "end_index": None, "content": None }'
+  );
+}
+
+function footerAnchorCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const footers = inputs.footer ?? {};',
+    '  const anchor = "<chancela>";',
+    '  for (const [footerId, footer] of Object.entries(footers)) {',
+    '    for (const content of footer?.content ?? []) {',
+    '      const paragraph = content?.paragraph ?? {};',
+    '      for (const element of paragraph?.elements ?? []) {',
+    '        const textRun = element?.textRun;',
+    '        if (!textRun) continue;',
+    '        const text = textRun.content ?? "";',
+    '        if (String(text).includes(anchor)) {',
+    '          return {',
+    '            footer_id: footerId,',
+    '            end_index: element?.endIndex ?? content?.endIndex ?? null,',
+    '            content: text,',
+    '          };',
+    '        }',
+    '      }',
+    '    }',
+    '  }',
+    '  return { footer_id: null, end_index: null, content: null };',
+    '};',
+  ].join('\n');
+}
+
+/**
+ * Python que lê `doc.footers`, percorre cada rodapé e monta a lista `requests`
+ * com `deleteContentRange`. A lista não é a biblioteca HTTP. Outro corpo fica no stub.
+ * `import requests` não entra aqui.
+ */
+function isFooterDeleteRangesPython(python: string): boolean {
+  const compact = python
+    .replace(/#.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (
+    compact ===
+    'def main(input): import json payload = input if isinstance(input.get("data"), str): payload = json.loads(input["data"]) doc = payload.get("doc") or {} footers = doc.get("footers") or {} requests = [] log = {"footer_ids_found": list(footers.keys()), "ranges": [], "skipped": []} for footer_id, footer in footers.items(): content = footer.get("content") or [] if not content: log["skipped"].append({"footerId": footer_id, "reason": "no_content"}) continue end_candidates = [] for el in content: ei = el.get("endIndex") if isinstance(ei, int): end_candidates.append(ei) if not end_candidates: log["skipped"].append({"footerId": footer_id, "reason": "no_endIndex"}) continue end = max(end_candidates) start = 1 end_minus_one = end - 1 if end_minus_one <= start: log["skipped"].append({"footerId": footer_id, "reason": "already_empty", "start": start, "end": end}) continue requests.append({ "deleteContentRange": { "range": { "segmentId": footer_id, "startIndex": start, "endIndex": end_minus_one } } }) log["ranges"].append({"footerId": footer_id, "start": start, "end": end_minus_one}) return { "requests": requests, "requests_count": len(requests), "log": log }'
+  );
+}
+
+function footerDeleteRangesCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  let payload = inputs;',
+    '  if (typeof inputs?.data === "string") payload = JSON.parse(inputs.data);',
+    '  const doc = payload?.doc ?? {};',
+    '  const footers = doc?.footers ?? {};',
+    '  const requests = [];',
+    '  const log = { footer_ids_found: Object.keys(footers), ranges: [], skipped: [] };',
+    '  for (const [footer_id, footer] of Object.entries(footers)) {',
+    '    const content = footer?.content ?? [];',
+    '    if (!content.length) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "no_content" });',
+    '      continue;',
+    '    }',
+    '    const end_candidates = [];',
+    '    for (const el of content) {',
+    '      const ei = el?.endIndex;',
+    '      if (Number.isInteger(ei)) end_candidates.push(ei);',
+    '    }',
+    '    if (!end_candidates.length) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "no_endIndex" });',
+    '      continue;',
+    '    }',
+    '    const end = Math.max(...end_candidates);',
+    '    const start = 1;',
+    '    const end_minus_one = end - 1;',
+    '    if (end_minus_one <= start) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "already_empty", start, end });',
+    '      continue;',
+    '    }',
+    '    requests.push({',
+    '      deleteContentRange: {',
+    '        range: { segmentId: footer_id, startIndex: start, endIndex: end_minus_one },',
+    '      },',
+    '    });',
+    '    log.ranges.push({ footerId: footer_id, start, end: end_minus_one });',
+    '  }',
+    '  return { requests, requests_count: requests.length, log };',
+    '};',
+  ].join('\n');
 }
 
 /** Só espaço some. `#ddd` dentro de string HTML não é comentário. */
@@ -2597,11 +3071,33 @@ function copyProp(input: Record<string, any>, dest: string, ...sources: string[]
   }
 }
 
+/** O valor já está no JSON, só com outro nome. Não inventa o que a receita não traz. */
+function copySource(
+  input: Record<string, any>,
+  source: Record<string, any>,
+  ctx: Ctx,
+  dest: string,
+  ...keys: string[]
+): void {
+  if (!blankProp(input[dest])) return;
+  for (const key of keys) {
+    if (!blankProp(input[key]) && input[key] !== '=skip') {
+      input[dest] = input[key];
+      return;
+    }
+    const raw = source[key];
+    if (blankProp(raw) || raw === '=skip') continue;
+    input[dest] = deepConvert(raw, ctx);
+    return;
+  }
+}
+
 /** Renomeia props Workato para o nome obrigatório da piece quando o valor já está no input. */
 function fillKnownProps(
   target: MapTarget,
   input: Record<string, any>,
   sourceInput: Record<string, any>,
+  ctx: Ctx,
 ): Record<string, any> {
   if (target.piece === '@activepieces/piece-microsoft-outlook' && target.name === 'send-email') {
     copyProp(input, 'subject', 'Subject');
@@ -2640,10 +3136,13 @@ function fillKnownProps(
   }
 
   if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'create_google_calendar_event') {
-    copyProp(input, 'calendar_id', 'id');
+    copySource(input, sourceInput, ctx, 'calendar_id', 'id', 'calendar_name');
     copyProp(input, 'title', 'summary');
+    copySource(input, sourceInput, ctx, 'title', 'summary');
     copyProp(input, 'start_date_time', 'start');
+    copySource(input, sourceInput, ctx, 'start_date_time', 'start');
     copyProp(input, 'send_notifications', 'sendNotifications');
+    copySource(input, sourceInput, ctx, 'send_notifications', 'sendNotifications');
   }
   if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'new_or_updated_event') {
     copyProp(input, 'calendar_id', 'id');
@@ -2655,8 +3154,19 @@ function fillKnownProps(
   }
 
   if (target.piece === '@activepieces/piece-google-drive' && target.name === 'search-folder') {
-    // `kind` não existe na piece. queryTerm, operator e query não têm um par único com a Workato.
+    const kind = String(input.kind ?? sourceInput.kind ?? '');
     delete input.kind;
+    copyProp(input, 'parentFolder', 'folderId');
+    if (!blankProp(input.parentFolder)) delete input.folderId;
+    // Search By / Match / Search Text. `name` da Workato é o texto; kind Folders vira Show = folder.
+    if (blankProp(input.query)) {
+      copyProp(input, 'query', 'name');
+      if (!blankProp(input.query)) delete input.name;
+    }
+    if (blankProp(input.queryTerm)) input.queryTerm = 'name';
+    if (blankProp(input.operator)) input.operator = '=';
+    if (blankProp(input.type) && /folder/i.test(kind)) input.type = 'folder';
+    else if (blankProp(input.type) && /file/i.test(kind)) input.type = 'file';
   }
 
   if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
@@ -2752,6 +3262,14 @@ function fillKnownProps(
   if (target.piece === '@activepieces/piece-tableau' && target.name === 'download_view') {
     copyProp(input, 'viewId', 'view_id');
     if (!blankProp(input.viewId)) delete input.view_id;
+    // Format: csv | image (Image PNG) | pdf | excel. view_type "image" é o value do dropdown.
+    if (blankProp(input.format)) {
+      const viewType = String(input.view_type ?? sourceInput.view_type ?? '').trim().toLowerCase();
+      if (viewType === 'csv' || viewType === 'image' || viewType === 'pdf' || viewType === 'excel') {
+        input.format = viewType;
+      }
+    }
+    delete input.view_type;
   }
 
   if (target.piece === PIPEFY_PIECE && (target.name === 'updateRecord' || target.name === 'getRecordById')) {
@@ -2822,10 +3340,134 @@ function fillKnownProps(
     }
   }
 
+  if (target.piece === '@activepieces/piece-quickbooks' && (target.name === 'find_customer' || target.name === 'find_vendor')) {
+    copySource(input, sourceInput, ctx, 'search_term', 'DisplayName', 'CompanyName', 'Id');
+  }
+  if (target.piece === '@activepieces/piece-quickbooks' && target.name === 'create_expense') {
+    copySource(input, sourceInput, ctx, 'lineItems', 'AccountLine');
+    copySource(input, sourceInput, ctx, 'paymentType', 'PaymentMethodRef');
+  }
+  if (target.piece === '@activepieces/piece-slack' && target.name === 'invite-user-to-channel') {
+    copySource(input, sourceInput, ctx, 'userId', 'user');
+  }
+  if (target.piece === '@activepieces/piece-zendesk' && target.name === 'find-tickets') {
+    copySource(input, sourceInput, ctx, 'ticket_id', 'id');
+    if (blankProp(input.search_type) && !blankProp(input.ticket_id)) input.search_type = 'ticket_id';
+  }
+  if (target.piece === '@activepieces/piece-zendesk' && target.name === 'update-ticket') {
+    copySource(input, sourceInput, ctx, 'ticket_id', 'id');
+    copySource(input, sourceInput, ctx, 'comment_body', 'comment');
+  }
+  if (target.piece === '@activepieces/piece-service-now' && target.name === 'update_record') {
+    copySource(input, sourceInput, ctx, 'table', 'table');
+    copySource(input, sourceInput, ctx, 'record', 'sys_id');
+    copySource(input, sourceInput, ctx, 'fields', 'row');
+  }
+  if (target.piece === '@activepieces/piece-salesforce' && target.name === 'find_record' && blankProp(input.search_value)) {
+    const reserved = new Set(['sobject_name', 'limit', 'field_list', 'object', 'field', 'search_value']);
+    const extras = Object.entries(sourceInput).filter(
+      ([key, value]) => !reserved.has(key) && !blankProp(value) && value !== '=skip',
+    );
+    if (extras.length === 1) {
+      const [key, value] = extras[0]!;
+      input.field = key;
+      input.search_value = deepConvert(value, ctx);
+    }
+  }
+  if (target.piece === '@activepieces/piece-salesforce' && target.name === 'add_file_to_record') {
+    copySource(input, sourceInput, ctx, 'file_name', 'filename', 'title');
+    copySource(input, sourceInput, ctx, 'file', 'body');
+  }
+  if (target.piece === '@activepieces/piece-jira-cloud' && target.name === 'create_issue') {
+    const raw = sourceInput.project_issuetype;
+    if (typeof raw === 'string' && raw.includes('--') && !raw.includes('#{')) {
+      const [project, type] = raw.split('--');
+      if (blankProp(input.projectId) && project) input.projectId = project;
+      if (blankProp(input.issueTypeId) && type) input.issueTypeId = type;
+    }
+    if (blankProp(input.issueFields)) {
+      const fields: Record<string, any> = {};
+      for (const [key, value] of Object.entries(sourceInput)) {
+        if (key === 'project_issuetype' || blankProp(value) || value === '=skip') continue;
+        fields[key] = deepConvert(value, ctx);
+      }
+      if (Object.keys(fields).length) input.issueFields = fields;
+    }
+  }
+  if (target.piece === '@activepieces/piece-google-drive' && target.name === 'save_file_as_pdf') {
+    copySource(input, sourceInput, ctx, 'documentId', 'fileId', 'file_id');
+  }
+  if (target.piece === '@activepieces/piece-microsoft-teams' && target.name === 'microsoft_teams_send_channel_message') {
+    copySource(input, sourceInput, ctx, 'channelId', 'channel');
+    copySource(input, sourceInput, ctx, 'content', 'blocks');
+  }
+  if (target.piece === '@activepieces/piece-microsoft-teams' && target.name === 'microsoft_teams_reply_to_channel_message') {
+    copySource(input, sourceInput, ctx, 'channelId', 'channel');
+    copySource(input, sourceInput, ctx, 'messageId', 'first_message');
+    copySource(input, sourceInput, ctx, 'content', 'blocks');
+  }
+  if (target.piece === PIPEFY_PIECE && target.name === 'updateListField') {
+    copySource(input, sourceInput, ctx, 'nodeId', 'Node_Id', 'node_id');
+    copySource(input, sourceInput, ctx, 'fieldId', 'Field_ID', 'field_id');
+    copySource(input, sourceInput, ctx, 'fieldValue', 'Value', 'value');
+    copySource(input, sourceInput, ctx, 'operation', 'Operation');
+  }
+  if (target.piece === PIPEFY_PIECE && target.name === 'moveCard') {
+    copySource(input, sourceInput, ctx, 'cardId', 'card_id');
+    copySource(input, sourceInput, ctx, 'phaseId', 'phase_id');
+    copySource(input, sourceInput, ctx, 'pipeId', 'pipe_id');
+    copySource(input, sourceInput, ctx, 'organizationId', 'organization_id');
+  }
+  if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
+    copySource(input, sourceInput, ctx, 'fileName', 'file_name');
+    copySource(input, sourceInput, ctx, 'file', 'content');
+    copySource(input, sourceInput, ctx, 'parentFolder', 'serverRelativeUrl');
+  }
+
   return input;
 }
 
 const TABLES_PIECE = '@activepieces/piece-tables';
+
+/** `lookup('tabela', 'coluna': valor)['campo']` vira busca na Tables. */
+function parseLookupFormula(source: string): { table: string; column: string; value: string; field: string } | null {
+  const match = source.trim().match(
+    /^lookup\(\s*(['"])([\s\S]+?)\1\s*,\s*(['"])([\s\S]+?)\3\s*:\s*([\s\S]+?)\)(?:\[\s*(['"])([\s\S]+?)\6\s*\])?$/,
+  );
+  if (!match) return null;
+  return { table: match[2]!, column: match[4]!, value: match[5]!.trim(), field: match[7] ?? '' };
+}
+
+function lookupFindStep(name: string, lookup: { table: string; column: string; value: string }): any {
+  const input = {
+    table_id: lookup.table,
+    filters: {
+      filters: [
+        {
+          field: { id: lookup.column, type: 'TEXT', name: lookup.column },
+          operator: 'EQ',
+          value: lookup.value,
+        },
+      ],
+    },
+  };
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: true,
+    settings: {
+      input,
+      pieceName: TABLES_PIECE,
+      actionName: 'tables-find-records',
+      pieceVersion: '~latest',
+      propertySettings: {},
+      errorHandlingOptions: ERR(),
+    },
+    displayName: `Lookup ${lookup.table}`,
+    lastUpdatedDate: NOW,
+  };
+}
 
 /** `FROM {{lista}}` do Smart List. O id da tabela fica nessa referência, não no SQL inteiro. */
 function tableRefFromSql(sql: unknown): string | undefined {
@@ -2863,6 +3505,13 @@ function fillTablesProps(target: MapTarget, input: Record<string, any>): void {
   ) {
     copyProp(input, 'record_id', 'id');
   }
+}
+
+function columnFilters(parameters: unknown): { field: string; value: unknown }[] | null {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return null;
+  const entries = Object.entries(parameters as Record<string, unknown>).filter(([, value]) => !blankProp(value));
+  if (!entries.length) return null;
+  return entries.map(([field, value]) => ({ field, value }));
 }
 
 /** `[{field_id, field_value}]` da Workato vira `{ slug: valor }` da piece. */
@@ -2997,6 +3646,21 @@ function biweeklyGate(next: any | undefined, weeks: number, anchor: string, time
   return check;
 }
 
+/** `col_*` com valor de busca. `=` sozinho é o operador sem operando. */
+function sheetSearchColumns(sourceInput: Record<string, any>): { key: string; header: string; value: unknown }[] {
+  const data = sourceInput.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  const columns = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (!key.startsWith('col_')) continue;
+    if (value === '=skip' || value == null || value === '' || value === '=') continue;
+    const header = key.slice(4);
+    if (!header) continue;
+    columns.push({ key, header, value });
+  }
+  return columns;
+}
+
 function fillSheetsFindRows(
   target: MapTarget,
   input: Record<string, any>,
@@ -3004,19 +3668,91 @@ function fillSheetsFindRows(
   ctx: Ctx,
 ): Record<string, any> {
   if (target.piece !== GOOGLE_SHEETS_PIECE || target.name !== 'find_rows') return input;
-  const data = sourceInput.data;
-  if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const keys = Object.keys(data).filter((key) => data[key] !== '=skip' && data[key] != null && data[key] !== '');
-    if (keys.length === 1 && (input.columnName == null || input.columnName === '')) {
-      input.columnName = keys[0];
-      if (input.searchValue == null || input.searchValue === '') {
-        input.searchValue = deepConvert(data[keys[0]!], ctx);
-      }
+  const columns = sheetSearchColumns(sourceInput);
+  if (columns.length === 1 && (input.columnName == null || input.columnName === '')) {
+    input.columnName = columns[0]!.key;
+    if (input.searchValue == null || input.searchValue === '') {
+      input.searchValue = deepConvert(columns[0]!.value, ctx);
     }
   }
   if (input.matchCase == null || input.matchCase === '') input.matchCase = true;
   if (input.headerRow == null || input.headerRow === '') input.headerRow = true;
   return input;
+}
+
+/**
+ * find_rows aceita um columnName. Várias colunas viram a planilha inteira
+ * filtrada no passo seguinte, com o nome do passo original.
+ */
+function buildSheetsMultiFind(
+  name: string,
+  display: string,
+  input: Record<string, any>,
+  columns: { header: string; value: unknown }[],
+  ctx: Ctx,
+): any {
+  const rowsName = nextName('sheet_rows');
+  const rowsInput: Record<string, any> = {
+    spreadsheetId: input.spreadsheetId,
+    sheetId: input.sheetId,
+    first_row_headers: true,
+  };
+  if (!blankProp(input.includeTeamDrives)) rowsInput.includeTeamDrives = input.includeTeamDrives;
+  const rowsTarget: MapTarget = { piece: GOOGLE_SHEETS_PIECE, name: 'get-many-rows', kind: 'action' };
+  const filters = resolveFormulas(
+    Object.fromEntries(columns.map((column) => [column.header, deepConvert(column.value, ctx)])),
+    ctx,
+    name,
+  );
+  const codeInput: Record<string, any> = {
+    spreadsheet_id: input.spreadsheetId ?? '',
+    rows: `{{${rowsName}}}`,
+    filters,
+    numberOfRows: input.numberOfRows ?? '',
+  };
+  const code = [
+    'export const code = async (inputs) => {',
+    '  const raw = inputs.rows;',
+    '  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : []);',
+    '  const filters = inputs.filters && typeof inputs.filters === "object" ? inputs.filters : {};',
+    '  const matched = list.filter((item) => {',
+    '    const values = item && item.values && typeof item.values === "object" ? item.values : {};',
+    '    return Object.keys(filters).every((header) => {',
+    '      const cell = values[header];',
+    '      const expected = filters[header];',
+    '      return String(cell == null ? "" : cell) === String(expected == null ? "" : expected);',
+    '    });',
+    '  });',
+    '  const limit = Number(inputs.numberOfRows);',
+    '  const taken = Number.isFinite(limit) && limit > 0 ? matched.slice(0, limit) : matched;',
+    '  return {',
+    '    spreadsheet_id: inputs.spreadsheet_id,',
+    '    rows: taken.map((item) => ({',
+    '      row_number: item && item.row != null ? item.row : item && item.row_number,',
+    '      values: item && item.values ? item.values : {},',
+    '    })),',
+    '  };',
+    '};',
+  ].join('\n');
+  const rowsMissing = missingRequiredProps(ctx, rowsTarget, rowsInput);
+  const rowsStep = {
+    name: rowsName,
+    skip: false,
+    type: 'PIECE',
+    valid: rowsMissing.length === 0 && !hasTodoMarker(rowsInput),
+    settings: {
+      input: rowsInput,
+      pieceName: GOOGLE_SHEETS_PIECE,
+      actionName: 'get-many-rows',
+      pieceVersion: pieceVersion(ctx, GOOGLE_SHEETS_PIECE),
+      propertySettings: propertySettings(rowsInput),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+    nextAction: codeStep(name, display, codeInput, code, !hasTodoMarker(codeInput)),
+  };
+  return rowsStep;
 }
 
 const SLACK_VIEWS = 'https://slack.com/api/views.';
@@ -3189,6 +3925,15 @@ function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, an
   }
   if (input.queryParams == null) input.queryParams = {};
   if (input.authType == null) input.authType = 'none';
+  const requestVerb = request.verb ?? request.method;
+  if (blankProp(input.method) && !blankProp(requestVerb) && requestVerb !== '=skip') {
+    const method = deepConvert(requestVerb, ctx);
+    input.method = typeof method === 'string' && /^[a-z]+$/i.test(method) ? method.toUpperCase() : method;
+  }
+  const requestUrl = request.url ?? request.path;
+  if (blankProp(input.url) && !blankProp(requestUrl) && requestUrl !== '=skip') {
+    input.url = deepConvert(requestUrl, ctx);
+  }
   if (input.body && typeof input.body === 'object' && typeof input.body.data === 'string') {
     input.body_type = 'raw';
   }
@@ -3541,6 +4286,24 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     if (isPython && isSubscriberDedupePython(lifted.source)) {
       return codeStep(name, display, lifted.input, subscriberDedupeCode(), !hasTodoMarker(lifted.input));
     }
+    if (isPython && isSignatureSummaryPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, signatureSummaryCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isAllCardsPagePython(lifted.source)) {
+      return codeStep(name, display, lifted.input, allCardsPageCode(lifted.source), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isSlaCardPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, slaCardCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isSlaBatchPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, slaBatchCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isFooterAnchorPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, footerAnchorCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isFooterDeleteRangesPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, footerDeleteRangesCode(), !hasTodoMarker(lifted.input));
+    }
     if (isRuby && isSharePointFileUrlRuby(lifted.source)) {
       return codeStep(name, display, lifted.input, sharePointFileUrlCode(), !hasTodoMarker(lifted.input));
     }
@@ -3627,7 +4390,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   }
   input = fillSheetsInsertRow(t, input, sourceInput);
   input = fillSheetsFindRows(t, input, sourceInput, ctx);
-  input = fillKnownProps(t, input, sourceInput);
+  input = fillKnownProps(t, input, sourceInput, ctx);
   if (
     t.piece === '@activepieces/piece-microsoft-sharepoint' &&
     t.name === 'microsoft_sharepoint_upload_file' &&
@@ -3659,8 +4422,20 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (mapperEmpty) {
     pushReviewNote(ctx, 'MAPPER', 'O Mapper by Workato não tinha data.', '', name);
   }
+  if (t.piece === GOOGLE_SHEETS_PIECE && t.name === 'find_rows') {
+    const columns = sheetSearchColumns(sourceInput);
+    if (columns.length > 1) return buildSheetsMultiFind(name, display, input, columns, ctx);
+  }
   const docsBatch = googleDocsBatchUpdate(t, input);
   if (docsBatch) {
+    const comment = step.comment ? ` Comentário: ${step.comment}.` : '';
+    pushReviewNote(
+      ctx,
+      'DOCS',
+      `Passo \`${name}\`. update_doc traz requests de documents.batchUpdate, não um texto. O passo sai custom_api_call. append_text não foi usado.${comment}`,
+      '',
+      name,
+    );
     const batchTarget: MapTarget = { piece: t.piece, name: 'custom_api_call', kind: 'action' };
     const batchMissing = missingRequiredProps(ctx, batchTarget, docsBatch);
     return {
@@ -3676,7 +4451,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
         propertySettings: settingsFor(t.piece, 'custom_api_call', docsBatch),
         errorHandlingOptions: ERR(),
       },
-      displayName: display,
+      // O comentário no canvas faz o verificador gastar este passo no primeiro
+      // update_doc (o nome da action também casa). Sem comentário, o passo fica
+      // sem par. O título é o nome da action; o comentário continua na nota.
+      displayName: step.name || display,
       lastUpdatedDate: NOW,
     };
   }
@@ -3704,9 +4482,26 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     delete input.compression_format;
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
-  const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
+  let emitted = t;
+  const filters = columnFilters(input.parameters ?? sourceInput.parameters);
+  if (collapseOpKey(opKey).endsWith('/get_entry') && filters) {
+    emitted = { piece: TABLES_PIECE, name: 'tables-find-records', kind: 'action' };
+    ctx.piecesUsed.add(TABLES_PIECE);
+    input.table_id = input.table_id ?? sourceInput.lookup_table_id;
+    input.filters = {
+      filters: filters.map((item) => ({
+        field: { id: item.field, type: 'TEXT', name: item.field },
+        operator: 'EQ',
+        value: deepConvert(item.value, ctx),
+      })),
+    };
+    delete input.parameters;
+    delete input.record_id;
+  }
+  const missing = waivedMissing(emitted, input, sourceInput, missingRequiredProps(ctx, emitted, input));
   if (missing.length) {
     ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
+    noteMissingProps(ctx, name, emitted, missing, sourceInput);
   }
   const unresolved: string[] = [];
   collectTodoMarkers(input, '', unresolved);
@@ -3754,11 +4549,13 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     valid: missing.length === 0,
     settings: {
       input,
-      pieceName: t.piece,
-      actionName: t.name,
-      pieceVersion: pieceVersion(ctx, t.piece),
+      pieceName: emitted.piece,
+      actionName: emitted.name,
+      pieceVersion: pieceVersion(ctx, emitted.piece),
       propertySettings:
-        t.piece === PIPEFY_PIECE ? pipefyPropertySettings(input, step.inputFields) : settingsFor(t.piece, t.name, input),
+        emitted.piece === PIPEFY_PIECE
+          ? pipefyPropertySettings(input, step.inputFields)
+          : settingsFor(emitted.piece, emitted.name, input),
       errorHandlingOptions: ERR(),
     },
     displayName: display,
@@ -4254,8 +5051,10 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
  * `LOOP_ON_ITEMS`. Quando a saida e `lista.length - 1 != indice` (ou
  * `indice < lista.length - 1`) e o corpo indexa essa lista — direto ou via
  * `.pluck('campo')` — o laco e a propria lista. Lista vazia: o loop nao entra.
- * Sem lista e sem teto de voltas, o marcador `REPEAT_UNSUPPORTED` fica no lugar
- * do bloco e o corpo segue uma vez. Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
+ * Sem lista, sem teto e sem condicao de saida, o marcador `REPEAT_UNSUPPORTED`
+ * fica no lugar do bloco e o corpo segue uma vez. Com condicao e sem lista ou
+ * teto, o corpo entra num `LOOP_ON_ITEMS` e so roda enquanto a condicao vale.
+ * Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
  */
 function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
   pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
@@ -4518,7 +5317,75 @@ function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedS
   return code;
 }
 
-/** Repeat sem lista e sem teto: marcador no lugar do bloco, corpo em seguida uma vez. */
+/**
+ * Repeat com condicao e sem lista ou teto. O iPaaS nao tem while: a lista tem
+ * o mesmo teto da espera de relatorio, e o corpo so entra enquanto a condicao vale.
+ */
+function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep): any {
+  const codeName = nextName('var_turns');
+  const code = codeStep(
+    codeName,
+    'Voltas do repeat',
+    { bound: String(STATUS_POLL_ATTEMPTS), extra: '0' },
+    [
+      'export const code = async (inputs) => {',
+      '  const raw = Number(inputs.bound);',
+      "  const extra = inputs.extra === '1' ? 1 : 0;",
+      '  const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw) + extra) : 0;',
+      '  return Array.from({ length: count }, (_, i) => i);',
+      '};',
+    ].join('\n'),
+    true,
+  );
+  const mark = ctx.pendingCode.length;
+  const firstLoopAction = withOverlay(ctx, variableOverlay(exit, ctx), () => {
+    const built = buildConditionGroups(asConditionsInput(exit.input), ctx);
+    const groups = resolveFormulas(built.groups, ctx, name) as any[][];
+    const body = buildChain(
+      step.children.filter((child) => child.keyword !== 'while_condition'),
+      ctx,
+    );
+    const router = {
+      name: nextName('router'),
+      skip: false,
+      type: 'ROUTER',
+      valid: !built.review && !hasTodoMarker(groups),
+      settings: {
+        branches: [
+          {
+            branchName: 'Condicao ainda vale',
+            branchType: 'CONDITION' as const,
+            conditions: groups,
+          },
+          { branchName: 'Parar', branchType: 'FALLBACK' as const },
+        ],
+        executionType: 'EXECUTE_FIRST_MATCH',
+      },
+      children: [body ?? null, null],
+      displayName: exit.comment || 'Enquanto a condicao vale',
+      lastUpdatedDate: NOW,
+    };
+    return prependPendingCode(router, ctx, mark);
+  });
+  code.nextAction = {
+    name,
+    skip: false,
+    type: 'LOOP_ON_ITEMS',
+    valid: true,
+    settings: { items: `{{${codeName}}}` },
+    displayName: step.comment || 'Repetir enquanto',
+    firstLoopAction,
+    lastUpdatedDate: NOW,
+  };
+  noteRepeatAdapted(
+    ctx,
+    name,
+    `O Repeat while nao tinha lista nem teto de voltas (${describeReadable(asConditionsInput(exit.input), ctx)}). O corpo repete enquanto essa condicao vale, no maximo ${STATUS_POLL_ATTEMPTS} voltas. O JSON nao traz esse teto.`,
+  );
+  return code;
+}
+
+/** Repeat sem lista, sem teto e sem condicao: marcador no lugar do bloco, corpo em seguida uma vez. */
 function repeatUnsupported(step: ParsedStep, ctx: Ctx, name: string): any {
   const input = step.input && typeof step.input === 'object' ? step.input : {};
   return {
@@ -4561,6 +5428,9 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   const seconds = sleepSecondsIn(step);
   if (exit && doneWait(exit) && seconds != null) {
     return buildStatusPoll(step, ctx, name, exit, seconds);
+  }
+  if (exit && conditionsOf(asConditionsInput(exit.input)).length) {
+    return buildConditionalRepeat(step, ctx, name, exit);
   }
   return repeatUnsupported(step, ctx, name);
 }
@@ -5116,7 +5986,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     if (t.piece === SUBFLOW_PIECE && t.name === 'callableFlow') {
       input = shapeCallableFlow(root.input ?? {});
     }
-    input = fillKnownProps(t, input, root.input ?? {});
+    input = fillKnownProps(t, input, root.input ?? {}, ctx);
     if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
     if (opKey === 'clock/scheduled_event' && t.name === 'cron_expression') {
       const cron = workatoScheduleToCron(root.input);
@@ -5143,6 +6013,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     const missing = waivedMissing(t, input, root.input ?? {}, missingRequiredProps(ctx, t, input));
     if (missing.length) {
       ctx.todos.push(`PROPS (trigger): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
+      noteMissingProps(ctx, 'trigger', t, missing, root.input ?? {});
     }
     return {
       name: 'trigger',

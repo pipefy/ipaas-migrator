@@ -950,6 +950,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   max: (t, s) => (useHelper(s, 'maxOf'), `maxOf(${t})`),
   min: (t, s) => (useHelper(s, 'minOf'), `minOf(${t})`),
   values: (t) => `Object.values(${t} ?? {})`,
+  keys: (t) => `Object.keys(${t} ?? {})`,
   wday: (t, s) => (useHelper(s, 'datePart'), `datePart(${t}, 'wday')`),
   yday: (t, s) => (useHelper(s, 'datePart'), `datePart(${t}, 'yday')`),
   beginning_of_day: (t, s) => (useHelper(s, 'boundOf'), `boundOf(${t}, 'day', false)`),
