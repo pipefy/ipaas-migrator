@@ -172,10 +172,33 @@ function escapeFormulaString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/**
+ * `.gsub('"', "")` tira aspas. Cada ocorrência vira `replace` do catálogo.
+ * O resto do texto fica literal. Outro método Ruby no mesmo valor não entra.
+ */
+function convertQuoteGsubText(s: string): string | null {
+  const call = /#\{\s*(\{\{[^{}]+\}\})\.gsub\(\s*'"'\s*,\s*""\s*\)\s*\}|(\{\{[^{}]+\}\})\.gsub\(\s*'"'\s*,\s*""\s*\)/g;
+  if (!call.test(s)) return null;
+  call.lastIndex = 0;
+  const formulas: string[] = [];
+  const masked = s.replace(call, (_match, wrapped: string | undefined, bare: string | undefined) => {
+    const pill = wrapped ?? bare ?? '';
+    formulas.push(wrapApFormula(`replace(${pill}; "\\""; "")`));
+    return `\u0000${formulas.length - 1}\u0000`;
+  });
+  if (detectRubyMethods(masked).length) return null;
+  const unquoted = unquoteRubyString(masked.trim());
+  const body = unquoted ?? (masked.trim().startsWith('"') || masked.trim().startsWith("'") ? null : masked);
+  if (body == null) return null;
+  return body.replace(/\u0000(\d+)\u0000/g, (_match, index) => formulas[Number(index)]!);
+}
+
 /** Depois das pills virarem `{{...}}`, fecha `.upcase` / `[].include?` conhecidos. */
 function convertKnownRubyAfterPills(out: string): string | null {
   let s = out.trim();
   if (s.startsWith('=')) s = s.slice(1).trim();
+  const quoteStrip = convertQuoteGsubText(s);
+  if (quoteStrip) return quoteStrip;
   // Limiar numérico que sobrou de uma comparação. Não é fórmula.
   if (/^-?\d+$/.test(s)) return s;
 
@@ -342,6 +365,20 @@ function convertCatalogFormula(src: string): string | null {
       ? `replace(${item}; "${escapeFormulaString('"')}"; "")`
       : item;
     return `trim(${cleaned})`;
+  }
+
+  // `{{pill}}[0]['body'].split("sep").first.strip` — o primeiro pedaço, sem pontas.
+  const splitFirst = s.match(
+    /^(\{\{[^{}]+\}\})\[0\]\['(\w+)'\]\.split\("([^"\\]+)"\)\.first\.strip$/,
+  );
+  if (splitFirst && isSafeFormulaArg(splitFirst[2]!) && isSafeFormulaArg(splitFirst[3]!)) {
+    const inner = splitFirst[1]!.slice(2, -2);
+    return `trim(split({{${inner}[0]['${splitFirst[2]}']}}; "${splitFirst[3]}"; 0))`;
+  }
+
+  const whereList = matchWhereList(s);
+  if (whereList && /^\{\{[^{}]+\}\}$/.test(whereList.list)) {
+    return formatWhereList(whereList.list, whereList.field, whereList.value, whereList.key);
   }
 
   // `{{pill}}.strftime("%d/%m/%Y")`, com `.to_date` / `.to_time` / `.to_s` / `.to_i` opcionais.
@@ -628,6 +665,21 @@ function parseIncludeChain(s: string): string | null {
   return terms.slice(1).reduce((acc, term) => `or(${acc}; ${term})`, terms[0]!);
 }
 
+/**
+ * Ternario Ruby `cond ? a : b`. O `?` do operador nao cola num identificador
+ * (`present?`, `ID?`). Interrogacao no meio da frase, com `:` so depois
+ * (rotulo entre pills, `font-weight:`), nao e ternario.
+ */
+function hasRubyTernary(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '?') continue;
+    const prev = i > 0 ? s[i - 1]! : '';
+    if (/[\p{L}\p{N}_]/u.test(prev)) continue;
+    if (/^[^:]*:/.test(s.slice(i + 1))) return true;
+  }
+  return false;
+}
+
 /** metodos Ruby detectados na string (indicam necessidade de step CODE). */
 export function detectRubyMethods(s: string): string[] {
   const found = new Set<string>();
@@ -635,7 +687,7 @@ export function detectRubyMethods(s: string): string[] {
     const re = new RegExp('\\.' + m.replace('?', '\\?') + '\\b|\\.' + m.replace('?', '') + '\\(');
     if (re.test(s)) found.add(m);
   }
-  if (/\?[^:]*:/.test(s)) found.add('ternary'); // a ? b : c
+  if (hasRubyTernary(s)) found.add('ternary');
   return [...found];
 }
 
@@ -691,6 +743,8 @@ const CATCH_TYPE_TOKEN = '\u0000catch-type\u0000';
 function tidyCatch(text: string): string {
   if (!text.includes(CATCH_TYPE_TOKEN) && !text.includes(CATCH_ERROR_TOKEN)) return text;
   return text
+    .split(`${CATCH_TYPE_TOKEN}: `)
+    .join('')
     .split(`${CATCH_TYPE_TOKEN}: ${CATCH_ERROR_TOKEN}`)
     .join(CATCH_ERROR_TOKEN)
     .split(`${CATCH_TYPE_TOKEN}:${CATCH_ERROR_TOKEN}`)
@@ -957,6 +1011,13 @@ function renderDataPill(
     return `{{TODO_ref_${line}}}`;
   }
 
+  // Mesmo indice que `_('data.foreach.<as>.index')`: o `as` do foreach aponta
+  // para `loop_N.item`, e o indice mora no loop.
+  if (dp.pill_type === 'foreach_meta' && dp.key === 'index') {
+    const loop = (mappedName ?? String(line)).replace(/\.item$/, '');
+    return renderApTemplate(loop, ['index']);
+  }
+
   let base = mappedName ?? line;
   if (
     mappedName &&
@@ -1083,7 +1144,11 @@ function convertIndexPathFormula(
   return `{{${rendered.slice(2, -2)}${m[2]}${keys.join('')}}}`;
 }
 
-/** `_dp(...)['a']['b']` → `{{step.a.b}}`. */
+/**
+ * `_dp(...)['a']['b']` → `{{step.a.b}}`.
+ * So a pill inteira: `.+?` voltava ate o ultimo `["campo"]` e engolia
+ * `pill + "/" + pill["campo"]`. A chave de fora nao entra no JSON da pill.
+ */
 function convertHashPathFormula(
   input: string,
   asToName: StepNameMap,
@@ -1091,29 +1156,46 @@ function convertHashPathFormula(
   options?: PillOptions,
 ): string | null {
   const m = input.trim().match(
-    /^=?(?:#\{)?_dp\('(.+?)'\)\}?((?:\[['"]\w+['"]\])+)$/,
+    /^=?(?:#\{)?_dp\('([^']*)'\)\}?((?:\[['"]\w+['"]\])+)$/,
   );
   if (!m) return null;
-  return appendPillPath(renderDataPill(m[1], asToName, resolveLoopItem, options), extraHashPath(m[2]));
+  const rendered = renderDataPill(m[1], asToName, resolveLoopItem, options);
+  if (rendered.includes('TODO_')) return null;
+  return appendPillPath(rendered, extraHashPath(m[2]));
 }
 
-/** `_dp(...).where(field:"val")[0]['key']` → filter_list + first_item + pluck. */
+/**
+ * `.where(field:"val")[0]['key']` e o mesmo encadeamento com `.first["key"]`.
+ * Vira filter_list + pluck + first_item.
+ */
+function matchWhereList(src: string): { list: string; field: string; value: string; key: string } | null {
+  const m = src.match(
+    /^(.*)\.where\((\w+)\s*:\s*"((?:[^"\\]|\\.)*)"\)(?:\[0\]\['(\w+)'\]|\.first\["(\w+)"\])$/,
+  );
+  const key = m?.[4] || m?.[5];
+  if (!m?.[1] || !m[2] || m[3] == null || !key) return null;
+  return { list: m[1], field: m[2], value: m[3], key };
+}
+
+function formatWhereList(listRef: string, field: string, rawValue: string, key: string): string {
+  const value = rawValue.replace(/\\"/g, '"').replace(/"/g, '\\"');
+  return `first_item(pluck(filter_list(${listRef};"${field}";"${value}");"${key}"))`;
+}
+
+/** `_dp(...).where(field:"val")[0]['key']` ou `.first["key"]`. */
 function convertWhereListFormula(
   input: string,
   asToName: StepNameMap,
   resolveLoopItem?: LoopItemResolver,
   options?: PillOptions,
 ): string | null {
-  const m = input.trim().match(
-    /^=?(?:#\{)?_dp\('(.+?)'\)\}?\.where\((\w+)\s*:\s*"((?:[^"\\]|\\.)*)"\)\[0\]\['(\w+)'\]$/,
-  );
-  if (!m) return null;
-  const listRef = renderDataPill(m[1], asToName, resolveLoopItem, options);
+  const hit = matchWhereList(input.trim().replace(/^=/, ''));
+  if (!hit) return null;
+  const dp = hit.list.match(/^(?:#\{)?_dp\('(.+)'\)\}?$/);
+  if (!dp) return null;
+  const listRef = renderDataPill(dp[1]!, asToName, resolveLoopItem, options);
   if (!listRef) return '';
-  const field = m[2];
-  const value = m[3].replace(/\\"/g, '"').replace(/"/g, '\\"');
-  const key = m[4];
-  return `ap-formula-v1::{first_item(pluck(filter_list(${listRef};"${field}";"${value}");"${key}"))}::ap-formula-v1`;
+  return wrapApFormula(formatWhereList(listRef, hit.field, hit.value, hit.key));
 }
 
 /**
@@ -1228,8 +1310,22 @@ export function convertPills(
   const listIndex = replaceListIndexAccess(out, asToName, resolveLoopItem, options);
   out = listIndex.out;
 
-  // 1) pill estruturada: #{_dp('{...json...}')} ou _dp('{...}') sem interpolacao
-  out = out.replace(/#\{_dp\('(.+?)'\)\}|_dp\('(.+?)'\)/g, (_m, a, b) => {
+  // `.gsub('"', "")` cola na pill, dentro do `#{ }`. Troca as aspas antes do
+  // replace genérico, que só casa quando `}` vem logo depois da pill.
+  out = out.replace(
+    /#\{_dp\('([^']*)'\)\.gsub\(\s*'"'\s*,\s*""\s*\)\}/g,
+    (_match, json: string) => {
+      const pill = renderDataPill(json, asToName, resolveLoopItem, options);
+      if (!pill || pill === CATCH_TYPE_TOKEN) return pill;
+      return wrapApFormula(`replace(${pill}; "\\""; "")`);
+    },
+  );
+
+  // 1) pill estruturada: #{_dp('{...json...}')} ou _dp('{...}') sem interpolacao.
+  // A primeira alternativa so casa quando `}` cola no `')`. `.+?` ate `'\)\}`
+  // engolia `.strftime("...")` e a pill seguinte, porque o fechamento vinha
+  // de outra interpolacao. O JSON da pill nao tem aspa simples.
+  out = out.replace(/#\{_dp\('([^']*)'\)\}|_dp\('(.+?)'\)/g, (_m, a, b) => {
     return renderDataPill(a ?? b, asToName, resolveLoopItem, options);
   });
 
@@ -1265,6 +1361,20 @@ export function convertPills(
 
   const cleaned = out.trim();
   if (listIndex.replaced && /^\{\{[^{}]+\}\}$/.test(cleaned)) return tidyJobContext(cleaned);
+
+  // O `.gsub('"', "")` já virou `replace`. O texto entre aspas não é mais Ruby.
+  if (rubyExpression && detectRubyMethods(cleaned).length === 0) {
+    const slots: string[] = [];
+    const masked = cleaned.replace(/ap-formula-v1::\{[\s\S]*?\}::ap-formula-v1/g, (formula) => {
+      slots.push(formula);
+      return `\u0000f${slots.length - 1}\u0000`;
+    });
+    const unquoted = unquoteRubyString(masked);
+    if (unquoted != null) {
+      const restored = unquoted.replace(/\u0000f(\d+)\u0000/g, (_match, index) => slots[Number(index)]!);
+      return tidyJobContext(restored);
+    }
+  }
 
   // Formula que so restou metodo Ruby depois de dropar a pill de um passo skip.
   if (options?.omitDangling && rubyExpression && !/\{\{/.test(cleaned)) return '';

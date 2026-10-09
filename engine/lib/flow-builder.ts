@@ -28,7 +28,7 @@ import {
   shapeReturnResponse,
   SUBFLOW_PIECE_VERSION,
 } from './subflow.ts';
-import { parseRubyRandomSleep, randomSleepCode, resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
+import { parseRubyRandomSleep, parseRubySleep, randomSleepCode, resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
 import {
   convertPills,
   detectRubyMethods,
@@ -63,6 +63,7 @@ import {
   scalarFieldReads,
   scalarStorageKey,
   SOURCE_KEY,
+  VAR_PROVIDER,
   variableOp,
   type VarDecl,
   type VarIndex,
@@ -185,6 +186,8 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
  * (o step tem de ficar invalido), mas se distingue de uma operacao que faltou
  * mapear: aqui a limitacao e da plataforma, o AP so itera colecao.
  */
+const REPEAT_ACTION = 'REPEAT_UNSUPPORTED';
+
 /** resolve pill de "item atual" contra o foreach mais interno da colecao. */
 function loopItemResolver(ctx: Ctx) {
   return (collection: string): string | undefined => {
@@ -406,6 +409,9 @@ function waivedMissing(
       out = out.filter((name) => name !== 'fieldIds');
     }
   }
+  if (target.piece === PIPEFY_PIECE && target.name === 'getCardsByTitle') {
+    out = out.filter((name) => name !== 'startFormFields');
+  }
   return out;
 }
 
@@ -419,7 +425,33 @@ function normalizeTargetValue(value: any, propType?: string, src?: string): any 
   const asList = Boolean(propType?.includes('MULTI_SELECT') || propType === 'ARRAY');
   if (!asList || Array.isArray(value)) return value;
   if (typeof value !== 'string') return [value];
-  return value.split(',').map((item) => item.trim()).filter(Boolean);
+  return splitListValue(value);
+}
+
+/**
+ * Lista `ARRAY` / `MULTI_SELECT`. A virgula de um `_dp('{"a":1,"b":2}')` fica
+ * dentro do pill; cortar ali emitia varios textos e o passo nao achava a linha.
+ */
+function splitListValue(value: string): string[] {
+  const items: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < value.length) {
+    if (value.startsWith("_dp('", i)) {
+      const close = value.indexOf("')", i + 5);
+      i = close === -1 ? value.length : close + 2;
+      continue;
+    }
+    if (value[i] === ',') {
+      const item = value.slice(start, i).trim();
+      if (item) items.push(item);
+      start = i + 1;
+    }
+    i++;
+  }
+  const last = value.slice(start).trim();
+  if (last) items.push(last);
+  return items;
 }
 
 /** Workato `input` / `input.data` do HTTP ad-hoc: o GraphQL mora em `data`. */
@@ -1960,6 +1992,34 @@ function buildAccumulateList(name: string, display: string, step: ParsedStep, ct
   return codeStep(name, display, { item }, code, !hasTodoMarker({ item }));
 }
 
+/**
+ * Python que lê `seconds`, dorme esse tanto e devolve status/slept_seconds.
+ * Outro corpo fica no stub.
+ */
+function isPythonSecondsSleep(python: string): boolean {
+  return (
+    collapsePythonSpace(python) ===
+    'import time def main(input): seconds = float(input["seconds"]) time.sleep(seconds) return { "status": "done", "slept_seconds": seconds }'
+  );
+}
+
+function pythonSecondsSleepCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const seconds = Number(inputs.seconds);',
+    '  await new Promise((resolve) => setTimeout(resolve, seconds * 1000));',
+    '  return { status: "done", slept_seconds: seconds };',
+    '};',
+  ].join('\n');
+}
+
+function buildPythonSecondsSleep(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, pythonSecondsSleepCode(), !hasTodoMarker(input));
+}
+
 /** Python que só importa `time` e dorme um literal. Outro corpo fica no stub. */
 function pythonSleepMs(python: string): number | null {
   const lines = python
@@ -2038,6 +2098,199 @@ function pythonRandomNineDigitsCode(): string {
   ].join('\n');
 }
 
+/** Linha inteira de comentário sai; `#{...}` no Ruby permanece. */
+function compactCustomCode(source: string): string {
+  const lines = source.split('\n').filter((line) => !line.trim().startsWith('#'));
+  return lines.join('\n').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Ruby que só monta `1..n` a partir de um inteiro do input e devolve essa lista.
+ * `sleep` e `import requests` não entram aqui.
+ */
+function pageRangeRuby(ruby: string): { count: string; list: string; field: string; fallback: string } | null {
+  const match = compactCustomCode(ruby).match(
+    /^([A-Za-z_]\w*) = \(input\[['"]([A-Za-z_]\w*)['"]\] \|\| (\d+)\)\.to_i ([A-Za-z_]\w*) = \1 > 0 \? \(1\.\.\1\)\.to_a : \[\] (?:result = )?\{ \4: \4 \}$/,
+  );
+  if (!match) return null;
+  return { count: match[1]!, field: match[2]!, fallback: match[3]!, list: match[4]! };
+}
+
+function pageRangeCode(parsed: { count: string; list: string; field: string; fallback: string }): string {
+  return [
+    'export const code = async (inputs) => {',
+    `  const ${parsed.count} = Number(inputs.${parsed.field} || ${parsed.fallback});`,
+    `  const ${parsed.list} = ${parsed.count} > 0 ? Array.from({ length: ${parsed.count} }, (_, i) => i + 1) : [];`,
+    `  return { ${parsed.list} };`,
+    '};',
+  ].join('\n');
+}
+
+/**
+ * Ruby que lê `input['url']`, escolhe um de três formatos SharePoint
+ * (`id=%2F`, `:b:/r/`, `:w:/r/`) e devolve file_path, site_relative_url e file_name.
+ * Outro corpo fica no stub.
+ */
+function isSharePointFileUrlRuby(ruby: string): boolean {
+  return (
+    compactCustomCode(ruby) ===
+    `url = input['url'] if url.include?('id=%2F') path = url.match(/id=%2F([^&]+)/)[1] decoded_path = path.gsub('%2F', '/').gsub('%2D', '-').gsub('%5F', '_').gsub('%2E', '.') elsif url.include?(':b:/r/') path = url.match(/https:\\/\\/[^\\/]+\\/:b:\\/r\\/(.+)\\?csf=1&web=1&e=.*/)[1] decoded_path = path.gsub('%2F', '/').gsub('%2D', '-').gsub('%5F', '_').gsub('%2E', '.') elsif url.include?(':w:/r/') path = url.match(/https:\\/\\/[^\\/]+\\/:w:\\/r\\/(.+)\\?d=[^&]+&csf=1&web=1&e=.*/)[1] decoded_path = path.gsub('%20', ' ').gsub('%2F', '/').gsub('%2D', '-').gsub('%5F', '_').gsub('%2E', '.').gsub('%5B', '[').gsub('%5D', ']') else decoded_path = '' end file_name = decoded_path.split('/').last site_relative_url = decoded_path[0...decoded_path.rindex('/')] { "file_path" => "/#{decoded_path}", "site_relative_url" => "/#{site_relative_url}", "file_name" => file_name }`
+  );
+}
+
+function sharePointFileUrlCode(): string {
+  return [
+    '// workato_custom_code/invoke_custom_ruby_code',
+    'export const code = async (inputs) => {',
+    '  const url = inputs.url;',
+    '  const decode = (path, word) => {',
+    '    let out = String(path);',
+    '    if (word) out = out.split("%20").join(" ");',
+    '    out = out.split("%2F").join("/").split("%2D").join("-").split("%5F").join("_").split("%2E").join(".");',
+    '    if (word) out = out.split("%5B").join("[").split("%5D").join("]");',
+    '    return out;',
+    '  };',
+    '  let decoded_path = "";',
+    '  if (String(url).includes("id=%2F")) {',
+    '    decoded_path = decode(String(url).match(/id=%2F([^&]+)/)[1], false);',
+    '  } else if (String(url).includes(":b:/r/")) {',
+    '    decoded_path = decode(String(url).match(/https:\\/\\/[^/]+\\/:b:\\/r\\/(.+)\\?csf=1&web=1&e=.*/)[1], false);',
+    '  } else if (String(url).includes(":w:/r/")) {',
+    '    decoded_path = decode(String(url).match(/https:\\/\\/[^/]+\\/:w:\\/r\\/(.+)\\?d=[^&]+&csf=1&web=1&e=.*/)[1], true);',
+    '  }',
+    '  const segments = decoded_path === "" ? [] : decoded_path.split("/");',
+    '  let end = segments.length;',
+    '  while (end > 0 && segments[end - 1] === "") end -= 1;',
+    '  const file_name = end > 0 ? segments[end - 1] : null;',
+    '  const slash = decoded_path.lastIndexOf("/");',
+    '  const site_relative_url = slash < 0 ? decoded_path : decoded_path.slice(0, slash);',
+    '  return {',
+    '    file_path: `/${decoded_path}`,',
+    '    site_relative_url: `/${site_relative_url}`,',
+    '    file_name,',
+    '  };',
+    '};',
+  ].join('\n');
+}
+
+/**
+ * Python que consulta o GraphQL do Pipefy, compara workflow_participants com
+ * primary_designee e devolve reviewers create/delete. Outro corpo fica no stub.
+ */
+function isReviewerDiffPython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    `import json import requests def main(input): url = "https://invenergy.pipefy.com/graphql" query = ''' query ($card_id: ID!, $pipe_id: ID!, $card_id_query: String!) { card(id: $card_id) { id fields { name array_value field { id } } } findCards(pipeId: $pipe_id, search: {fieldId: "workflow_card_id", fieldValue: $card_id_query}) { edges { node { id title fields { name value array_value field { id } } } } } } ''' variables = { 'card_id': input['card_id'], 'pipe_id': input['pipe_id'], 'card_id_query': input['card_id'], } headers = { 'Content-Type': 'application/json', 'Authorization': f"Bearer {input['PIPEFY_TOKEN']}", } r = requests.request("POST", url, headers=headers, json={'query': query, 'variables': variables}) response = r.json() main_pipe_ids = [ field for field in response['data']['card']['fields'] if field['field']['id'] == 'workflow_participants' ][0]['array_value'] sub_pipe_ids = [] match_card_id = {} for edge in response['data']['findCards']['edges']: reviewer_id = [ field for field in edge['node']['fields'] if field['field']['id'] == 'primary_designee' ][0]['array_value'][0] sub_pipe_ids.append(reviewer_id) match_card_id[reviewer_id] = edge['node']['id'] reviewers = [] for item in main_pipe_ids: if item not in sub_pipe_ids: reviewers.append({'reviewer_id': item, 'action': 'create'}) for item in sub_pipe_ids: if item not in main_pipe_ids: card_id = match_card_id[item] reviewers.append({'reviewer_id': item, 'action': 'delete', 'card_id': card_id}) return { 'reviewers': reviewers, }`
+  );
+}
+
+function reviewerDiffPythonCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const query = `query ($card_id: ID!, $pipe_id: ID!, $card_id_query: String!) {',
+    '    card(id: $card_id) {',
+    '      id',
+    '      fields { name array_value field { id } }',
+    '    }',
+    '    findCards(pipeId: $pipe_id, search: {fieldId: "workflow_card_id", fieldValue: $card_id_query}) {',
+    '      edges { node { id title fields { name value array_value field { id } } } }',
+    '    }',
+    '  }`;',
+    '  const response = await fetch("https://invenergy.pipefy.com/graphql", {',
+    '    method: "POST",',
+    '    headers: {',
+    '      "Content-Type": "application/json",',
+    '      Authorization: `Bearer ${inputs.PIPEFY_TOKEN}`,',
+    '    },',
+    '    body: JSON.stringify({',
+    '      query,',
+    '      variables: {',
+    '        card_id: inputs.card_id,',
+    '        pipe_id: inputs.pipe_id,',
+    '        card_id_query: inputs.card_id,',
+    '      },',
+    '    }),',
+    '  });',
+    '  const payload = await response.json();',
+    '  const mainPipeIds = payload.data.card.fields.filter((field) => field.field.id === "workflow_participants")[0].array_value;',
+    '  const subPipeIds = [];',
+    '  const matchCardId = {};',
+    '  for (const edge of payload.data.findCards.edges) {',
+    '    const reviewerId = edge.node.fields.filter((field) => field.field.id === "primary_designee")[0].array_value[0];',
+    '    subPipeIds.push(reviewerId);',
+    '    matchCardId[reviewerId] = edge.node.id;',
+    '  }',
+    '  const reviewers = [];',
+    '  for (const item of mainPipeIds) {',
+    '    if (!subPipeIds.includes(item)) reviewers.push({ reviewer_id: item, action: "create" });',
+    '  }',
+    '  for (const item of subPipeIds) {',
+    '    if (!mainPipeIds.includes(item)) {',
+    '      reviewers.push({ reviewer_id: item, action: "delete", card_id: matchCardId[item] });',
+    '    }',
+    '  }',
+    '  return { reviewers };',
+    '};',
+  ].join('\n');
+}
+
+/**
+ * Python que filtra assinantes sem nome/e-mail, deduplica por e-mail e reindexa Recipient ID.
+ * Outro corpo fica no stub. `import requests` e `time.sleep` não entram aqui.
+ */
+function isSubscriberDedupePython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    'def main(input): subscribers_list = input.get("subscribers_list", []) text_final = input.get("text_final", "") text_final_whp = input.get("text_final_whp", "") seen_emails = set() deduped_list = [] for subscriber in subscribers_list: name = (subscriber.get("Name") or "").strip() email_raw = (subscriber.get("Email") or "").strip() email_key = email_raw.lower() if not name or not email_key: continue if email_key in seen_emails: continue seen_emails.add(email_key) subscriber["Email"] = email_raw subscriber["Name"] = name deduped_list.append(subscriber) for idx, subscriber in enumerate(deduped_list): recipient_id = idx + 1 subscriber["Recipient ID"] = recipient_id email = (subscriber.get("Email") or "").lower() email_body = text_final_whp if "@whirlpool" in email else text_final subscriber.setdefault("emailNotification", {}) subscriber["emailNotification"]["emailBody"] = email_body tabs = subscriber.get("Tabs") or {} sign_here = tabs.get("Sign here tabs") or [] for tab in sign_here: tab["Recipient ID"] = recipient_id initial_here = tabs.get("Initial here") or [] for tab in initial_here: tab["Recipient ID"] = recipient_id return {"updated_list": deduped_list}'
+  );
+}
+
+function subscriberDedupeCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const read = (obj, key, fallback) =>',
+    '    obj != null && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : fallback;',
+    '  const subscribers_list = read(inputs, "subscribers_list", []);',
+    '  const text_final = read(inputs, "text_final", "");',
+    '  const text_final_whp = read(inputs, "text_final_whp", "");',
+    '  const seen_emails = new Set();',
+    '  const deduped_list = [];',
+    '  for (const subscriber of subscribers_list) {',
+    '    const nameValue = read(subscriber, "Name", undefined);',
+    '    const emailValue = read(subscriber, "Email", undefined);',
+    '    const name = (nameValue || "").trim();',
+    '    const email_raw = (emailValue || "").trim();',
+    '    const email_key = email_raw.toLowerCase();',
+    '    if (!name || !email_key) continue;',
+    '    if (seen_emails.has(email_key)) continue;',
+    '    seen_emails.add(email_key);',
+    '    subscriber.Email = email_raw;',
+    '    subscriber.Name = name;',
+    '    deduped_list.push(subscriber);',
+    '  }',
+    '  for (let idx = 0; idx < deduped_list.length; idx += 1) {',
+    '    const subscriber = deduped_list[idx];',
+    '    const recipient_id = idx + 1;',
+    '    subscriber["Recipient ID"] = recipient_id;',
+    '    const email = (read(subscriber, "Email", undefined) || "").toLowerCase();',
+    '    const email_body = email.includes("@whirlpool") ? text_final_whp : text_final;',
+    '    if (!Object.prototype.hasOwnProperty.call(subscriber, "emailNotification")) {',
+    '      subscriber.emailNotification = {};',
+    '    }',
+    '    subscriber.emailNotification.emailBody = email_body;',
+    '    const tabs = read(subscriber, "Tabs", undefined) || {};',
+    '    const sign_here = read(tabs, "Sign here tabs", undefined) || [];',
+    '    for (const tab of sign_here) tab["Recipient ID"] = recipient_id;',
+    '    const initial_here = read(tabs, "Initial here", undefined) || [];',
+    '    for (const tab of initial_here) tab["Recipient ID"] = recipient_id;',
+    '  }',
+    '  return { updated_list: deduped_list };',
+    '};',
+  ].join('\n');
+}
+
 function buildPythonSleep(name: string, display: string, step: ParsedStep, ctx: Ctx, ms: number): any {
   const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
@@ -2071,6 +2324,166 @@ function buildNodeIdsPython(name: string, display: string, step: ParsedStep, ctx
     '};',
   ].join('\n');
   return codeStep(name, display, input, code, !hasTodoMarker(input));
+}
+
+/** Só espaço some. `#ddd` dentro de string HTML não é comentário. */
+function collapsePythonSpace(python: string): string {
+  return python.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Python que só lê `sites` e devolve cada item como string em `ids`.
+ * Outro corpo fica no stub.
+ */
+function isSitesStringIdsPython(python: string): boolean {
+  return (
+    collapsePythonSpace(python) ===
+    'def main(input): sites = input["sites"] ids = [str(site) for site in sites] return {"ids": ids}'
+  );
+}
+
+function sitesStringIdsCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const sites = inputs.sites;',
+    '  const ids = sites.map((site) => String(site));',
+    '  return { ids };',
+    '};',
+  ].join('\n');
+}
+
+function buildSitesStringIdsPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, sitesStringIdsCode(), !hasTodoMarker(input));
+}
+
+/**
+ * Python que lê `phases` e devolve id, name e duração `HH:MM:SS`.
+ * Outro corpo fica no stub.
+ */
+function isPhaseDurationPython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    'def main(input): phases = input["phases"] formatted_phases = [] for phase_data in phases: duration_seconds = phase_data["duration"] phase_id = phase_data["phase"]["id"] phase_name = phase_data["phase"]["name"] hours = duration_seconds // 3600 minutes = (duration_seconds % 3600) // 60 seconds = duration_seconds % 60 formatted_time = f"{hours:02}:{minutes:02}:{seconds:02}" formatted_phases.append({ "id": phase_id, "name": phase_name, "formatted_time": formatted_time }) return {"phases": formatted_phases}'
+  );
+}
+
+function phaseDurationCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const phases = inputs.phases;',
+    '  const formatted_phases = [];',
+    '  for (const phase_data of phases) {',
+    '    const duration_seconds = phase_data.duration;',
+    '    const phase_id = phase_data.phase.id;',
+    '    const phase_name = phase_data.phase.name;',
+    '    const hours = Math.floor(duration_seconds / 3600);',
+    '    const minutes = Math.floor((duration_seconds % 3600) / 60);',
+    '    const seconds = duration_seconds % 60;',
+    '    const pad = (part) => String(part).padStart(2, "0");',
+    '    formatted_phases.push({',
+    '      id: phase_id,',
+    '      name: phase_name,',
+    '      formatted_time: `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`,',
+    '    });',
+    '  }',
+    '  return { phases: formatted_phases };',
+    '};',
+  ].join('\n');
+}
+
+function buildPhaseDurationPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, phaseDurationCode(), true);
+}
+
+/**
+ * Python que monta a tabela HTML de aprovação (site, approver, status vazio, comments vazio).
+ * Outro corpo fica no stub.
+ */
+function isApprovalTablePython(python: string): boolean {
+  return (
+    collapsePythonSpace(python) ===
+    'import html def main(input_data): try: existing_html = input_data.get("existing_html", "") site_name = input_data.get("site_name", "") approver_email = input_data.get("approver", "") status = "" comments = "" if \'@\' in approver_email: parts = approver_email.split(\'@\', 1) part1_escaped = html.escape(parts[0]) part2_escaped = html.escape(parts[1]) approver_html = f"{part1_escaped}<br>@{part2_escaped}" else: approver_html = html.escape(approver_email) site_name_escaped = html.escape(site_name) new_row = ( f"<tr>" f"<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>{site_name_escaped}</td>" f"<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>{approver_html}</td>" f"<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>{status}</td>" f"<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>{comments}</td>" f"</tr>" ) if not existing_html or "<table" not in existing_html: html_table = ( "<table style=\'border-collapse:collapse;width:100%;border:1px solid #ddd;font-family:Arial,sans-serif;border-radius:8px;overflow:hidden;\'>" "<thead>" "<tr style=\'background-color:#0097A9;color:white;\'>" "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Site Name</th>" "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Approver</th>" "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Status</th>" "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;white-space:nowrap;\'>Comments</th>" "</tr>" "</thead>" "<tbody>" f"{new_row}" "</tbody></table>" ) else: if "</tbody>" in existing_html: html_table = existing_html.replace("</tbody>", f"{new_row}</tbody>") else: html_table = existing_html.replace("</table>", f"{new_row}</table>") return {"html_table": html_table, "success": True} except Exception as e: print(f"Ocorreu um erro: {e}") return {"success": False, "error_message": str(e)}'
+  );
+}
+
+function approvalTableCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const escapeHtml = (value) => {',
+    '    if (typeof value !== "string") throw new TypeError("html.escape");',
+    '    return value',
+    '      .replace(/&/g, "&amp;")',
+    '      .replace(/</g, "&lt;")',
+    '      .replace(/>/g, "&gt;")',
+    '      .replace(/"/g, "&quot;")',
+    "      .replace(/'/g, \"&#x27;\");",
+    '  };',
+    '  const read = (key) => (Object.prototype.hasOwnProperty.call(inputs, key) ? inputs[key] : "");',
+    '  try {',
+    '    const existing_html = read("existing_html");',
+    '    const site_name = read("site_name");',
+    '    const approver_email = read("approver");',
+    '    const status = "";',
+    '    const comments = "";',
+    '    let approver_html;',
+    '    if (typeof approver_email === "string" && approver_email.includes("@")) {',
+    '      const at = approver_email.indexOf("@");',
+    '      const part1 = approver_email.slice(0, at);',
+    '      const part2 = approver_email.slice(at + 1);',
+    '      approver_html = `${escapeHtml(part1)}<br>@${escapeHtml(part2)}`;',
+    '    } else {',
+    '      approver_html = escapeHtml(approver_email);',
+    '    }',
+    '    const site_name_escaped = escapeHtml(site_name);',
+    '    const new_row =',
+    '      "<tr>" +',
+    '      `<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>${site_name_escaped}</td>` +',
+    '      `<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>${approver_html}</td>` +',
+    '      `<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>${status}</td>` +',
+    '      `<td style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>${comments}</td>` +',
+    '      "</tr>";',
+    '    let html_table;',
+    '    if (!existing_html || typeof existing_html !== "string" || !existing_html.includes("<table")) {',
+    '      if (existing_html && typeof existing_html !== "string") throw new TypeError("existing_html");',
+    '      html_table =',
+    '        "<table style=\'border-collapse:collapse;width:100%;border:1px solid #ddd;font-family:Arial,sans-serif;border-radius:8px;overflow:hidden;\'>" +',
+    '        "<thead>" +',
+    '        "<tr style=\'background-color:#0097A9;color:white;\'>" +',
+    '        "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Site Name</th>" +',
+    '        "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Approver</th>" +',
+    '        "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;\'>Status</th>" +',
+    '        "<th style=\'padding:8px;border:1px solid #ddd;text-align:left;white-space:nowrap;\'>Comments</th>" +',
+    '        "</tr>" +',
+    '        "</thead>" +',
+    '        "<tbody>" +',
+    '        new_row +',
+    '        "</tbody></table>";',
+    '    } else if (existing_html.includes("</tbody>")) {',
+    '      html_table = existing_html.split("</tbody>").join(`${new_row}</tbody>`);',
+    '    } else {',
+    '      html_table = existing_html.split("</table>").join(`${new_row}</table>`);',
+    '    }',
+    '    return { html_table, success: true };',
+    '  } catch (error) {',
+    '    const message = error instanceof Error ? error.message : String(error);',
+    '    console.log(`Ocorreu um erro: ${message}`);',
+    '    return { success: false, error_message: message };',
+    '  }',
+    '};',
+  ].join('\n');
+}
+
+function buildApprovalTablePython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, approvalTableCode(), !hasTodoMarker(input));
 }
 
 function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
@@ -2241,6 +2654,21 @@ function fillKnownProps(
     if (blankProp(input.send_invitation_email)) input.send_invitation_email = false;
   }
 
+  if (target.piece === '@activepieces/piece-google-drive' && target.name === 'search-folder') {
+    // `kind` não existe na piece. queryTerm, operator e query não têm um par único com a Workato.
+    delete input.kind;
+  }
+
+  if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
+    if (typeof input.parentFolder === 'string' && input.parentFolder.includes('%')) {
+      try {
+        input.parentFolder = decodeURIComponent(input.parentFolder);
+      } catch {
+        /* caminho ja esta legivel */
+      }
+    }
+  }
+
   if (target.piece === '@activepieces/piece-google-drive' && target.name === 'upload_gdrive_file') {
     copyProp(input, 'fileName', 'name');
     copyProp(input, 'file', 'fileContent');
@@ -2273,6 +2701,13 @@ function fillKnownProps(
       if (Array.isArray(phases) && phases.length === 1) input.phaseId = phases[0];
       else if (typeof phases === 'string' && !phases.includes(',')) input.phaseId = phases;
     }
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'cardDone') {
+    copyProp(input, 'organizationId', 'organization_id');
+    if (!blankProp(input.organizationId)) delete input.organization_id;
+    copyProp(input, 'pipeId', 'pipe_id');
+    if (!blankProp(input.pipeId)) delete input.pipe_id;
   }
 
   if (target.piece === PIPEFY_PIECE && target.name === 'updateCard') {
@@ -2309,6 +2744,68 @@ function fillKnownProps(
     }
   }
 
+  if (target.piece === '@activepieces/piece-azure-ad' && target.name === 'get_user_by_id') {
+    copyProp(input, 'userId', 'id');
+    if (!blankProp(input.userId)) delete input.id;
+  }
+
+  if (target.piece === '@activepieces/piece-tableau' && target.name === 'download_view') {
+    copyProp(input, 'viewId', 'view_id');
+    if (!blankProp(input.viewId)) delete input.view_id;
+  }
+
+  if (target.piece === PIPEFY_PIECE && (target.name === 'updateRecord' || target.name === 'getRecordById')) {
+    copyProp(input, 'recordId', 'Record_id', 'record_id', 'table_record_id', 'card_id');
+    if (!blankProp(input.recordId)) {
+      delete input.Record_id;
+      delete input.record_id;
+      delete input.table_record_id;
+      delete input.card_id;
+    }
+    const fields = input.startFormFields;
+    if (
+      blankProp(input.recordId) &&
+      fields &&
+      typeof fields === 'object' &&
+      !Array.isArray(fields) &&
+      !blankProp(fields.card_id)
+    ) {
+      input.recordId = fields.card_id;
+      delete fields.card_id;
+    }
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'createRecord') {
+    copyProp(input, 'organizationId', 'organization_id');
+    if (!blankProp(input.organizationId)) delete input.organization_id;
+    copyProp(input, 'pipeId', 'pipe_id', 'Table_ID', 'table_id');
+    if (!blankProp(input.pipeId)) {
+      delete input.pipe_id;
+      delete input.Table_ID;
+      delete input.table_id;
+    }
+    copyProp(input, 'startFormFields', 'Start_form_fields', 'start_form_fields');
+    if (!blankProp(input.startFormFields)) {
+      delete input.Start_form_fields;
+      delete input.start_form_fields;
+    }
+    liftCreateRecordFields(input);
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'inviteUserToPipe') {
+    copyProp(input, 'organizationId', 'organization_id');
+    if (!blankProp(input.organizationId)) delete input.organization_id;
+    copyProp(input, 'usersAndRoles', 'emails');
+    if (!blankProp(input.usersAndRoles)) delete input.emails;
+  }
+
+  if (target.name === 'zipFiles') {
+    copyProp(input, 'files', 'file_list');
+    if (!blankProp(input.files)) delete input.file_list;
+  }
+
+  fillTablesProps(target, input);
+
   if (target.piece === PIPEFY_PIECE && target.name === 'getRecordsByFilter') {
     // organization_id e table_id no proprio passo viram as props da piece.
     // Organizacao so no gatilho, e qual string vai em `order`, ficam em aberto.
@@ -2326,6 +2823,84 @@ function fillKnownProps(
   }
 
   return input;
+}
+
+const TABLES_PIECE = '@activepieces/piece-tables';
+
+/** `FROM {{lista}}` do Smart List. O id da tabela fica nessa referência, não no SQL inteiro. */
+function tableRefFromSql(sql: unknown): string | undefined {
+  if (typeof sql !== 'string') return undefined;
+  const match = sql.match(/\bFROM\s+(\{\{[\s\S]+?\}\}|[^\s,;]+)/i);
+  const ref = match?.[1]?.trim();
+  return ref || undefined;
+}
+
+/**
+ * Props da piece Tables. `parameters` de get_entry é filtro por coluna:
+ * não vira `record_id`.
+ */
+function fillTablesProps(target: MapTarget, input: Record<string, any>): void {
+  if (target.piece !== TABLES_PIECE) return;
+
+  if (blankProp(input.table_id)) {
+    copyProp(input, 'table_id', 'lookup_table_id', 'list_name');
+  }
+  if (target.name === 'tables-find-records' && blankProp(input.table_id)) {
+    const ref = tableRefFromSql(input.sql);
+    if (ref) input.table_id = ref;
+  }
+
+  if (target.name === 'tables-create-records' && blankProp(input.values)) {
+    copyProp(input, 'values', 'parameters', 'list_source');
+  }
+  if (target.name === 'tables-update-record' && blankProp(input.values)) {
+    copyProp(input, 'values', 'parameters');
+  }
+
+  if (
+    (target.name === 'tables-get-record' || target.name === 'tables-update-record') &&
+    blankProp(input.record_id)
+  ) {
+    copyProp(input, 'record_id', 'id');
+  }
+}
+
+/** `[{field_id, field_value}]` da Workato vira `{ slug: valor }` da piece. */
+function fieldRowsToObject(value: unknown): Record<string, any> | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const fields: Record<string, any> = {};
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const row = item as Record<string, any>;
+    const id = row.field_id ?? row.fieldId ?? row.id;
+    if (blankProp(id)) return null;
+    fields[String(id)] = row.field_value !== undefined ? row.field_value : row.value;
+  }
+  return fields;
+}
+
+/**
+ * `Table_ID` e `Start_form_fields` às vezes caem juntos em `startFormFields`
+ * porque não são props da piece. `Table_ID` é o pipe. A organização, se não veio, fica vazia.
+ */
+function liftCreateRecordFields(input: Record<string, any>): void {
+  if (Array.isArray(input.startFormFields)) {
+    const fields = fieldRowsToObject(input.startFormFields);
+    if (fields) input.startFormFields = fields;
+    return;
+  }
+  const bag = input.startFormFields;
+  if (!bag || typeof bag !== 'object') return;
+  if (blankProp(input.pipeId) && !blankProp(bag.Table_ID ?? bag.table_id ?? bag.pipe_id)) {
+    input.pipeId = bag.Table_ID ?? bag.table_id ?? bag.pipe_id;
+    delete bag.Table_ID;
+    delete bag.table_id;
+    delete bag.pipe_id;
+  }
+  const rows = bag.Start_form_fields ?? bag.start_form_fields;
+  if (rows == null) return;
+  const fields = fieldRowsToObject(rows);
+  input.startFormFields = fields ?? rows;
 }
 
 /** `update_document` manda `requests` de batchUpdate, não um texto para append. */
@@ -2795,6 +3370,48 @@ function workatoMapperMapping(data: unknown, ctx: Ctx): { mapping: Record<string
   return { mapping, empty: Object.keys(mapping).length === 0 };
 }
 
+function waitForAsyncNote(sourceInput: Record<string, any>, ctx: Ctx): string {
+  const timeout = sourceInput.timeout ?? '(ausente)';
+  const calls = Array.isArray(sourceInput.async_calls) ? sourceInput.async_calls : [];
+  const refs = calls.map((call) => {
+    const ref = call && typeof call === 'object' ? (call as Record<string, unknown>).job_ref : call;
+    if (ref == null || ref === '') return '(ausente)';
+    const converted = deepConvert(ref, ctx);
+    return typeof converted === 'string' ? converted : JSON.stringify(converted);
+  });
+  return [
+    'A espera de jobs assíncronos não foi transportada. A piece Delay não espera outra receita terminar.',
+    `timeout: ${timeout}`,
+    `job_ref: ${refs.length ? refs.join('; ') : '(ausente)'}`,
+  ].join('\n');
+}
+
+const DOCUSIGN_ENVELOPE_KEYS = new Set([
+  'status',
+  'templateId',
+  'template_id',
+  'emailSubject',
+  'email_subject',
+  'accountId',
+  'account_id',
+  'documents',
+  'signers',
+]);
+
+function docusignRoleSigners(sourceInput: Record<string, any>, ctx: Ctx): Array<Record<string, any>> | undefined {
+  const signers: Array<Record<string, any>> = [];
+  for (const [role, value] of Object.entries(sourceInput)) {
+    if (DOCUSIGN_ENVELOPE_KEYS.has(role) || !value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const row = value as Record<string, unknown>;
+    if (blankProp(row.email) && blankProp(row.name)) continue;
+    const signer: Record<string, any> = { roleName: role };
+    if (!blankProp(row.email)) signer.email = deepConvert(row.email, ctx);
+    if (!blankProp(row.name)) signer.name = deepConvert(row.name, ctx);
+    signers.push(signer);
+  }
+  return signers.length ? signers : undefined;
+}
+
 function buildAction(step: ParsedStep, ctx: Ctx): any {
   const variable = buildVariableStep(step, ctx);
   if (variable === OMIT_STEP) return null;
@@ -2817,6 +3434,11 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     sourceInput = rubySleep.input;
   }
   const name = stepName(step, ctx);
+  if (opKey.endsWith('/wait_for_async_jobs')) {
+    pushReviewNote(ctx, 'SUBFLOW', waitForAsyncNote(sourceInput, ctx), '');
+    ctx.noteAnchorPending = ctx.canvasNotes.length - 1;
+    return null;
+  }
   noteWorkatoDataTable(ctx, step, name);
   const display =
     step.comment ||
@@ -2851,6 +3473,15 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isNodeIdsPython(String(step.input?.code ?? ''))) {
     return buildNodeIdsPython(name, display, step, ctx);
   }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isSitesStringIdsPython(String(step.input?.code ?? ''))) {
+    return buildSitesStringIdsPython(name, display, step, ctx);
+  }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isApprovalTablePython(String(step.input?.code ?? ''))) {
+    return buildApprovalTablePython(name, display, step, ctx);
+  }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isPhaseDurationPython(String(step.input?.code ?? ''))) {
+    return buildPhaseDurationPython(name, display, step, ctx);
+  }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code') {
     const python = String(step.input?.code ?? '');
     if (pythonRandomNineDigits(python)) {
@@ -2858,6 +3489,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     }
     const sleepMs = pythonSleepMs(python);
     if (sleepMs != null) return buildPythonSleep(name, display, step, ctx, sleepMs);
+    if (isPythonSecondsSleep(python)) return buildPythonSecondsSleep(name, display, step, ctx);
   }
   if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
     return buildOpenCardsSearch(name, display, sourceInput, ctx);
@@ -2903,8 +3535,21 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       return codeStep(name, display, lifted.input, businessDaysCode(), !hasTodoMarker(lifted.input));
     }
     if (isRuby) {
+      const pages = pageRangeRuby(lifted.source);
+      if (pages) return codeStep(name, display, lifted.input, pageRangeCode(pages), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isSubscriberDedupePython(lifted.source)) {
+      return codeStep(name, display, lifted.input, subscriberDedupeCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isRuby && isSharePointFileUrlRuby(lifted.source)) {
+      return codeStep(name, display, lifted.input, sharePointFileUrlCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isRuby) {
       const random = parseRubyRandomSleep(lifted.source);
       if (random) return codeStep(name, display, {}, randomSleepCode(random), true);
+    }
+    if (isPython && isReviewerDiffPython(lifted.source)) {
+      return codeStep(name, display, lifted.input, reviewerDiffPythonCode(), !hasTodoMarker(lifted.input));
     }
     if (isJs) {
       const wrapped = wrapJsEvalMain(lifted.source);
@@ -2971,9 +3616,36 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       );
     }
   }
+  if (t.piece === '@activepieces/piece-docusign' && t.name === 'createAndSendEnvelope' && blankProp(input.signers)) {
+    const signers = docusignRoleSigners(sourceInput, ctx);
+    if (signers) {
+      input.signers = signers;
+      for (const key of Object.keys(input)) {
+        if (!DOCUSIGN_ENVELOPE_KEYS.has(key)) delete input[key];
+      }
+    }
+  }
   input = fillSheetsInsertRow(t, input, sourceInput);
   input = fillSheetsFindRows(t, input, sourceInput, ctx);
   input = fillKnownProps(t, input, sourceInput);
+  if (
+    t.piece === '@activepieces/piece-microsoft-sharepoint' &&
+    t.name === 'microsoft_sharepoint_upload_file' &&
+    (blankProp(input.siteId) || blankProp(input.driveId))
+  ) {
+    const site = sourceInput.siteurl ?? sourceInput.siteUrl ?? sourceInput.site_url;
+    const folder = input.parentFolder ?? sourceInput.serverRelativeUrl ?? '';
+    pushReviewNote(
+      ctx,
+      'CONNECTION',
+      [
+        `SharePoint: a receita tem o site "${site ?? '(sem nome)'}" e o caminho "${folder}".`,
+        'siteId e driveId não vêm na receita; escolher na conexão.',
+      ].join('\n'),
+      '',
+      name,
+    );
+  }
   const workatoMapper = t.piece === DATA_MAPPER_PIECE && t.name === 'advanced_mapping';
   let mapperEmpty = false;
   if (workatoMapper) {
@@ -3582,8 +4254,8 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
  * `LOOP_ON_ITEMS`. Quando a saida e `lista.length - 1 != indice` (ou
  * `indice < lista.length - 1`) e o corpo indexa essa lista — direto ou via
  * `.pluck('campo')` — o laco e a propria lista. Lista vazia: o loop nao entra.
- * Os outros casos ficam como step sem piece com o corpo encadeado depois do
- * marcador.
+ * Sem lista e sem teto de voltas, o marcador `REPEAT_UNSUPPORTED` fica no lugar
+ * do bloco e o corpo segue uma vez. Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
  */
 function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
   pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
@@ -3758,21 +4430,114 @@ function repeatSizeClause(cond: { lhs?: unknown; rhs?: unknown; operand?: string
   return repeatBound(cond) != null;
 }
 
-function repeatBlob(exit: ParsedStep | undefined): string {
-  return JSON.stringify(exit?.input ?? '').toLowerCase();
+/** Teto quando o while só diz "até conter done" e o JSON não traz número de voltas. */
+const STATUS_POLL_ATTEMPTS = 20;
+
+function doneWait(exit: ParsedStep | undefined): boolean {
+  if (!exit) return false;
+  return conditionsOf(asConditionsInput(exit.input)).some((cond) => {
+    const operand = String(cond.operand ?? '');
+    if (operand !== 'not_contains' && operand !== 'does_not_contain') return false;
+    const rhs = String(cond.rhs ?? '').replace(/^=/, '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return rhs === 'done';
+  });
 }
 
-function chainRepeatBody(step: ParsedStep, ctx: Ctx, name: string, message: string): any {
+function sleepSecondsIn(step: ParsedStep): number | null {
+  for (const child of step.children) {
+    if (child.keyword !== 'action' || child.skip) continue;
+    const op = child.opKey ?? `${child.provider}/${child.name}`;
+    if (!op.endsWith('/invoke_custom_ruby_code')) continue;
+    const parsed = parseRubySleep(child.input?.code);
+    if (parsed && 'seconds' in parsed) return parsed.seconds;
+  }
+  return null;
+}
+
+function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep, seconds: number): any {
+  const codeName = nextName('var_turns');
   const code = codeStep(
-    name,
-    'Repeat adaptado',
-    {},
-    ['export const code = async (inputs) => {', '  return inputs;', '};'].join('\n'),
+    codeName,
+    'Voltas do repeat',
+    { bound: String(STATUS_POLL_ATTEMPTS), extra: '0' },
+    [
+      'export const code = async (inputs) => {',
+      '  const raw = Number(inputs.bound);',
+      "  const extra = inputs.extra === '1' ? 1 : 0;",
+      '  const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw) + extra) : 0;',
+      '  return Array.from({ length: count }, (_, i) => i);',
+      '};',
+    ].join('\n'),
     true,
   );
-  code.nextAction = buildChain(step.children, ctx);
-  noteRepeatAdapted(ctx, name, message);
+  const mark = ctx.pendingCode.length;
+  const firstLoopAction = withOverlay(ctx, variableOverlay(exit, ctx), () => {
+    const built = buildConditionGroups(asConditionsInput(exit.input), ctx);
+    const groups = resolveFormulas(built.groups, ctx, name) as any[][];
+    const body = buildChain(
+      step.children.filter((child) => child.keyword !== 'while_condition'),
+      ctx,
+    );
+    const router = {
+      name: nextName('router'),
+      skip: false,
+      type: 'ROUTER',
+      valid: !built.review && !hasTodoMarker(groups),
+      settings: {
+        branches: [
+          {
+            branchName: 'Ainda nao pronto',
+            branchType: 'CONDITION' as const,
+            conditions: groups,
+          },
+          { branchName: 'Pronto', branchType: 'FALLBACK' as const },
+        ],
+        executionType: 'EXECUTE_FIRST_MATCH',
+      },
+      children: [body ?? null, null],
+      displayName: exit.comment || 'Enquanto o status nao contem done',
+      lastUpdatedDate: NOW,
+    };
+    return prependPendingCode(router, ctx, mark);
+  });
+  code.nextAction = {
+    name,
+    skip: false,
+    type: 'LOOP_ON_ITEMS',
+    valid: true,
+    settings: { items: `{{${codeName}}}` },
+    displayName: step.comment || 'Esperar ate done',
+    firstLoopAction,
+    lastUpdatedDate: NOW,
+  };
+  noteRepeatAdapted(
+    ctx,
+    name,
+    `A consulta e a espera de ${seconds}s repetem enquanto o status nao contem "done", no maximo ${STATUS_POLL_ATTEMPTS} voltas. O JSON nao traz esse teto.`,
+  );
   return code;
+}
+
+/** Repeat sem lista e sem teto: marcador no lugar do bloco, corpo em seguida uma vez. */
+function repeatUnsupported(step: ParsedStep, ctx: Ctx, name: string): any {
+  const input = step.input && typeof step.input === 'object' ? step.input : {};
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: true,
+    settings: {
+      input,
+      pieceName: TODO_PIECE,
+      actionName: REPEAT_ACTION,
+      pieceVersion: '~latest',
+      propertySettings: {},
+      errorHandlingOptions: ERR(),
+    },
+    displayName: step.comment || 'Repetir enquanto (rever)',
+    nextAction: buildChain(step.children, ctx),
+    lastUpdatedDate: NOW,
+  };
 }
 
 function buildRepeat(step: ParsedStep, ctx: Ctx): any {
@@ -3793,15 +4558,11 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   }
   const adapted = adaptRepeatToLoop(step, exit, ctx, name);
   if (adapted) return adapted;
-  const blob = repeatBlob(exit);
-  const message = /last_cursor|hasnextpage|has_next|pageinfo|next_page/.test(blob)
-    ? 'Paginação por cursor. O corpo ficou em seguida e roda uma vez. Para percorrer os registros, acumule as páginas num array e use LOOP_ON_ITEMS. A página seguinte depende da resposta anterior.'
-    : /pipereportexport|reportexport/.test(blob)
-      ? 'Espera de relatório. O corpo ficou em seguida e roda uma vez. A espera até state = done fica num CODE com teto de tentativas; o LOOP_ON_ITEMS só entra se o arquivo for uma lista.'
-      : /blank|is_true|is_false|is_not_true|finished|success/.test(blob)
-        ? 'Espera de flag. O corpo ficou em seguida e roda uma vez. A espera fica num CODE com teto; o LOOP_ON_ITEMS só entra se o resultado for uma lista.'
-        : 'Não havia lista nem teto de voltas. O corpo ficou encadeado uma vez.';
-  return chainRepeatBody(step, ctx, name, message);
+  const seconds = sleepSecondsIn(step);
+  if (exit && doneWait(exit) && seconds != null) {
+    return buildStatusPoll(step, ctx, name, exit, seconds);
+  }
+  return repeatUnsupported(step, ctx, name);
 }
 
 /** Router no fim de cada bloco monitor. O verificador reconhece pelo displayName. */
@@ -3858,6 +4619,53 @@ function endsWithStopFlow(step: any): boolean {
   return false;
 }
 
+/**
+ * Ramo do router que não para e não tem step (o else vazio). O que vem depois
+ * do try entra nesse ramo: `nextAction` do router rodaria também no ramo que para.
+ */
+function attachRestToOpenBranch(node: any, rest: any, ctx: Ctx): boolean {
+  if (!node || node.settings?.actionName === 'stopFlow') return false;
+  if (node.continueOnFailureBranches?.onSuccess) {
+    return attachRestToOpenBranch(node.continueOnFailureBranches.onSuccess, rest, ctx);
+  }
+  if (node.type === 'LOOP_ON_ITEMS') {
+    if (node.nextAction) return attachRestToOpenBranch(node.nextAction, rest, ctx);
+    node.nextAction = rest;
+    return true;
+  }
+  if (node.type === 'ROUTER' && node.displayName !== CATCH_ROUTER_LABEL && Array.isArray(node.children)) {
+    const open = node.children
+      .map((child: any, index: number) => ({ child, index }))
+      .filter(({ child }: { child: any }) => !endsWithStopFlow(child));
+    for (const slot of open) {
+      if (slot.child && attachRestToOpenBranch(slot.child, rest, ctx)) return true;
+    }
+    const hole = open.find((slot: { child: any }) => slot.child == null);
+    if (hole) {
+      node.children[hole.index] = rest;
+      if (open.length > 1) {
+        ctx.todos.push(
+          `STOP: a continuação depois do try também se aplica a ${open.length - 1} caminho(s) de sucesso — duplicar manualmente.`,
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+  if (!isFallibleStep(node) && node.nextAction) {
+    return attachRestToOpenBranch(node.nextAction, rest, ctx);
+  }
+  if (node.firstLoopAction && attachRestToOpenBranch(node.firstLoopAction, rest, ctx)) return true;
+  for (const child of node.children ?? []) {
+    if (child && !endsWithStopFlow(child) && attachRestToOpenBranch(child, rest, ctx)) return true;
+  }
+  if (!isFallibleStep(node) && !node.nextAction) {
+    node.nextAction = rest;
+    return true;
+  }
+  return false;
+}
+
 /** O resto do fluxo entra no fim do caminho de sucesso. O ramo de falha já termina em stopFlow. */
 function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
   const tails: any[] = [];
@@ -3883,7 +4691,10 @@ function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
     tails.push(node);
   };
   walk(step);
-  if (!tails.length) return;
+  if (!tails.length) {
+    attachRestToOpenBranch(step, rest, ctx);
+    return;
+  }
   const branches = tails[0].continueOnFailureBranches ?? {};
   tails[0].continueOnFailureBranches = { ...branches, onSuccess: rest };
   if (tails.length > 1) {
@@ -3978,10 +4789,68 @@ function bindCatchMessage(head: any, messagePill: string): any {
   return JSON.parse(raw);
 }
 
-/** Um router para o catch. As ações, e o stop quando existe, aparecem uma vez. */
-function sharedCatchRouter(owners: string[], handler: any): any {
-  const message = catchMessageStep(owners);
-  const branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
+/** O iPaaS lê a falha no step monitorado, irmão de `output`. */
+function catchErrorPill(owners: string[]): string {
+  const steps = owners.filter((name) => /^step_\d+$/.test(name));
+  const chosen = (steps.length ? steps : owners).filter(Boolean);
+  if (!chosen.length) return '';
+  if (chosen.length === 1) return `{{${chosen[0]}['error']['message']}}`;
+  return chosen.map((name) => `{{${name}['error']['message']}}`).join('');
+}
+
+/**
+ * O texto `erro` (ou um pill que só republica a mensagem do catch) não resolve
+ * no iPaaS. O campo passa a ler `['error']['message']` do step monitorado.
+ */
+function rewriteCatchErrorLiterals(node: any, pill: string, seen = new Set<any>()): void {
+  if (!node || !pill || seen.has(node)) return;
+  seen.add(node);
+  if (node.settings?.input) replaceErroValues(node.settings.input, pill);
+  rewriteCatchErrorLiterals(node.nextAction, pill, seen);
+  rewriteCatchErrorLiterals(node.firstLoopAction, pill, seen);
+  for (const child of node.children ?? []) rewriteCatchErrorLiterals(child, pill, seen);
+  rewriteCatchErrorLiterals(node.continueOnFailureBranches?.onSuccess, pill, seen);
+  rewriteCatchErrorLiterals(node.continueOnFailureBranches?.onFailure, pill, seen);
+}
+
+function replaceErroValues(value: any, pill: string): void {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) replaceErroValues(item, pill);
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'string') {
+      replaceErroValues(item, pill);
+      continue;
+    }
+    if (item.includes("['error']['message']")) continue;
+    if (item === 'erro') {
+      value[key] = pill;
+      continue;
+    }
+    if (/:\s*erro\b/.test(item)) {
+      value[key] = item.replace(/:\s*erro\b/g, `: ${pill}`);
+      continue;
+    }
+    if (key === 'erro' && item.includes('{{')) value[key] = pill;
+  }
+}
+
+/** Um router para o catch. As ações, e o stop quando existe, aparecem uma vez. Sem ação ativa o ramo fica vazio: passo com skip não entra. */
+function sharedCatchRouter(owners: string[], handler: any | null): any {
+  let branch: any = null;
+  if (handler) {
+    const pill = catchErrorPill(owners);
+    if (pill) {
+      const bound = bindCatchMessage(handler, pill);
+      rewriteCatchErrorLiterals(bound, pill);
+      branch = bound;
+    } else {
+      const message = catchMessageStep(owners);
+      branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
+    }
+  }
   return {
     name: nextName('catch'),
     skip: false,
@@ -4056,6 +4925,70 @@ function rewireOpenCatch(step: any, ctx: Ctx): any {
   return step;
 }
 
+/**
+ * Declare escalar sem valor some no fluxo normal. No catch ele é o corpo:
+ * um `put` vazio por campo, no ramo de falha do passo do try.
+ */
+function omittedCatchFailure(handlers: ParsedStep[], ctx: Ctx): any | undefined {
+  const steps: any[] = [];
+  for (const handler of handlers) {
+    if (handler.skip === true) continue;
+    const built = nilScalarDeclare(handler, ctx);
+    if (built) steps.push(built);
+  }
+  for (let i = 0; i < steps.length - 1; i++) appendToChain(steps[i], steps[i + 1]);
+  return steps[0];
+}
+
+function nilScalarDeclare(step: ParsedStep, ctx: Ctx): any | null {
+  if (step.provider !== VAR_PROVIDER || step.name !== 'declare_variable') return null;
+  const decl = writtenVariable(step, ctx);
+  if (!decl || decl.kind !== 'scalar' || !decl.fields.length) return null;
+  const name = stepName(step, ctx);
+  const display = step.comment || `Gravar variavel "${decl.label}"`;
+  let head: any;
+  decl.fields.forEach((field, index) => {
+    const put = storeActionStep(
+      index === 0 ? name : nextName('var_put'),
+      'put',
+      { key: scalarStorageKey(field), value: '', store_scope: STORE_SCOPE },
+      decl.fields.length === 1 ? display : `Gravar variavel "${field}"`,
+      true,
+      false,
+      ctx,
+    );
+    head = appendToChain(head, put);
+  });
+  return head ?? null;
+}
+
+/** O corpo que o router não levou fica no ramo de falha do passo deste try. */
+function attachCatchFailure(step: any, failure: any, seen = new Set<any>()): boolean {
+  if (!step || seen.has(step) || step.displayName === CATCH_ROUTER_LABEL) return false;
+  seen.add(step);
+  const ownedByInner =
+    step.continueOnFailureBranches?.onFailure || step.nextAction?.displayName === CATCH_ROUTER_LABEL;
+  if (ownedByInner || claimedByCatch.has(step)) {
+    return attachCatchFailure(step.continueOnFailureBranches?.onSuccess, failure, seen);
+  }
+  if (isFallibleStep(step)) {
+    if (step.settings?.errorHandlingOptions) {
+      step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+    }
+    const branches = step.continueOnFailureBranches ?? {};
+    step.continueOnFailureBranches = { ...branches, onFailure: failure };
+    claimedByCatch.add(step);
+    return true;
+  }
+  if (attachCatchFailure(step.nextAction, failure, seen)) return true;
+  if (attachCatchFailure(step.firstLoopAction, failure, seen)) return true;
+  if (attachCatchFailure(step.continueOnFailureBranches?.onSuccess, failure, seen)) return true;
+  for (const child of step.children ?? []) {
+    if (attachCatchFailure(child, failure, seen)) return true;
+  }
+  return false;
+}
+
 function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   const catchNode = step.children.find((c) => c.keyword === 'catch');
   const handlers = (catchNode?.children ?? []).filter((c) => c.keyword !== 'catch');
@@ -4071,12 +5004,23 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   }
 
   if (!activeHandlers.length) {
-    claimCatchBody(first);
-    return first ?? null;
+    if (!handlers.length) {
+      claimCatchBody(first);
+      return first ?? null;
+    }
+    const owners = collectMonitorOwners(first);
+    const router = sharedCatchRouter(owners, null);
+    const head = rewireOpenCatch(first, ctx);
+    if (head) attachSharedRouter(head, router);
+    return head ?? router;
   }
 
   const handlerHead = buildChain(activeHandlers, ctx);
-  if (!handlerHead) return first ?? null;
+  if (!handlerHead) {
+    const failure = omittedCatchFailure(activeHandlers, ctx);
+    if (failure && first) attachCatchFailure(first, failure);
+    return first ?? null;
+  }
   notePendingJobContext(ctx, lastStepName(first));
 
   const owners = collectMonitorOwners(first);

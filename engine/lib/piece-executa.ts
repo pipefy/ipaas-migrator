@@ -114,8 +114,17 @@ export function pieceExecuta(flow: { flows?: Array<{ trigger?: unknown }> }, kb:
     // não é a piece que roda.
     if (found.op && version === piece.version) {
       const input = step.settings?.input ?? {};
+      const waived = new Set<string>();
+      // Drive anyone/domain: o motor tira user_email da lista e marca o step válido.
+      if (
+        step.valid === true &&
+        pieceName === '@activepieces/piece-google-drive' &&
+        opName === 'update_permissions'
+      ) {
+        waived.add('user_email');
+      }
       const missing = found.op.props
-        .filter((prop) => prop.required && isEmpty(input[prop.name]))
+        .filter((prop) => prop.required && !waived.has(prop.name) && isEmpty(input[prop.name]))
         .map((prop) => prop.name);
       if (missing.length) {
         findings.push({

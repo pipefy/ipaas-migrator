@@ -143,7 +143,7 @@
     },
     "new_connector_6_connector_186728_1628717731/get_cards_by_title": {
       "target": { "piece": "@activepieces/piece-pipefy", "name": "getCardsByTitle", "kind": "action" },
-      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "title": "title" },
+      "propMap": { "organization_id": "organizationId", "pipe_id": "pipeId", "title": "title", "card_title": "title" },
       "difficulty": "low",
       "manual": false
     },
@@ -2188,9 +2188,10 @@
     },
     "microsoft_sharepoint/update_file_in_library": {
       "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_upload_file","kind":"action"},
+      "propMap": { "content": "file", "file_name": "fileName", "serverRelativeUrl": "parentFolder" },
       "difficulty": "low",
       "manual": false,
-      "notes": "overwrite"
+      "notes": "overwrite. siteId e driveId nao vem na receita; siteurl fica na nota de conexao."
     },
     "microsoft_sharepoint/update_file_metadata": {
       "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"custom_api_call","kind":"action"},
@@ -2204,8 +2205,10 @@
     },
     "microsoft_sharepoint/upload_file_in_library": {
       "target": {"piece":"@activepieces/piece-microsoft-sharepoint","name":"microsoft_sharepoint_upload_file","kind":"action"},
+      "propMap": { "content": "file", "file_name": "fileName", "serverRelativeUrl": "parentFolder" },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "siteId e driveId nao vem na receita; siteurl fica na nota de conexao."
     },
     "mysql/insert_row": {
       "target": {
@@ -2852,7 +2855,7 @@
     },
     "pipefy/get_cards_by_title": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByTitle","kind":"action"},
-      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","title":"title"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","title":"title","card_title":"title"},
       "difficulty": "low",
       "manual": false
     },
@@ -3538,6 +3541,7 @@
     },
     "se_connector_upload_attachment_connector_955712_1764189910/upload_attachment": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
       "difficulty": "low",
       "manual": false
     },
@@ -3611,6 +3615,7 @@
     },
     "single_tenant_legacy_upload_attachment_connector_955712_1688134977/upload_attachment": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
       "difficulty": "low",
       "manual": false
     },
@@ -3970,11 +3975,13 @@
     },
     "upload_attchments__connector_863224_1757603094/upload_attachment": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
       "difficulty": "low",
       "manual": false
     },
     "upload_attchments_connector_3249852_1783608984/upload_attachment": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"uploadAttachment","kind":"action"},
+      "propMap": { "node_ID": "cardId", "field_id": "fieldId", "file_name": "fileName", "file": "attachment", "Operation": "operation" },
       "difficulty": "low",
       "manual": false
     },
@@ -4081,7 +4088,7 @@
       "target": {"piece":"@activepieces/piece-delay","name":"delayFor","kind":"action"},
       "difficulty": "high",
       "manual": false,
-      "notes": "sem wait_for_async nativo; orquestrar subflows + delay."
+      "notes": "Mapeado para nao bloquear a receita. O motor nao emite delayFor: a piece Delay nao espera a sub-receita. Fica uma nota com timeout e job_ref."
     },
     "workato_service/call_service_async": {
       "target": {"piece":"@activepieces/piece-http","name":"send_request","kind":"action"},

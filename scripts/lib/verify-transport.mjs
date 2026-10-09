@@ -299,6 +299,23 @@ function isTodoPiece(step) {
   return pieceNameOf(step) === 'TODO' || opNameOf(step) === 'TODO';
 }
 
+/** Step TODO só representa a action cujo nome é o displayName (send_mail → email/send_mail). */
+function todoPieceMatches(step, action) {
+  if (!isTodoPiece(step)) return false;
+  const display = String(step.displayName ?? '').trim();
+  if (!display || display === 'TODO') return false;
+  const name = String(action?.name ?? '');
+  const opKey = String(action?.opKey ?? '');
+  return display === name || display === action?.comment || display === opKey || opKey.endsWith(`/${display}`);
+}
+
+function workatoOpForTodoStep(actions, step) {
+  const hit = (actions ?? []).find((action) => todoPieceMatches(step, action));
+  if (hit?.opKey) return hit.opKey;
+  const display = String(step?.displayName ?? '').trim();
+  return display && display !== 'TODO' ? display : '';
+}
+
 function isMigrationReviewNote(step) {
   const name = String(step?.name ?? '');
   const display = String(step?.displayName ?? '');
@@ -780,6 +797,28 @@ function matchesMaterializedVariable(step, action) {
   return false;
 }
 
+/** Declare só com schema, sem `data`. Não vira `put` e não consome o update. */
+function scalarDeclareIsEmpty(action) {
+  if (action?.opKey !== 'workato_variable/declare_variable') return false;
+  const variables = action.input?.variables;
+  if (!variables || typeof variables !== 'object' || !variables.schema) return false;
+  const data = variables.data;
+  if (data == null) return true;
+  return typeof data === 'object' && !Array.isArray(data) && Object.keys(data).length === 0;
+}
+
+/** `update_card` só com ids. A Workato não muda o card; o motor não emite o passo. */
+function updateCardWritesNoField(action) {
+  if (!String(action?.opKey ?? '').endsWith('/update_card')) return false;
+  const input = action.input ?? {};
+  const meta = new Set(['organization_id', 'card_id', 'pipe_id', 'phase_id', 'id']);
+  const keys = Object.keys(input).filter((key) => {
+    const value = input[key];
+    return value != null && value !== '' && value !== '=skip';
+  });
+  return keys.length > 0 && keys.every((key) => meta.has(key));
+}
+
 function matchesStoredVariable(step, action) {
   const opKey = String(action.opKey ?? '');
   if (!opKey.startsWith('workato_variable/')) return false;
@@ -788,7 +827,13 @@ function matchesStoredVariable(step, action) {
   if (!actionName || actionName === 'get') return false;
   const name = opKey.slice('workato_variable/'.length);
   const value = step.settings?.input?.value;
-  const scalarPut = actionName === 'put' && value && typeof value === 'object' && !Array.isArray(value);
+  // Escalar atual: um campo, valor cru (string). Objeto legado ainda casa.
+  // `[]` fica com a lista.
+  const scalarPut =
+    actionName === 'put' &&
+    value != null &&
+    !Array.isArray(value) &&
+    ((typeof value === 'object') || (typeof value === 'string' && value !== '[]'));
   const emptyListPut = actionName === 'put' && value === '[]';
   if (name === 'declare_variable' || name === 'update_variables' || name === 'update_variable') {
     return scalarPut;
@@ -820,6 +865,7 @@ export function findMissingActions(workatoActions, steps, operations) {
   };
 
   for (const action of workatoActions) {
+    if (scalarDeclareIsEmpty(action) || updateCardWritesNoField(action)) continue;
     const mapEntry = lookupMap(operations, action.opKey);
     const sleepEntry = rubySleepEntry(action, operations);
     const entry = sleepEntry ?? mapEntry;
@@ -830,7 +876,7 @@ export function findMissingActions(workatoActions, steps, operations) {
       (!entry?.target &&
         take(
           (step) =>
-            isTodoPiece(step) || matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action),
+            todoPieceMatches(step, action) || matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action),
         )) ||
       take((step) => matchesFallback(step, action, entry));
 
@@ -1194,10 +1240,13 @@ export function verifyTransport({
   }
 
   for (const item of missingActions) {
+    const mappedPiece = item.piece
+      ? ` — falta ${item.piece}${item.action ? `/${item.action}` : ''}`
+      : '';
     findings.push(finding(
       'bloqueia',
       'action faltando',
-      `${item.opKey}${item.as ? ` as ${item.as}` : ''}`,
+      `${item.opKey}${item.as ? ` as ${item.as}` : ''}${mappedPiece}`,
       item.as ?? '',
     ));
   }
@@ -1269,7 +1318,13 @@ export function verifyTransport({
   }
 
   for (const todo of todos) {
-    findings.push(finding(todo.severity, todo.kind, `${todo.kind} em ${todo.step || '?'}`, todo.step));
+    let detail = `${todo.kind} em ${todo.step || '?'}`;
+    if (todo.kind === 'piece TODO') {
+      const step = steps.find((item) => item.name === todo.step);
+      const op = step ? workatoOpForTodoStep(tree.actions, step) : '';
+      if (op) detail = `piece TODO em ${todo.step}: ${op}`;
+    }
+    findings.push(finding(todo.severity, todo.kind, detail, todo.step));
   }
 
   for (const step of steps) {

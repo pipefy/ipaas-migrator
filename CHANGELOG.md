@@ -6,12 +6,26 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.6 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.7 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.7 — 9 out 2026
+
+Corpos conhecidos de Python e Ruby viram código. O repeat que espera `done` vira loop. Fórmula, SharePoint, DocuSign, tabela e o catch acompanham a receita.
+
+- Python que dorme `seconds`, monta `1..n`, lê a URL do arquivo no SharePoint, compara reviewers no Pipefy, deduplica assinantes, transforma sites em ids, formata a duração da fase em `HH:MM:SS` ou monta a tabela HTML de aprovação sai em JavaScript. Outro corpo continua no stub.
+- Repeat que espera o status conter `done`, com sleep, vira loop de no máximo 20 voltas. A nota diz que o JSON não traz esse teto. Repeat sem lista e sem teto vira o marcador `REPEAT_UNSUPPORTED` e o corpo segue uma vez.
+- `.gsub('"', "")` vira `replace`. `.where(...).first["key"]` e o primeiro pedaço de um `split` entram no catálogo. O índice do foreach aponta para o loop.
+- Upload do SharePoint copia arquivo, nome e pasta. `siteId` e `driveId` ficam na nota. DocuSign monta os signatários a partir dos papéis do template. O anexo legado copia card, campo, nome e arquivo. Busca de card aceita `card_title`.
+- Smart list preenche a tabela e os valores e tira o id de dentro do SQL. Azure AD, Tableau, criar registro e o gatilho de card concluído copiam o nome da prop da peça.
+- Declare vazio no catch grava um `put` vazio no ramo de falha. O texto `erro` lê a mensagem do passo que falhou. A verificação nomeia a piece que faltou.
+- Pill com chave fora dela não engole o texto seguinte. Interrogação no meio da frase deixa de virar ternário. Ids de lookup que são uma pill não cortam na vírgula do JSON.
+- Permissão do Drive para qualquer pessoa não exige e-mail. Busca por título não exige campos do formulário. Espera de job assíncrono não vira delay: a nota traz timeout e a referência do job.
+- `migrador-workato-cliente-navegador-0.6.7.tgz`
 
 ## 0.6.6 — 7 out 2026
 
