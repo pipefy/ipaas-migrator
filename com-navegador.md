@@ -1,6 +1,6 @@
 # com navegador
 
-Tutor **com navegador** (0.6.10). Este assistente transforma sua receita Workato em uma automação para importar no Pipefy. O navegador só abre se você disser que pode.
+Tutor **com navegador** (0.7.0). Este assistente transforma sua receita Workato em uma automação para importar no Pipefy. O navegador só abre se você disser que pode.
 
 Depois do login nessa janela, o agente explica o MCP Pipefy (ponte com os seus pipes e conexões) e pede outro ok. Sem ok, segue no print. Não pede MCP de iPaaS, Bituca nem Chrome DevTools.
 
@@ -21,10 +21,11 @@ Instale o migrador com navegador e vamos migrar a receita.
 4. O agente instala a versão mais nova do GitHub antes de traduzir. Se não conseguir, pergunta se você atualiza na mão e não traduz até lá. Só anuncia pronto depois do smoke do motor.
 5. Idioma: infere do chat. A primeira pergunta da receita é API do Workato ou JSON.
 6. Diagnóstico, o pipe, e a conexão. Aí sai o `*.flow.json`.
-7. Pergunta se pode copiar só esse arquivo para Downloads. O diagrama fica na pasta da receita.
-8. Depois ele explica o navegador e pergunta se pode abrir.
-9. Não: segue o print de Import. Sim: você entra na janela (SSO é com você). Ele não publica e não pede senha no chat.
-10. Depois do login: explica o MCP Pipefy e pergunta se pode ligar.
+7. Confere o rascunho. Limpo, segue. Se achar algo para ajustar, pergunta se pode tentar resolver. O que ficar vira uma nota amarela no passo.
+8. Pergunta se pode copiar só esse arquivo para Downloads. O diagrama fica na pasta da receita.
+9. Depois ele explica o navegador e pergunta se pode abrir.
+10. Não: segue o print de Import. Sim: você entra na janela (SSO é com você). Ele não publica e não pede senha no chat.
+11. Depois do login: explica o MCP Pipefy e pergunta se pode ligar.
 
 Se a conexão iPaaS já existe, cole no chat:
 

@@ -6,12 +6,20 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.10 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.0 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.0 — 13 out 2026
+
+O README do kit aberto passa a explicar a conferência do rascunho.
+
+- Depois de gerar o arquivo, o tutor confere o rascunho. Limpo, segue. Com ponto para ajustar, pergunta se pode tentar resolver.
+- O que ficar vira uma nota amarela no passo.
+- `migrador-workato-cliente-navegador-0.7.0.tgz`
 
 ## 0.6.10 — 13 out 2026
 
