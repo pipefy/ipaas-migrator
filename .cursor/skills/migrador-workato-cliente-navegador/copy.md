@@ -176,6 +176,42 @@ As 24 horas valem para a chave gerada agora, não para a conta.
 Se expirou, gere outra.
 ```
 
+### validacao-pergunta
+
+```
+Revisei o rascunho e encontrei pontos para ajustar:
+
+- <frase simples do achado>
+- <frase simples do achado>
+- <frase simples do achado>
+- e mais <N>
+
+Quer que eu tente resolver?
+```
+
+### validacao-tentando
+
+```
+Vou tentar resolver os pontos que encontrei. Te aviso o que ficou.
+```
+
+### validacao-resolvido
+
+```
+Ajustei o rascunho. Pode seguir para o arquivo.
+```
+
+### validacao-restou
+
+```
+Ajustei o que deu. Ainda ficou:
+
+- <o que é, em uma frase>
+- <o que fazer>
+
+Deixei uma nota amarela no passo correspondente. O arquivo segue.
+```
+
 ## en
 
 ### fonte
@@ -340,6 +376,42 @@ The 24 hours apply to the key generated just now, not to the account.
 If it expired, generate another one.
 ```
 
+### validacao-pergunta
+
+```
+I reviewed the draft and found a few things to fix:
+
+- <plain sentence for the finding>
+- <plain sentence for the finding>
+- <plain sentence for the finding>
+- and <N> more
+
+Want me to try to fix them?
+```
+
+### validacao-tentando
+
+```
+I'll try to fix what I found. I'll tell you what remains.
+```
+
+### validacao-resolvido
+
+```
+I adjusted the draft. We can move on to the file.
+```
+
+### validacao-restou
+
+```
+I fixed what I could. This is still open:
+
+- <what it is, in one sentence>
+- <what to do>
+
+I left a yellow note on the matching step. The file still goes out.
+```
+
 ## es
 
 ### fonte
@@ -502,4 +574,40 @@ npx tsx scripts/sem-dependencia.mjs --flow-json <archivo>
 ```
 Las 24 horas valen para la clave generada ahora, no para la cuenta.
 Si expiró, genera otra.
+```
+
+### validacao-pergunta
+
+```
+Revisé el borrador y encontré puntos para ajustar:
+
+- <frase simple del hallazgo>
+- <frase simple del hallazgo>
+- <frase simple del hallazgo>
+- y <N> más
+
+¿Quieres que intente resolverlos?
+```
+
+### validacao-tentando
+
+```
+Voy a intentar resolver lo que encontré. Te aviso lo que quede.
+```
+
+### validacao-resolvido
+
+```
+Ajusté el borrador. Podemos seguir con el archivo.
+```
+
+### validacao-restou
+
+```
+Ajusté lo que pude. Todavía queda:
+
+- <qué es, en una frase>
+- <qué hacer>
+
+Dejé una nota amarilla en el paso correspondiente. El archivo sigue.
 ```

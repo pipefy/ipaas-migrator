@@ -56,7 +56,7 @@ Em toda atualização, os cinco. Sem evidência, deixe em aberto.
 | Arquivo gerado | `ls` do path absoluto ok |
 | Importação confirmada | snapshot/URL do canvas **desta** receita |
 | Configuração incompleta | falta conexão, pipe hospedeiro ou fase |
-| Lógica pendente | `AP-MIGRATION-TODO`, Ruby, CODE, `manual_revision` |
+| Lógica pendente | restou achado na validação (`bloqueia` ou `revisar`), `AP-MIGRATION-TODO`, Ruby, CODE ou `manual_revision` |
 | Teste validado | viu run ou evento real |
 
 Não use “sem bloqueios” / “sem pendências técnicas” como pronto. Contagem de operações mapeadas não prova que funciona.
@@ -69,6 +69,9 @@ Não use “sem bloqueios” / “sem pendências técnicas” como pronto. Cont
 - [ ] 3. Fonte: API do Workato ou JSON. Parar. Não pedir o pipe.
 - [ ] 4. Diagnóstico. Pedir o pipe. Parar.
 - [ ] 5. Conexão. Parar. Só então o motor.
+- [ ] 5b. Validar o flow.json. Limpa: seguir. Com achado: perguntar. Parar.
+- [ ] 5c. Só com o sim: tentar resolver no flow.json e validar de novo.
+- [ ] 5d. O que restou (ou o não): nota adesiva no passo e aviso.
 - [ ] 6. Downloads: só o *.flow.json, com o sim. O PNG fica.
 - [ ] 7. Pedir navegador (ok) → Import (verificar resultado)
 - [ ] 8. Após login: pedir MCP Pipefy (explicar + ok)
@@ -169,6 +172,52 @@ Confira no disco `files.flowNamed` (ex. `.../alerta-mr-sem-revisores.flow.json`)
 `O rascunho foi gerado.` Não diga para importar ainda.
 
 Não editar `mappings/`, `kb/`, `engine/`. Não `--force`.
+
+### 5b. Validar
+
+Depois do arquivo no disco, antes de Downloads:
+
+```bash
+node scripts/verificar-transporte.mjs \
+  --recipe output/<id>/recipe.json \
+  --flow-json output/<id>/flow.json \
+  --out output/<id>
+```
+
+Exit 3 é achado, não falha de ferramenta. Exit 2: uma linha do que houve e pare.
+
+Sem `bloqueia` e sem `revisar` (`info` não conta): siga para o passo 6. Não fale da validação. Validador limpo não é "sem pendências" nem teste validado.
+
+Com achado: bloco `validacao-pergunta`. No máximo 3 frases, da tabela em [reference.md](reference.md). O resto vira "e mais N". **Parar.** Não cite `kind`, peça, datapill, schema, `AP-MIGRATION-TODO` nem "Active Pieces".
+
+### 5c. Tentar resolver
+
+Só com o sim. Sem o sim, vá ao 5d.
+
+Bloco `validacao-tentando`. Para cada achado `bloqueia`, depois cada `revisar`, na ordem do `transporte.json`:
+
+1. Leia o trecho daquele passo no `recipe.json` e o step emitido no `flow.json`.
+2. Pesquise na web a ação no Workato e o equivalente na plataforma de destino. Não diga ao cliente o nome da documentação consultada.
+3. Corrija só `output/<id>/flow.json`: nome de campo, campo obrigatório, fórmula em JavaScript, troca de ação só quando a ação já existe. Sem inventar ação, sem `--force`, sem editar `engine/`, `mappings/` ou `kb/`.
+4. Datapill Pipefy continua em colchetes: `{{trigger['data']['card']['id']}}`. Não reescreva para `output` nem para ponto.
+5. No máximo 2 tentativas por achado. Rode `verificar-transporte.mjs` de novo ao fim de cada rodada.
+
+Se a segunda validação sair limpa: bloco `validacao-resolvido` e siga para o passo 6.
+
+### 5d. Nota no que sobrou
+
+Se a pessoa disse não, ou se restou achado depois das 2 tentativas:
+
+```bash
+node scripts/cliente-anotar-flow.mjs \
+  --flow-json output/<id>/flow.json \
+  --transporte output/<id>/transporte.json \
+  --lang pt
+```
+
+`--lang` é o idioma da sessão (`pt`, `en`, `es`). A nota amarela ancora no passo do achado. Sem passo, ancora no gatilho. Rodar de novo não duplica. Não apague as notas que o motor já colocou.
+
+Bloco `validacao-restou`: o que resolveu, o que ficou e que há nota no passo. Lógica pendente fica sim. Siga para o passo 6 com o arquivo mesmo assim.
 
 ### 6. Downloads
 

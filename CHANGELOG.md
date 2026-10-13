@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.9 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.10 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.10 — 13 out 2026
+
+Depois de traduzir, o rascunho passa pela mesma validação do treino do motor. Limpo, segue. Com achado, pergunta se pode tentar resolver.
+
+- A pergunta sai em linguagem simples, no máximo três itens. Sem nome interno de achado.
+- Com o sim, o ajuste fica só no `flow.json` gerado. Duas tentativas por achado, com a validação rodando de novo ao fim de cada uma.
+- O que restar, ou a recusa, vira nota amarela no passo (`cliente-anotar-flow.mjs`). Sem passo, a nota vai no gatilho. Rodar de novo não duplica.
+- A conversa não cita a plataforma de destino pelo nome interno. A pesquisa de documentação é na web.
+- `migrador-workato-cliente-navegador-0.6.10.tgz`
 
 ## 0.6.9 — 13 out 2026
 

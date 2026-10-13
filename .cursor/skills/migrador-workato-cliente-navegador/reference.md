@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.6.9**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.6.10**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + atualização no GitHub + smoke → idioma (inferir) → API ou JSON → pipe → conexão → motor → Downloads do `*.flow.json` (com ok) → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → teste.
 
@@ -89,6 +89,47 @@ Datapills Pipefy no `flow.json` (schema 20): `{{trigger['data']['card']['id']}}`
 
 `--connection-ids` / `--hints-text` (`Conexão: <id>`) injeta `{{connections['<id>']}}` no flow. Sem listagem iPaaS, o id vai cru. Importe no pipe onde a conexão existe.
 
+## Validação (depois do motor)
+
+Roda a mesma verificação do treino do motor, no `flow.json` gerado. Não chama Pipefy. Não publica.
+
+```bash
+node scripts/verificar-transporte.mjs \
+  --recipe output/<id>/recipe.json \
+  --flow-json output/<id>/flow.json \
+  --out output/<id>
+```
+
+Exit 0: sem `bloqueia`. Siga para Downloads sem comentar. Exit 3: há achado. Exit 2: arquivo. `info` não conta. `revisar` conta como pendência.
+
+A pergunta ao cliente usa o bloco `validacao-pergunta`. No máximo 3 frases, depois "e mais N". Cada frase sai da tabela abaixo, no idioma da sessão. Nunca cite o `kind`, "piece", "datapill", "schema", "AP-MIGRATION-TODO" nem "Active Pieces". A pesquisa na web usa a documentação do Workato e a da plataforma de destino; a conversa fala "o Pipefy" ou "a plataforma de destino".
+
+| kind | pt | en | es |
+| --- | --- | --- | --- |
+| `valid:false` | Um passo ficou com um campo obrigatório em branco. | A step was left with a required field blank. | Un paso quedó con un campo obligatorio en blanco. |
+| `piece TODO` | Não achei um equivalente direto para uma ação do Workato. | I could not find a direct match for a Workato action. | No encontré un equivalente directo para una acción de Workato. |
+| `action faltando` | Uma ação do Workato não tem passo correspondente. | A Workato action has no matching step. | Una acción de Workato no tiene paso correspondiente. |
+| `TODO_pill` | Um campo dinâmico não foi convertido. | A dynamic field was not converted. | Un campo dinámico no se convirtió. |
+| `TODO_FORMULA` | Uma fórmula não foi convertida. | A formula was not converted. | Una fórmula no se convirtió. |
+| `AP-MIGRATION-TODO` | Um passo com código precisa de revisão. | A step with code needs a review. | Un paso con código necesita revisión. |
+| `HTTP pad` | Uma chamada HTTP ficou incompleta. | An HTTP call was left incomplete. | Una llamada HTTP quedó incompleta. |
+| `pill de erro` | A mensagem de erro de um passo não veio. | A step's error message did not come through. | El mensaje de error de un paso no llegó. |
+| `python` | Um trecho em Python não virou código. | A Python snippet did not become code. | Un fragmento en Python no se volvió código. |
+| outro | Um passo precisa de ajuste antes do teste. | A step needs a fix before the test. | Un paso necesita un ajuste antes de la prueba. |
+
+O reparo, só com o sim, altera apenas `output/<id>/flow.json`. Duas tentativas por achado. Revalide ao fim de cada rodada. Sem inventar ação, sem `--force`, sem editar `engine/`, `mappings/` ou `kb/`. Datapill Pipefy continua com colchetes em `data`.
+
+O que restar (ou se a pessoa disse não) vira nota amarela:
+
+```bash
+node scripts/cliente-anotar-flow.mjs \
+  --flow-json output/<id>/flow.json \
+  --transporte output/<id>/transporte.json \
+  --lang pt
+```
+
+A nota ancora no passo do achado. Sem passo, ancora no gatilho. Rodar de novo não duplica. Depois, bloco `validacao-restou`.
+
 Smoke da instalação:
 
 ```bash
@@ -115,7 +156,7 @@ Esse comando existe só no helper (`workato_migrator_helper`), não no kit publi
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.6.9.tgz
+# dist/migrador-workato-cliente-navegador-0.6.10.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

@@ -1,6 +1,6 @@
 # Playbook do migrador Workato (cliente, com navegador)
 
-Versão 0.6.9. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
+Versão 0.6.10. O kit vigente é [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) (`main`, arquivo `VERSION`). Variante **com navegador**. Datapill Pipefy sai com colchetes: `{{trigger['data']['card']['id']}}`. A chave é `data`. O import coloca `['output']` em volta.
 
 O arquivo final é um `*.flow.json` (cópia nomeada ao lado de `flow.json`). O agente não publica.
 
@@ -11,7 +11,7 @@ O arquivo final é um `*.flow.json` (cópia nomeada ao lado de `flow.json`). O a
 | Arquivo gerado | o path absoluto existe no disco |
 | Importação confirmada | o canvas **desta** receita está aberto |
 | Configuração incompleta | falta conexão, pipe hospedeiro ou fase |
-| Lógica pendente | há TODO / Ruby / CODE no rascunho |
+| Lógica pendente | a validação ainda aponta algo, ou há TODO / Ruby / CODE no rascunho |
 | Teste validado | houve run ou evento real |
 
 Arquivo gerado não significa flow pronto. Operações mapeadas não substituem o teste.
@@ -23,11 +23,13 @@ Arquivo gerado não significa flow pronto. Operações mapeadas não substituem 
 3. Pergunta a fonte se ainda não veio: API do Workato ou JSON. O pipe vem depois.
 4. Diagnostica a receita e pergunta o pipe.
 5. Trata a conexão antes de traduzir. Se o chat tem `Conexão: <id>`, o flow já sai ligado.
-6. Pergunta se pode copiar só o `*.flow.json` para Downloads. O diagrama não vai.
-7. Explica o navegador e espera o ok.
-8. Sim: abre o Chrome do agente. Você entra (SSO é com você). Ele guia Import e confere o canvas.
-9. Depois do login: explica o MCP Pipefy e espera outro ok. Sem ok, segue no clique.
-10. Acompanha o teste. Não publica.
+6. Valida o rascunho. Se estiver limpo, segue. Se encontrar algo, pergunta se pode tentar resolver.
+7. Com o sim, tenta ajustar só o arquivo gerado. O que não resolver vira uma nota amarela no passo, com o aviso do que ficou.
+8. Pergunta se pode copiar só o `*.flow.json` para Downloads. O diagrama não vai.
+9. Explica o navegador e espera o ok.
+10. Sim: abre o Chrome do agente. Você entra (SSO é com você). Ele guia Import e confere o canvas.
+11. Depois do login: explica o MCP Pipefy e espera outro ok. Sem ok, segue no clique.
+12. Acompanha o teste. Não publica.
 
 O pipe do Integrations (onde o flow mora) pode ser outro que o pipe cujos cards a receita mexe.
 
