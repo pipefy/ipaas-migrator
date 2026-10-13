@@ -1,6 +1,8 @@
 // Audita o flow iPaaS transportado contra a receita Workato.
 // Nao chama Pipefy. Nao edita mapa/KB.
 import { NO_AUTH_PIECES } from './bind-connections.mjs';
+import { PIPEFY_PIECE_VERSION } from '../../engine/lib/pipefy-piece.ts';
+import { SUBFLOW_PIECE_VERSION } from '../../engine/lib/subflow.ts';
 
 const CONNECTOR_SUFFIX = /_connector_\d+(?:_\d+)?$/;
 
@@ -69,6 +71,11 @@ const CONTROL_KEYWORDS = new Set([
 const CHILD_KEYS = ['nextAction', 'firstLoopAction', 'onFailureAction'];
 
 const TODO_PATTERNS = [
+  {
+    kind: 'formula vira codigo',
+    re: /AP-MIGRATION-TODO: traduzir formula Ruby/,
+    severity: 'revisar',
+  },
   { kind: 'AP-MIGRATION-TODO', re: /AP-MIGRATION-TODO/, severity: 'bloqueia' },
   { kind: 'TODO_FORMULA', re: /TODO_FORMULA/, severity: 'bloqueia' },
   { kind: 'TODO_pill', re: /TODO_pill/, severity: 'bloqueia' },
@@ -199,11 +206,113 @@ function walkWorkato(node, visit) {
   if (Array.isArray(node.block)) walkWorkato(node.block, visit);
 }
 
+function directStop(children) {
+  return (children || []).some((child) => child && child.skip !== true && child.keyword === 'stop');
+}
+
+/** Mesma repartição de `splitBranches`: o corpo do if, cada elsif e o else. */
+function splitRawBranches(step) {
+  const branches = [{ children: [] }];
+  const skipped = [];
+  let elseChildren = [];
+  const trailing = [];
+  let seenElse = false;
+  for (const child of step?.block || []) {
+    if (!child || typeof child !== 'object') continue;
+    if (child.keyword === 'elsif' || child.keyword === 'elseif') {
+      if (child.skip === true) skipped.push(child);
+      else branches.push({ children: [...(child.block || [])] });
+    } else if (child.keyword === 'else') {
+      seenElse = true;
+      if (child.skip === true) skipped.push(child);
+      else elseChildren = Array.isArray(child.block) ? child.block : [];
+    } else if (!seenElse) {
+      branches[branches.length - 1].children.push(child);
+    } else {
+      trailing.push(child);
+    }
+  }
+  return { branches, elseChildren, trailing, skipped };
+}
+
+/** Todo ramo do if, inclusive o else vazio, tem um `stop` direto. O else ausente não para. */
+function allBranchesStop(step) {
+  const { branches, elseChildren } = splitRawBranches(step);
+  return [...branches.map((branch) => directStop(branch.children)), directStop(elseChildren)].every(Boolean);
+}
+
+/** A cadeia termina num stop, então o que vem depois no mesmo bloco não roda. */
+function chainCloses(block) {
+  for (const child of block || []) {
+    if (!child || typeof child !== 'object' || child.skip === true) continue;
+    if (child.keyword === 'stop') return true;
+    if (child.keyword === 'if' && allBranchesStop(child)) return true;
+    if (child.keyword === 'try') {
+      const body = (child.block || []).filter((item) => item?.keyword !== 'catch');
+      if (chainCloses(body)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Percorre o bloco como `buildChain`: um `stop` ativo encerra os irmãos seguintes,
+ * e um `if` em que todo ramo para encerra o que vem depois. O `catch` do `try`
+ * continua alcançável mesmo se o corpo parar.
+ */
+function walkBlock(block, visit) {
+  if (!Array.isArray(block)) return;
+  let open = true;
+  for (const child of block) {
+    if (!child || typeof child !== 'object') continue;
+    if (!open) continue;
+    const keyword = child.keyword ?? '';
+    if (child.skip === true && CONTROL_KEYWORDS.has(keyword)) {
+      visit(child);
+      continue;
+    }
+    if (keyword === 'if') {
+      visit(child);
+      const split = splitRawBranches(child);
+      for (const branch of split.branches) walkBlock(branch.children, visit);
+      for (const skipped of split.skipped) visit(skipped);
+      walkBlock(split.elseChildren, visit);
+      walkBlock(split.trailing, visit);
+      if (allBranchesStop(child)) open = false;
+      continue;
+    }
+    if (keyword === 'try') {
+      visit(child);
+      const body = (child.block || []).filter((item) => item?.keyword !== 'catch');
+      const catchNode = (child.block || []).find((item) => item?.keyword === 'catch');
+      walkBlock(body, visit);
+      if (catchNode) {
+        visit(catchNode);
+        if (catchNode.skip !== true) walkBlock(catchNode.block, visit);
+      }
+      const bodyCloses = chainCloses(body);
+      if (bodyCloses) open = false;
+      continue;
+    }
+    visit(child);
+    if (keyword === 'stop') {
+      open = false;
+      continue;
+    }
+    if (Array.isArray(child.block)) walkBlock(child.block, visit);
+  }
+}
+
 export function collectWorkatoTree(recipe) {
   const code = recipeCode(recipe);
   const actions = [];
   const controls = [];
-  walkWorkato(code, (node) => {
+  if (code && typeof code === 'object') {
+    visitWorkato(code);
+    const keyword = code.keyword ?? '';
+    if (!(code.skip === true && CONTROL_KEYWORDS.has(keyword))) walkBlock(code.block, visitWorkato);
+  }
+  function visitWorkato(node) {
     const keyword = node.keyword ?? (node.provider && node.name ? 'action' : '');
     if (node.skip === true) {
       if (CONTROL_KEYWORDS.has(keyword) && keyword !== 'comment') {
@@ -244,7 +353,7 @@ export function collectWorkatoTree(recipe) {
       comment: node.comment ?? null,
       input: node.input ?? {},
     });
-  });
+  }
   const triggerFilter = Boolean(
     code?.filter &&
       (Array.isArray(code.filter.conditions) ? code.filter.conditions.length : code.filter),
@@ -825,14 +934,29 @@ function scalarDeclareIsEmpty(action) {
 }
 
 /** `update_card` só com ids. A Workato não muda o card; o motor não emite o passo. */
+const EMPTY_FORMULA = /^=\s*(?:\(\s*\)|null|clear)?\s*$/i;
+
+function blankWorkatoValue(value) {
+  if (value == null || value === '' || value === '=skip') return true;
+  return typeof value === 'string' && EMPTY_FORMULA.test(value.trim());
+}
+
+/** Update sem campo de negócio. O motor também não emite o updateCard. */
 function updateCardWritesNoField(action) {
-  if (!String(action?.opKey ?? '').endsWith('/update_card')) return false;
+  const op = String(action?.opKey ?? '');
+  const name = op.slice(op.lastIndexOf('/') + 1);
+  if (name !== 'update_card' && name !== 'update_card_field' && name !== 'update_fields_values') return false;
   const input = action.input ?? {};
-  const meta = new Set(['organization_id', 'card_id', 'pipe_id', 'phase_id', 'id']);
-  const keys = Object.keys(input).filter((key) => {
-    const value = input[key];
-    return value != null && value !== '' && value !== '=skip';
-  });
+  if (name === 'update_card_field') {
+    return blankWorkatoValue(input.new_value) && blankWorkatoValue(input.value);
+  }
+  if (name === 'update_fields_values') {
+    const fields = input.Fields_to_update ?? input.fields_to_update;
+    if (!Array.isArray(fields) || !fields.length) return true;
+    return fields.every((item) => !item || typeof item !== 'object' || blankWorkatoValue(item.value));
+  }
+  const meta = new Set(['organization_id', 'card_id', 'pipe_id', 'phase_id', 'id', 'node_ID', 'Node_Id', 'node_id']);
+  const keys = Object.keys(input).filter((key) => !blankWorkatoValue(input[key]));
   return keys.length > 0 && keys.every((key) => meta.has(key));
 }
 
@@ -861,6 +985,23 @@ function matchesStoredVariable(step, action) {
   return false;
 }
 
+const ASYNC_WAIT_NOTE = 'A espera de jobs assíncronos não foi transportada';
+
+/** `get_cards_by_field` com include_done false vira CODE: a piece não filtra card concluído. */
+function isOpenCardsSearch(action) {
+  return String(action?.opKey ?? '').endsWith('/get_cards_by_field') && includeDoneIsFalse(action.input);
+}
+
+function matchesOpenCards(step) {
+  return step?.type === 'CODE' && sourceCodeOf(step).includes('include_done: false');
+}
+
+function canvasNotes(flow) {
+  if (Array.isArray(flow?.flows?.[0]?.notes)) return flow.flows[0].notes;
+  if (Array.isArray(flow?.notes)) return flow.notes;
+  return [];
+}
+
 function matchesFallback(step, action, entry) {
   const display = String(step.displayName ?? '');
   if (display !== action.name && display !== action.comment) return false;
@@ -870,33 +1011,73 @@ function matchesFallback(step, action, entry) {
   return true;
 }
 
-export function findMissingActions(workatoActions, steps, operations) {
+export function findMissingActions(workatoActions, steps, operations, notes = []) {
   const used = new Set();
+  const usedNotes = new Set();
   const missing = [];
 
-  const take = (predicate) => {
-    const index = steps.findIndex((step, i) => !used.has(i) && predicate(step));
-    if (index === -1) return false;
-    used.add(index);
+  const actionLabel = (action) => (action.comment ? action.comment : action.name);
+
+  const displayMatches = (step, action) => {
+    const display = String(step?.displayName ?? '');
+    if (!display) return false;
+    return display === actionLabel(action);
+  };
+
+  const take = (predicate, action) => {
+    let loose = -1;
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (used.has(i) || step?.type === 'PIECE_TRIGGER' || !predicate(step)) continue;
+      if (displayMatches(step, action)) {
+        used.add(i);
+        return true;
+      }
+      const display = String(step?.displayName ?? '');
+      const reserved =
+        display !== '' && pending.some((other) => other !== action && display === actionLabel(other));
+      if (!reserved && loose === -1) loose = i;
+    }
+    if (loose === -1) return false;
+    used.add(loose);
     return true;
   };
 
-  for (const action of workatoActions) {
-    if (scalarDeclareIsEmpty(action) || updateCardWritesNoField(action)) continue;
+  const takeNote = (predicate) => {
+    const index = notes.findIndex((note, i) => !usedNotes.has(i) && predicate(note));
+    if (index === -1) return false;
+    usedNotes.add(index);
+    return true;
+  };
+
+  const pending = workatoActions.filter(
+    (action) => action.keyword !== 'trigger' && !scalarDeclareIsEmpty(action) && !updateCardWritesNoField(action),
+  );
+
+  for (const action of [...pending]) {
     const mapEntry = lookupMap(operations, action.opKey);
     const sleepEntry = rubySleepEntry(action, operations);
     const entry = sleepEntry ?? mapEntry;
+    const openCards = isOpenCardsSearch(action);
+    const asyncWait = String(action.opKey ?? '').endsWith('/wait_for_async_jobs');
     const found =
-      (entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action))) ||
-      ((entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
-        take((step) => matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action))) ||
-      (!entry?.target &&
+      (asyncWait && takeNote((note) => String(note?.content ?? '').includes(ASYNC_WAIT_NOTE))) ||
+      (!asyncWait && openCards && take((step) => matchesOpenCards(step), action)) ||
+      (!asyncWait && !openCards && entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action), action)) ||
+      (!asyncWait && (entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
+        take((step) => matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action), action)) ||
+      (!asyncWait && !entry?.target &&
         take(
           (step) =>
             todoPieceMatches(step, action) || matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action),
+          action,
         )) ||
-      take((step) => matchesFallback(step, action, entry));
+      (!asyncWait && take((step) => matchesFallback(step, action, entry), action));
 
+    if (found) {
+      const index = pending.indexOf(action);
+      if (index !== -1) pending.splice(index, 1);
+    }
     if (!found) {
       missing.push({
         opKey: action.opKey,
@@ -925,9 +1106,8 @@ function finding(severity, kind, detail, step = '') {
 
 const SUBFLOW_ACTIONS = new Set(['callFlow', 'callableFlow', 'returnResponse']);
 const PIPEFY_PIECE = '@activepieces/piece-pipefy';
-const PIPEFY_PIECE_VERSION = '0.2.4';
 const SUBFLOWS_PIECE = '@activepieces/piece-subflows';
-const SUBFLOWS_PIECE_VERSION = '0.7.0';
+const SUBFLOWS_PIECE_VERSION = SUBFLOW_PIECE_VERSION;
 
 function includeDoneIsFalse(input) {
   const raw = input?.include_done ?? input?.includeDone;
@@ -1175,7 +1355,7 @@ export function verifyTransport({
   const brokenVariables = collectBrokenVariables(steps);
   const emptyRepeats = collectEmptyRepeatSteps(steps);
   const emailGaps = collectEmailGaps(tree.actions, steps);
-  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations);
+  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations, canvasNotes(flow));
   const findings = [];
 
   const scheduleSteps = steps.filter((step) => pieceNameOf(step) === '@activepieces/piece-schedule');

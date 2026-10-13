@@ -277,7 +277,7 @@
       "propMap": { "url": "url" },
       "fixedProps": {
         "method": "GET",
-        "authType": "none",
+        "authType": "NONE",
         "headers": {},
         "queryParams": {},
         "response_is_binary": true
@@ -407,8 +407,8 @@
     "email/send_mail": {
       "target": null,
       "difficulty": "high",
-      "manual": false,
-      "notes": "Email by Workato nao migra. Nao usar piece-smtp nem Gmail. Avisar no cliente e seguir o canvas."
+      "manual": true,
+      "notes": "Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Nao escolher provedor alternativo automaticamente."
     },
 
     "google_calendar/update_event": {
@@ -5283,8 +5283,8 @@
     "sms/send_sms": {
       "target": null,
       "difficulty": "high",
-      "manual": false,
-      "notes": "SMS by Workato nao migra. Nao usar piece-twilio. Avisar no cliente e seguir o canvas."
+      "manual": true,
+      "notes": "SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Nao escolher provedor alternativo automaticamente."
     },
     "slack/button_action": {
       "target": {

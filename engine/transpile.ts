@@ -1,10 +1,10 @@
 // Transpila 1+ receitas Workato -> flow Activepieces (DRAFT) + relatorio.
 // Bloqueia se houver operacao nao mapeada (a menos que --force).
 //
-// Uso: npm run transpile -- <caminho.json|.zip|pasta> [--force]
+// Uso: tsx engine/transpile.ts <caminho.json|.zip|pasta> [--out pasta] [--force]
 
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { loadConfig, loadKb, loadMergedMap, outputDir } from './lib/load.ts';
 import { ingest } from './lib/ingest.ts';
 import { parseRecipe } from './lib/parse-recipe.ts';
@@ -18,11 +18,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const force = process.argv.includes('--force');
+  const outputIndex = process.argv.indexOf('--out');
+  const explicitOutput = outputIndex < 0 ? undefined : process.argv[outputIndex + 1];
+  if (outputIndex >= 0 && (!explicitOutput || explicitOutput.startsWith('--'))) {
+    console.error('ERRO: --out exige uma pasta de saida.');
+    process.exit(1);
+  }
   const cfg = await loadConfig();
   const { kb } = await loadKb(cfg);
   const { merged } = await loadMergedMap(cfg);
   const items = await ingest(input);
-  const out = outputDir(cfg);
+  const out = explicitOutput ? resolve(explicitOutput) : outputDir(cfg);
   await mkdir(out, { recursive: true });
 
   let blocked = 0;
@@ -39,8 +45,11 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const { flow, todos } = buildFlow(recipe, merged, kb);
+    const { flow, todos, diagnostics } = buildFlow(recipe, merged, kb);
+    const incomplete = todos.length > 0 || flow.flows.some((entry: any) => entry.valid !== true);
+    if (incomplete) blocked++;
     await writeFile(join(out, `${baseName}.flow.json`), JSON.stringify(flow, null, 2), 'utf8');
+    await writeFile(join(out, `${baseName}.diagnostics.json`), JSON.stringify(diagnostics, null, 2), 'utf8');
 
     const report = [
       `# Migração: ${recipe.name}`,
@@ -59,12 +68,12 @@ async function main(): Promise<void> {
     ].join('\n');
     await writeFile(join(out, `${baseName}.report.md`), report, 'utf8');
 
-    console.log(`✅ ${recipe.name} → ${baseName}.flow.json ${todos.length ? `(${todos.length} TODOs)` : ''}`);
+    console.log(`${incomplete ? '⚠️' : '✅'} ${recipe.name} → ${baseName}.flow.json ${incomplete ? `(rascunho incompleto; ${todos.length} pendencias)` : ''}`);
   }
 
   console.log(`\nArquivos em: ${out}`);
   if (blocked) {
-    console.log(`\n⚠️ ${blocked} receita(s) bloqueada(s) por operações não mapeadas. Defina os mapas (add-map) ou use --force para gerar mesmo assim (com TODO).`);
+    console.log(`\n⚠️ ${blocked} receita(s) incompleta(s) ou bloqueada(s). Revise os mapas e os relatorios; --force permite rascunho, mas nao comprova a conversao.`);
     process.exit(2);
   }
 }

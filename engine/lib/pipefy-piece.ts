@@ -59,6 +59,12 @@ export interface UpdateListFieldAdd {
   operation: 'ADD';
 }
 
+/** ADDs extraídos da mutation. `residualQuery` guarda o que não é ADD. */
+export interface UpdateListFieldSplit {
+  adds: UpdateListFieldAdd[];
+  residualQuery: string | null;
+}
+
 function graphqlQuery(input: Record<string, any>): string | null {
   const body = input?.body;
   if (typeof body === 'string') return body;
@@ -69,33 +75,270 @@ function graphqlQuery(input: Record<string, any>): string | null {
   return null;
 }
 
-/**
- * custom_api_call com `updateFieldsValues` e um único `operation: ADD`
- * vira updateListField. Vários campos na mesma mutation ficam no GraphQL.
- */
-export function updateListFieldFromGraphql(input: Record<string, any>): UpdateListFieldAdd | null {
-  const query = graphqlQuery(input);
-  if (!query || !/updateFieldsValues/i.test(query)) return null;
-  const fields = [...query.matchAll(/fieldId:/g)];
-  if (fields.length !== 1) return null;
-  const node = query.match(/nodeId:\s*"?(\{\{[\s\S]*?\}\}|[^",\s]+)"?/);
-  const item = query.match(
-    /fieldId:\s*"([^"]+)"[\s\S]*?value:\s*(?:"([^"]*)"|\[([\s\S]*?)\]|(\{\{[\s\S]*?\}\}))[\s\S]*?operation:\s*"?ADD"?\b/,
-  );
-  if (!node || !item) return null;
-  let fieldValue = item[2] ?? item[4];
-  if (fieldValue == null && item[3] != null) {
-    const parts = [...item[3].matchAll(/"([^"]*)"|(\{\{[\s\S]*?\}\})/g)].map((match) => match[1] ?? match[2]!);
-    if (parts.length !== 1) return null;
-    fieldValue = parts[0];
+function unescapeGraphql(query: string): string {
+  let prev = '';
+  let current = query;
+  while (current !== prev) {
+    prev = current;
+    current = current.replace(/\\"/g, '"');
   }
-  if (!fieldValue) return null;
-  return {
-    nodeId: node[1]!.trim(),
-    fieldId: item[1]!,
-    fieldValue,
-    operation: 'ADD',
-  };
+  return current;
+}
+
+/** `#{pill.gsub(...).upcase}` deixa a `}` do Ruby depois que a pill vira `{{ }}`. */
+function stripRubyInterpolationClose(query: string): string {
+  return query.replace(
+    /(\{\{[\s\S]*?\}\})((?:\s*\.[A-Za-z_][\w]*(?:\([^)]*\))?)+)\}/g,
+    '$1$2',
+  );
+}
+
+/** Pula `{{...}}` e conta chaves/colchetes do GraphQL ainda abertos. */
+function braceDepth(source: string): number {
+  const stack: string[] = [];
+  for (let i = 0; i < source.length; i++) {
+    if (source.startsWith('{{', i)) {
+      const end = source.indexOf('}}', i + 2);
+      if (end === -1) return 1;
+      i = end + 1;
+      continue;
+    }
+    const ch = source[i];
+    if (ch === '{' || ch === '[') stack.push(ch);
+    else if ((ch === '}' || ch === ']') && stack.length) stack.pop();
+  }
+  return stack.length;
+}
+
+function cleanEdge(raw: string): string {
+  let text = raw.trim().replace(/[,\s]+$/, '').trim();
+  while ((text.endsWith('}') || text.endsWith(']')) && braceDepth(text.slice(0, -1).trim()) === 0) {
+    text = text.slice(0, -1).trim().replace(/[,\s]+$/, '').trim();
+  }
+  return text;
+}
+
+function scanBalanced(source: string, start: number): string | null {
+  const open = source[start];
+  const closeOf: Record<string, string> = { '{': '}', '[': ']', '(': ')' };
+  const close = closeOf[open];
+  if (!close) return null;
+  const stack: string[] = [close];
+  for (let i = start + 1; i < source.length; i++) {
+    if (source.startsWith('{{', i)) {
+      const end = source.indexOf('}}', i + 2);
+      if (end === -1) return null;
+      i = end + 1;
+      continue;
+    }
+    const ch = source[i];
+    if (ch === '{' || ch === '[' || ch === '(') stack.push(closeOf[ch]!);
+    else if (ch === '}' || ch === ']' || ch === ')') {
+      if (stack.at(-1) !== ch) return null;
+      stack.pop();
+      if (stack.length === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function rawKey(source: string, key: string, stops: string[]): string | null {
+  const match = source.match(new RegExp(`\\b${key}\\s*:`));
+  if (!match || match.index == null) return null;
+  const rest = source.slice(match.index + match[0].length);
+  let end = rest.length;
+  for (const stop of stops) {
+    const next = rest.search(new RegExp(`\\b${stop}\\s*:`));
+    if (next !== -1 && next < end) end = next;
+  }
+  return cleanEdge(rest.slice(0, end));
+}
+
+/** Literal GraphQL: aspas, pill, número ou array de um elemento. `""` vale string vazia. */
+function unwrapGraphqlLiteral(raw: string): string | null {
+  const text = cleanEdge(raw);
+  if (text === 'null') return null;
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    if (text.length === 2) return '';
+    return unwrapGraphqlLiteral(text.slice(1, -1));
+  }
+  if (!text) return null;
+  if (text.startsWith('[') && text.endsWith(']')) {
+    const inner = text.slice(1, -1).trim();
+    if (!inner || topLevelComma(inner)) return null;
+    return unwrapGraphqlLiteral(inner);
+  }
+  return text;
+}
+
+function topLevelComma(source: string): boolean {
+  for (let i = 0; i < source.length; i++) {
+    if (source.startsWith('{{', i)) {
+      const end = source.indexOf('}}', i + 2);
+      if (end === -1) return false;
+      i = end + 1;
+      continue;
+    }
+    if (source[i] === ',') return true;
+  }
+  return false;
+}
+
+interface GraphqlEntry {
+  text: string;
+  start: number;
+  end: number;
+}
+
+function valuesClause(query: string): { start: number; end: number; body: string } | null {
+  const match = query.match(/\bvalues\s*:/);
+  if (!match || match.index == null) return null;
+  let i = match.index + match[0].length;
+  while (query[i] === ' ' || query[i] === '\n' || query[i] === '\t') i++;
+  if (query[i] !== '{' && query[i] !== '[') return null;
+  const body = scanBalanced(query, i);
+  if (!body) return null;
+  return { start: i, end: i + body.length, body };
+}
+
+function entrySpans(body: string): GraphqlEntry[] {
+  if (body.startsWith('{')) return [{ text: body, start: 0, end: body.length }];
+  const entries: GraphqlEntry[] = [];
+  for (let i = 0; i < body.length; i++) {
+    if (body.startsWith('{{', i)) {
+      const end = body.indexOf('}}', i + 2);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
+    if (body[i] !== '{') continue;
+    const text = scanBalanced(body, i);
+    if (!text) break;
+    entries.push({ text, start: i, end: i + text.length });
+    i += text.length - 1;
+  }
+  return entries;
+}
+
+function removeSpans(source: string, spans: Array<[number, number]>): string {
+  let out = source;
+  const ordered = [...spans].sort((a, b) => b[0] - a[0]);
+  for (const [start, end] of ordered) {
+    const before = out.slice(0, start);
+    const after = out.slice(end);
+    const commaBefore = before.match(/,\s*$/);
+    const commaAfter = after.match(/^\s*,/);
+    let from = start;
+    let to = end;
+    if (commaAfter) to += commaAfter[0].length;
+    else if (commaBefore) from -= commaBefore[0].length;
+    out = out.slice(0, from) + out.slice(to);
+  }
+  return out;
+}
+
+interface FieldsCall {
+  start: number;
+  end: number;
+  nodeId: string | null;
+  entries: GraphqlEntry[];
+  valuesStart: number;
+}
+
+/** Cada `updateFieldsValues(...)`, com o alias (`n1:`) e o selection set. */
+function fieldsCalls(query: string): FieldsCall[] {
+  const calls: FieldsCall[] = [];
+  for (const match of query.matchAll(/updateFieldsValues/gi)) {
+    if (match.index == null) continue;
+    const before = query.slice(0, match.index);
+    const alias = before.match(/([A-Za-z_][\w]*)\s*:\s*$/);
+    const start = alias ? match.index - alias[0].length : match.index;
+    const paren = query.indexOf('(', match.index);
+    if (paren === -1) continue;
+    const args = scanBalanced(query, paren);
+    if (!args) continue;
+    let end = paren + args.length;
+    let cursor = end;
+    while (query[cursor] === ' ' || query[cursor] === '\n' || query[cursor] === '\t') cursor++;
+    if (query[cursor] === '{') {
+      const selection = scanBalanced(query, cursor);
+      if (selection) end = cursor + selection.length;
+    }
+    const inner = args.slice(1, -1);
+    const nodeId = unwrapGraphqlLiteral(rawKey(inner, 'nodeId', ['values']) ?? '');
+    const values = valuesClause(inner);
+    const entries = values ? entrySpans(values.body) : [];
+    calls.push({
+      start,
+      end,
+      nodeId,
+      entries,
+      valuesStart: values ? paren + 1 + values.start : -1,
+    });
+  }
+  return calls;
+}
+
+function callStillUseful(query: string): boolean {
+  const withoutWrapper = query.replace(/TODO_FORMULA\s*\(/g, '');
+  return /[A-Za-z_][\w]*\s*\(/.test(withoutWrapper);
+}
+
+/**
+ * `updateFieldsValues` com `operation: ADD` vira updateListField.
+ * Vários ADD viram uma lista. Alias que não é ADD (REPLACE, outro campo,
+ * updateCardField) permanece em `residualQuery`.
+ */
+export function updateListFieldFromGraphql(input: Record<string, any>): UpdateListFieldSplit | null {
+  const source = graphqlQuery(input);
+  if (!source || !/updateFieldsValues/i.test(source)) return null;
+  const query = stripRubyInterpolationClose(unescapeGraphql(source));
+  const calls = fieldsCalls(query);
+  if (!calls.length) return null;
+
+  const adds: UpdateListFieldAdd[] = [];
+  const drop: Array<[number, number]> = [];
+  for (const call of calls) {
+    if (!call.entries.length || call.valuesStart < 0) continue;
+    const kept: GraphqlEntry[] = [];
+    const added: GraphqlEntry[] = [];
+    for (const entry of call.entries) {
+      const operation = unwrapGraphqlLiteral(rawKey(entry.text, 'operation', ['fieldId', 'value']) ?? '');
+      const fieldId = unwrapGraphqlLiteral(rawKey(entry.text, 'fieldId', ['value', 'operation']) ?? '');
+      const fieldValue = unwrapGraphqlLiteral(rawKey(entry.text, 'value', ['fieldId', 'operation']) ?? '');
+      if (operation !== 'ADD') {
+        kept.push(entry);
+        continue;
+      }
+      if (!call.nodeId || !fieldId || fieldValue == null) return null;
+      adds.push({ nodeId: call.nodeId, fieldId, fieldValue, operation: 'ADD' });
+      added.push(entry);
+    }
+    if (!added.length) continue;
+    if (!kept.length) {
+      drop.push([call.start, call.end]);
+      continue;
+    }
+    for (const entry of added) drop.push([call.valuesStart + entry.start, call.valuesStart + entry.end]);
+  }
+  if (!adds.length) return null;
+  const edited = removeSpans(query, drop);
+  const residualQuery = callStillUseful(edited) ? edited : null;
+  return { adds, residualQuery };
+}
+
+export function replaceGraphqlQuery(input: Record<string, any>, query: string): Record<string, any> {
+  const clone = structuredClone(input);
+  const body = clone?.body;
+  if (typeof body === 'string') {
+    clone.body = query;
+    return clone;
+  }
+  if (!body || typeof body !== 'object') return clone;
+  if (typeof body.query === 'string') body.query = query;
+  else if (typeof body.data === 'string') body.data = query;
+  else if (body.data && typeof body.data === 'object' && typeof body.data.query === 'string') body.data.query = query;
+  return clone;
 }
 
 const DYNAMIC_FIELD_PROPS = ['phaseFields', 'startFormFields'] as const;

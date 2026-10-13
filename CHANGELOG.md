@@ -6,12 +6,25 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.6.8 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.6.9 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.6.9 — 13 out 2026
+
+Receita com pendência vai para revisão. Mapa ambíguo para. Fórmula cobre presença, digest, membership e escapes.
+
+- Pendência de fórmula, código ou flow inválido manda a receita para revisão. O destino pronto só sai quando a conversão fecha. O diagnóstico traz a categoria, sem valor da receita.
+- O lote aceita uma pasta de saída e grava o diagnóstico ao lado do flow.
+- Mapa com dois destinos para a mesma chave para. Schema de subflow inválido e composição sem escalar também param.
+- `include?`, `exclude?`, `format_map`, `md5_hexdigest`, `present?` e `presence` seguem o contrato da fórmula. Duração isolada vira segundos. Float conhecido guarda o texto. Escape de string lê unicode, hex e octal.
+- Email e SMS by Workato ficam sem envio convertido. Download HTTP usa autenticação `NONE`.
+- Referência sem origem e alias repetido invalidam o passo. `js_eval` chama o `main` original. `updateListField` em GraphQL separa os valores.
+- O atalho `is_not_empty` que não batia com `present?` sai.
+- `migrador-workato-cliente-navegador-0.6.9.tgz`
 
 ## 0.6.8 — 9 out 2026
 

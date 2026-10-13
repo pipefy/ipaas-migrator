@@ -234,6 +234,9 @@ function sameStringPath(left: unknown[], right: string[]): boolean {
  */
 export function rewriteBatchIndex(value: unknown, source: unknown): string | null {
   if (typeof value !== 'string' || !value.includes('current_index')) return null;
+  if (typeof source !== 'string' || [...source.matchAll(/_dp\('/g)].length !== 1) return null;
+  const sourceBody = source.trim().replace(/^=/, '').trim();
+  if (!/^(?:#\{_dp\('.*'\)\}|_dp\('.*'\))$/s.test(sourceBody)) return null;
   const src = firstPill(source);
   if (!src?.line) return null;
   const sourcePath = src.path.filter((part): part is string => typeof part === 'string');
@@ -241,7 +244,8 @@ export function rewriteBatchIndex(value: unknown, source: unknown): string | nul
 
   let indexes = 0;
   let mismatched = false;
-  const out = value.replace(/_dp\('(.+?)'\)/g, (full, json: string) => {
+  const out = value.replace(/#\{_dp\('(.+?)'\)\}|_dp\('(.+?)'\)/g, (full, wrapped: string, bare: string) => {
+    const json = wrapped ?? bare;
     let dp: { line?: string; path?: unknown[] };
     try {
       dp = JSON.parse(json);
@@ -283,7 +287,7 @@ function visitVariableRefs(
         const as = String(dp.line);
         onAs(as);
         const path = Array.isArray(dp.path) ? dp.path : [];
-        const field = path.find((part) => typeof part === 'string');
+        const field = path.find((part: unknown) => typeof part === 'string');
         if (typeof field === 'string') onScalarField(as, field);
       } catch {
         // pill malformada: nao da para saber a origem, segue

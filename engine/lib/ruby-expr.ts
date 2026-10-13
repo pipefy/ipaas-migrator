@@ -29,29 +29,73 @@ export const EQ_NOTE =
 export const DECODE_B64_NOTE =
   'decode_base64: texto UTF-8 e decodificado; binario (byte nulo) continua em base64 para o campo FILE.';
 
+const INVALID_HASH_KEY =
+  'AP-MIGRATION-INVALID-HASH-KEY: chave de hash nao representavel sem perda no destino JSON.';
+const INVALID_DIGEST_INPUT = 'AP-MIGRATION-INVALID-DIGEST-INPUT';
+
 /** Helpers do runtime Ruby-like, injetados no step CODE conforme o uso. */
 const HELPERS: Record<string, string> = {
-  inspect: `const inspect = (v) => {
+  inspect: String.raw`const inspect = (v, hint) => {
   if (v === null || v === undefined) return 'nil';
-  if (Array.isArray(v)) return '[' + v.map(inspect).join(', ') + ']';
+  if (typeof v === 'number' && hint === 'float') return floatText(v);
+  if (Array.isArray(v)) return '[' + v.map((item, i) => inspect(item, hint?.array?.[i])).join(', ') + ']';
   if (typeof v === 'object') {
-    return '{' + Object.entries(v).map(([k, x]) => '"' + k + '"=>' + inspect(x)).join(', ') + '}';
+    return '{' + Object.entries(v).map(([k, x]) => inspect(k) + '=>' + inspect(x, hint?.object?.[k])).join(', ') + '}';
   }
-  if (typeof v === 'string') return '"' + v + '"';
+  if (typeof v === 'string') {
+    const escapes = {
+      '"': '\\"', '\\': '\\\\', '#': '\\#',
+      '\u0007': '\\a', '\b': '\\b', '\t': '\\t', '\n': '\\n',
+      '\v': '\\v', '\f': '\\f', '\r': '\\r', '\u001b': '\\e',
+    };
+    return '"' + v.replace(/["\\\u0000-\u001f\u007f-\u009f\u2028\u2029]|#(?=[{@$])/g,
+      (character) => escapes[character] ?? '\\u' + character.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')) + '"';
+  }
   return String(v);
 };`,
   // Array#to_s do Ruby e o inspect (`["a", "b"]`). As receitas contam com isso:
   // logo depois vem gsub tirando colchetes e aspas.
-  toS: `const toS = (v) => {
+  toS: `const toS = (v, hint) => {
   if (v === null || v === undefined) return '';
-  if (typeof v === 'object') return inspect(v);
+  if (typeof v === 'number' && hint === 'float') return floatText(v);
+  if (typeof v === 'object') return inspect(v, hint);
   return String(v);
 };`,
+  floatText: `const floatText = (v) => {
+  if (typeof v !== 'number') throw new Error('AP-MIGRATION-INVALID-FLOAT-TEXT');
+  if (Number.isNaN(v)) return 'NaN';
+  if (v === Infinity) return 'Infinity';
+  if (v === -Infinity) return '-Infinity';
+  if (Object.is(v, -0)) return '-0.0';
+  if (v === 0) return '0.0';
+  const sign = v < 0 ? '-' : '';
+  const [mantissa, exponentText] = Math.abs(v).toExponential().split('e');
+  const digits = mantissa.replace('.', '');
+  const exponent = Number(exponentText);
+  const decpt = exponent + 1;
+  if (decpt > 0 && decpt < digits.length) {
+    return sign + digits.slice(0, decpt) + '.' + digits.slice(decpt);
+  }
+  if (decpt > 0 && decpt <= 15) {
+    return sign + digits + '0'.repeat(decpt - digits.length) + '.0';
+  }
+  if (decpt <= 0 && decpt > -4) {
+    return sign + '0.' + '0'.repeat(-decpt) + digits;
+  }
+  return sign + digits[0] + '.' + (digits.slice(1) || '0') +
+    'e' + (exponent < 0 ? '-' : '+') + String(Math.abs(exponent)).padStart(2, '0');
+};`,
   toI: `const toI = (v) => parseInt(String(v ?? '').trim(), 10) || 0;`,
-  toF: `const toF = (v) => parseFloat(String(v ?? '').trim()) || 0;`,
+  toF: `const toF = (v) => {
+  const result = parseFloat(String(v ?? '').trim());
+  return Number.isNaN(result) ? 0 : result;
+};`,
   list: `const list = (v) => (Array.isArray(v) ? v : v === null || v === undefined ? [] : [v]);`,
-  pluck: `const pluck = (v, keys) =>
-  list(v).map((item) => (keys.length === 1 ? item?.[keys[0]] : keys.map((k) => item?.[k])));`,
+  pluck: `const pluck = (v, keys) => {
+  const read = (item, key) => (Array.isArray(key) ? key : [key])
+    .reduce((value, part) => value?.[part], item);
+  return list(v).map((item) => keys.length === 1 ? read(item, keys[0]) : keys.map((key) => read(item, key)));
+};`,
   where: `const where = (v, field, op, expected) =>
   list(v).filter((item) => {
     const actual = item?.[field];
@@ -69,29 +113,118 @@ const HELPERS: Record<string, string> = {
   if (find instanceof RegExp) return text.replace(new RegExp(find.source, 'g' + find.flags.replace('g', '')), to);
   return text.split(String(find)).join(String(to));
 };`,
-  // Workato/Ruby `blank?`: nil, string vazia ou so espacos, lista/hash vazios.
+  // Workato/Ruby `blank?`: nil, false, string vazia/espacos, lista/hash vazios.
   blank: `const blank = (v) => {
-  if (v === null || v === undefined) return true;
+  if (v === null || v === undefined || v === false) return true;
   if (typeof v === 'string') return v.trim() === '';
   if (Array.isArray(v)) return v.length === 0;
   if (typeof v === 'object') return Object.keys(v).length === 0;
   return false;
 };`,
-  presence: `const presence = (v) => (blank(v) ? undefined : v);`,
+  presence: `const presence = (v) => (blank(v) ? null : v);`,
   // smart_join do Workato descarta itens vazios antes de juntar.
   smartJoin: `const smartJoin = (v, sep) => list(v).filter((x) => !blank(x)).map(String).join(sep);`,
-  includes: `const includes = (v, needle) =>
-  Array.isArray(v) ? v.map(String).includes(String(needle)) : String(v ?? '').includes(String(needle));`,
+  includes: `const includes = (v, needle) => {
+  if (typeof v === 'string') {
+    if (typeof needle !== 'string') throw new Error('AP-MIGRATION-INVALID-MEMBERSHIP');
+    return v.includes(needle);
+  }
+  if (!Array.isArray(v)) throw new Error('AP-MIGRATION-INVALID-MEMBERSHIP');
+  const equal = (a, b) => {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+      return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+        a.every((value, i) => equal(value, b[i]));
+    }
+    const plain = (value) => Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null;
+    if (!plain(a) || !plain(b)) throw new Error('AP-MIGRATION-INVALID-MEMBERSHIP');
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key]));
+  };
+  return v.some((item) => equal(item, needle));
+};`,
+  formatMap: `const formatMap = (v, template, hint) => {
+  const invalid = () => { throw new Error('AP-MIGRATION-INVALID-FORMAT-MAP'); };
+  if (!Array.isArray(v) || typeof template !== 'string') return invalid();
+  const unsafeCompoundText = (kind) => kind === 'symbol' || kind === 'unrepresented' ||
+    (kind && typeof kind === 'object' && (kind.rubyKeys ||
+      (kind.array ? kind.array.some(unsafeCompoundText) : Object.values(kind.object).some(unsafeCompoundText))));
+  const text = (value, kind) => value !== null && typeof value === 'object' && unsafeCompoundText(kind) ? invalid() : toS(value, kind);
+  const parts = [];
+  let literal = '', mode = '';
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] !== '%') { literal += template[i]; continue; }
+    const next = template[++i];
+    if (next === '%') { literal += '%'; continue; }
+    parts.push({ literal }); literal = '';
+    if (next === 's') {
+      if (mode === 'named') return invalid();
+      mode = 'positional'; parts.push({ positional: true });
+    } else if (next === '{') {
+      if (mode === 'positional') return invalid();
+      const end = template.indexOf('}', i + 1);
+      if (end <= i + 1) return invalid();
+      mode = 'named'; parts.push({ key: template.slice(i + 1, end) }); i = end;
+    } else return invalid();
+  }
+  parts.push({ literal });
+  return v.map((item, row) => {
+    const itemHint = hint?.array?.[row];
+    const values = Array.isArray(item) ? item : [item];
+    let position = 0;
+    return parts.map((part) => {
+      if (Object.hasOwn(part, 'literal')) return part.literal;
+      if (part.positional) {
+        if (position >= values.length) return invalid();
+        const valueHint = Array.isArray(item) ? itemHint?.array?.[position] : itemHint;
+        return text(values[position++], valueHint);
+      }
+      if (item === null || typeof item !== 'object' || Array.isArray(item) || !Object.hasOwn(item, part.key)) return invalid();
+      if (itemHint?.rubyKeys === 'unsupported') return invalid();
+      return text(item[part.key], itemHint?.object?.[part.key]);
+    }).join('');
+  });
+};`,
+  stringAffix: `const stringAffix = (v, affixes, prefix) => {
+  if (typeof v !== 'string') throw new Error('AP-MIGRATION-INVALID-STRING-AFFIX');
+  return affixes.some((affix) => {
+    if (typeof affix !== 'string') throw new Error('AP-MIGRATION-INVALID-STRING-AFFIX');
+    return prefix ? v.startsWith(affix) : v.endsWith(affix);
+  });
+};`,
   matches: `const matches = (v, re) => re.test(toS(v));`,
   at: `const at = (v, i) => {
   const n = Number(i);
   if (typeof v === 'string' || Array.isArray(v)) {
     const index = n < 0 ? v.length + n : n;
-    return v[index];
+    return v[index] ?? null;
   }
   return v?.[i];
 };`,
-  dig: `const dig = (v, k) => v?.[k];`,
+  dig: `const dig = (v, k) => typeof k === 'number' ? at(v, k) : v?.[k];`,
+  truthy: `const truthy = (v) => v !== null && v !== undefined && v !== false;`,
+  rubyAnd: `const rubyAnd = (left, right) => truthy(left) ? right() : left;`,
+  rubyOr: `const rubyOr = (left, right) => truthy(left) ? left : right();`,
+  // O destino JSON usa chaves string. Nao aceitar chaves compostas ou colisoes
+  // entre tipos (1 e "1", :slot e "slot", 1 e 1.0) que Ruby separa.
+  rubyHash: `const rubyHash = (entries) => {
+  const seen = new Map();
+  const mapped = entries.map(([raw, value, hint]) => {
+    const supported = raw === null || typeof raw === 'string' || typeof raw === 'boolean' ||
+      (typeof raw === 'number' && Number.isFinite(raw));
+    if (!supported || hint === 'unsupported' || (hint === 'unknown' && typeof raw === 'number')) {
+      throw new Error(${JSON.stringify(INVALID_HASH_KEY)});
+    }
+    const kind = hint === 'unknown' ? (raw === null ? 'nil' : typeof raw) : hint;
+    const key = String(raw);
+    const previous = seen.get(key);
+    if (previous && (previous.raw !== raw || previous.kind !== kind)) throw new Error(${JSON.stringify(INVALID_HASH_KEY)});
+    seen.set(key, { raw, kind });
+    return [key, value];
+  });
+  return Object.fromEntries(mapped);
+};`,
   // `.quote` do Workato dobra a aspa simples (escape de SQL).
   quote: `const quote = (v) => String(v ?? '').split("'").join("''");`,
   b64: `const b64 = (v) => {
@@ -148,7 +281,7 @@ const HELPERS: Record<string, string> = {
   const ms3 = String(d.getMilliseconds()).padStart(3, '0');
   const zoneName = new Intl.DateTimeFormat('en-US', { timeZone: tz || undefined, timeZoneName: 'short' })
     .formatToParts(d).find((item) => item.type === 'timeZoneName')?.value ?? '';
-  return fmt
+  return fmt.split('%%').map((part) => part
     .replace(/%:z/g, offset.slice(0, 3) + ':' + offset.slice(3))
     .replace(/%z/g, offset)
     .replace(/%Z/g, zoneName)
@@ -172,7 +305,9 @@ const HELPERS: Record<string, string> = {
     .replace(/%S/g, p(second))
     .replace(/%j/g, p(yday, 3))
     .replace(/%A/g, weekdays[wday] ?? '')
-    .replace(/%a/g, (weekdays[wday] ?? '').slice(0, 3));
+    .replace(/%a/g, (weekdays[wday] ?? '').slice(0, 3))
+    .replace(/%w/g, String(wday))
+    .replace(/%u/g, String(wday === 0 ? 7 : wday))).join('%');
 };`,
   toDate: `const toDate = (v) => {
   if (v === null || v === undefined || v === '') return '';
@@ -182,7 +317,8 @@ const HELPERS: Record<string, string> = {
 };`,
   toDateFmt: `const toDateFmt = (v, fmt) => {
   const text = String(v ?? '');
-  const format = String(fmt ?? '');
+  const tokens = { YYYY: '%Y', YY: '%y', MM: '%m', DD: '%d' };
+  const format = String(fmt ?? '').replace(/YYYY|YY|MM|DD/g, (token) => tokens[token]);
   let i = 0;
   let j = 0;
   let year = 1970;
@@ -224,14 +360,99 @@ const HELPERS: Record<string, string> = {
 };`,
   strip: `const strip = (v) => String(v ?? '').trim();`,
   split: `const split = (v, sep) => String(v ?? '').split(sep);`,
-  join: `const join = (v, sep) => list(v).map((x) => (x === null || x === undefined ? '' : String(x))).join(sep);`,
+  splitLiteralLimit: `const splitLiteralLimit = (v, sep, limit) => {
+  if (typeof v !== 'string' || typeof limit !== 'number' || !Number.isFinite(limit)) throw new TypeError('invalid split receiver or limit');
+  const n = Math.trunc(limit);
+  if (!v.length) return [];
+  if (n <= 0) {
+    const parts = v.split(sep);
+    if (n === 0) while (parts.length && parts[parts.length - 1] === '') parts.pop();
+    return parts;
+  }
+  const parts = [];
+  let start = 0;
+  while (parts.length < n - 1) {
+    const at = v.indexOf(sep, start);
+    if (at < 0) break;
+    parts.push(v.slice(start, at));
+    start = at + sep.length;
+  }
+  parts.push(v.slice(start));
+  return parts;
+};`,
+  repeatString: `const repeatString = (v, count) => {
+  if (typeof v !== 'string' || typeof count !== 'number' || !Number.isFinite(count)) throw new TypeError('invalid string repetition');
+  return v.repeat(Math.trunc(count));
+};`,
+  sliceAfterArray: `const sliceAfterArray = (v, pattern) => {
+  if (!Array.isArray(v)) throw new TypeError('slice_after requires an array');
+  const groups = [];
+  let group = [];
+  for (const item of v) {
+    group.push(item);
+    const hit = pattern instanceof RegExp ? (typeof item === 'string' && pattern.test(item)) : item === pattern;
+    if (hit) { groups.push(group); group = []; }
+  }
+  if (group.length) groups.push(group);
+  return groups;
+};`,
+  sliceListCount: `const sliceListCount = (v, n, drop = false) => {
+  const invalid = () => { throw new Error(drop ? 'AP-MIGRATION-INVALID-DROP' : 'AP-MIGRATION-INVALID-TAKE'); };
+  if (!Array.isArray(v) || typeof n !== 'number' || !Number.isFinite(n)) invalid();
+  const count = Math.trunc(n);
+  if (!Number.isSafeInteger(count) || count < 0) invalid();
+  return drop ? v.slice(count) : v.slice(0, count);
+};`,
+  join: `const join = (v, sep) => {
+  if (sep == null) sep = '';
+  if (typeof sep !== 'string') throw new Error('AP-MIGRATION-INVALID-JOIN');
+  const combine = (items) => items.map((x) => Array.isArray(x) ? combine(x) : x == null ? '' : String(x)).join(sep);
+  return combine(list(v));
+};`,
   upcase: `const upcase = (v) => String(v ?? '').toUpperCase();`,
   downcase: `const downcase = (v) => String(v ?? '').toLowerCase();`,
   flatten: `const flatten = (v) => list(v).flat(Infinity);`,
   len: `const len = (v) => (Array.isArray(v) || typeof v === 'string' ? v.length : blank(v) ? 0 : Object.keys(v).length);`,
   add: `const add = (left, right) => (typeof left === 'number' ? left + Number(right) : String(left ?? '') + String(right ?? ''));`,
+  zonedWall: `const zonedWall = (ms, tz) => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(ms);
+  const n = (name) => Number(parts.find((p) => p.type === name)?.value);
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) + ((ms % 1000) + 1000) % 1000;
+};`,
+  zonedResolve: `const zonedResolve = (wall, tz) => {
+  const offsets = new Set([-2, 0, 2].map((days) => {
+    const probe = wall + days * 86400000;
+    return zonedWall(probe, tz) - probe;
+  }));
+  const candidates = [...offsets].map((offset) => wall - offset).filter((ms) => zonedWall(ms, tz) === wall);
+  if (candidates.length !== 1) throw new Error('AP-MIGRATION-AMBIGUOUS-DATE: local time is ambiguous or nonexistent');
+  return { ms: candidates[0], tz };
+};`,
+  zonedShift: `const zonedShift = (v, n, unit) => {
+  if (typeof n !== 'number' || !Number.isFinite(n)) throw new Error('AP-MIGRATION-INVALID-DATE-SHIFT');
+  const factors = { hours: 3600000, minutes: 60000, seconds: 1000 };
+  if (factors[unit]) {
+    const ms = v.ms + n * factors[unit];
+    if (!Number.isFinite(ms) || Number.isNaN(new Date(ms).getTime())) throw new Error('AP-MIGRATION-INVALID-DATE-SHIFT');
+    return { ms, tz: v.tz };
+  }
+  if (!Number.isSafeInteger(n)) throw new Error('AP-MIGRATION-INVALID-DATE-SHIFT');
+  const date = new Date(zonedWall(v.ms, v.tz));
+  if (unit === 'days' || unit === 'weeks') date.setUTCDate(date.getUTCDate() + n * (unit === 'weeks' ? 7 : 1));
+  else if (unit === 'months' || unit === 'years') {
+    const day = date.getUTCDate();
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + n * (unit === 'years' ? 12 : 1));
+    const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+    date.setUTCDate(Math.min(day, last));
+  } else throw new Error('AP-MIGRATION-INVALID-DATE-SHIFT');
+  if (Number.isNaN(date.getTime())) throw new Error('AP-MIGRATION-INVALID-DATE-SHIFT');
+  return zonedResolve(date.getTime(), v.tz);
+};`,
   addCal: `const addCal = (v, n, unit) => {
   const tagged = v && typeof v === 'object' && typeof v.ms === 'number';
+  if (tagged && typeof v.tz === 'string') return zonedShift(v, n, unit);
   const raw = tagged ? '' : String(v ?? '');
   const iso = raw.match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[T\\s](\\d{2}):(\\d{2}):(\\d{2}))?/);
   let y;
@@ -289,6 +510,20 @@ const HELPERS: Record<string, string> = {
   const last = new Date(y, m, 0).getDate();
   day = Math.min(day, last);
   return y + '-' + p(m) + '-' + p(day) + 'T' + p(hh) + ':' + p(mm) + ':' + p(ss);
+};`,
+  durationSeconds: `const durationSeconds = (unit, n) => {
+  const factors = { seconds: 1, minutes: 60, hours: 3600, days: 86400,
+    weeks: 604800, months: 2629746, years: 31556952 };
+  const factor = factors[unit];
+  if (!factor || typeof n !== 'number' || !Number.isFinite(n) ||
+      (Number.isInteger(n) && !Number.isSafeInteger(n))) {
+    throw new Error('AP-MIGRATION-INVALID-DURATION: duracao exige numero representavel sem perda.');
+  }
+  const seconds = n * factor;
+  if (!Number.isFinite(seconds) || (Number.isInteger(seconds) && !Number.isSafeInteger(seconds))) {
+    throw new Error('AP-MIGRATION-INVALID-DURATION: segundos fora da faixa representavel sem perda.');
+  }
+  return seconds;
 };`,
   mul: `const mul = (left, right) => Number(left) * Number(right);`,
   toCurrency: `const toCurrency = (value, unit, precision, separator, delimiter) => {
@@ -363,6 +598,7 @@ const HELPERS: Record<string, string> = {
   return x <= y;
 };`,
   inZone: `const inZone = (v, tz) => {
+  if (tz == null) tz = 'UTC';
   const ms = v && typeof v === 'object' && typeof v.ms === 'number' ? v.ms : new Date(v).getTime();
   if (Number.isNaN(ms)) return '';
   try {
@@ -386,24 +622,45 @@ const HELPERS: Record<string, string> = {
   return buf.toString('utf8');
 };`,
   sliceAt: `const sliceAt = (v, from, to, exclusive) => {
-  const seq = typeof v === 'string' || Array.isArray(v) ? v : String(v ?? '');
+  const invalid = () => { throw new Error('AP-MIGRATION-INVALID-RANGE'); };
+  const string = typeof v === 'string';
+  if (!string && !Array.isArray(v)) return invalid();
+  const seq = string ? Array.from(v) : v;
   const len = seq.length;
   const norm = (i) => {
-    const n = Number(i);
+    if (typeof i !== 'number' || !Number.isFinite(i)) return invalid();
+    const n = Math.trunc(i);
+    if (!Number.isSafeInteger(n)) return invalid();
     return n < 0 ? len + n : n;
   };
-  let a = norm(from);
-  let b = norm(to);
-  if (!exclusive) b += 1;
-  if (a < 0) a = 0;
-  return seq.slice(a, b);
+  const a = from === null ? 0 : norm(from);
+  const b = to === null ? len : norm(to) + (exclusive ? 0 : 1);
+  if (a < 0 || a > len) return null;
+  const result = b < a ? [] : seq.slice(a, Math.min(b, len));
+  return string ? result.join('') : result;
 };`,
   whereNot: `const whereNot = (v, field, op, expected) => list(v).filter((item) => !where([item], field, op, expected).length);`,
   indexOf: `const indexOf = (v, needle) => {
   const i = list(v).findIndex((item) => item === needle || String(item) === String(needle));
   return i < 0 ? null : i;
 };`,
-  sumOf: `const sumOf = (v) => list(v).reduce((acc, item) => acc + Number(item), 0);`,
+  sumOf: `const sumOf = (v) => {
+  const invalid = () => { throw new Error('AP-MIGRATION-INVALID-SUM'); };
+  if (!Array.isArray(v)) return invalid();
+  if (!v.length) return 0;
+  const kind = typeof v[0];
+  if (kind !== 'number' && kind !== 'string') return invalid();
+  return v.reduce((acc, item) => {
+    if (typeof item !== kind || (kind === 'number' && !Number.isFinite(item))) return invalid();
+    const result = acc + item;
+    if (kind === 'number' && !Number.isFinite(result)) return invalid();
+    return result;
+  }, kind === 'string' ? '' : 0);
+};`,
+  countOf: `const countOf = (v, needle) => {
+  if (!Array.isArray(v)) throw new Error('AP-MIGRATION-INVALID-COUNT');
+  return v.reduce((acc, item) => acc + (includes([item], needle) ? 1 : 0), 0);
+};`,
   maxOf: `const maxOf = (v) => {
   const xs = list(v);
   if (!xs.length) return null;
@@ -508,6 +765,7 @@ const HELPERS: Record<string, string> = {
   const from = n < 0 ? seq.length + n : n;
   const size = Number(len);
   if (!Number.isFinite(from) || !Number.isFinite(size)) return '';
+  if (from < 0 || from > seq.length || size < 0) return null;
   return seq.slice(from, from + size);
 };`,
   regexAt: `const regexAt = (v, re, group) => {
@@ -546,6 +804,56 @@ const HELPERS: Record<string, string> = {
   return buf.subarray(from, from + size).toString('utf8');
 };`,
   scrub: `const scrub = (v) => String(v ?? '').replace(/\\uFFFD|[\\uD800-\\uDFFF]/g, '');`,
+  // RFC 1321; UTF-8 String -> lowercase hex, using only V8 intrinsics.
+  md5Hex: `const md5Hex = (value) => {
+  if (typeof value !== 'string') throw new Error('${INVALID_DIGEST_INPUT}');
+  const bytes = [];
+  for (const character of value) {
+    const cp = character.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new Error('${INVALID_DIGEST_INPUT}');
+    if (cp < 0x80) bytes.push(cp);
+    else if (cp < 0x800) bytes.push(0xc0 | (cp >>> 6), 0x80 | (cp & 63));
+    else if (cp < 0x10000) bytes.push(0xe0 | (cp >>> 12), 0x80 | ((cp >>> 6) & 63), 0x80 | (cp & 63));
+    else bytes.push(0xf0 | (cp >>> 18), 0x80 | ((cp >>> 12) & 63), 0x80 | ((cp >>> 6) & 63), 0x80 | (cp & 63));
+  }
+  const size = Math.ceil((bytes.length + 9) / 64) * 64;
+  const words = Array(size / 4).fill(0);
+  for (let i = 0; i < bytes.length; i++) words[i >>> 2] |= bytes[i] << ((i & 3) * 8);
+  words[bytes.length >>> 2] |= 0x80 << ((bytes.length & 3) * 8);
+  words[words.length - 2] = (bytes.length * 8) >>> 0;
+  words[words.length - 1] = Math.floor(bytes.length / 0x20000000) >>> 0;
+  const state = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+  const rotations = [[7, 12, 17, 22], [5, 9, 14, 20], [4, 11, 16, 23], [6, 10, 15, 21]];
+  const constants = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+  ];
+  for (let block = 0; block < words.length; block += 16) {
+    let [a, b, c, d] = state;
+    for (let i = 0; i < 64; i++) {
+      let f, g;
+      if (i < 16) { f = (b & c) | (~b & d); g = i; }
+      else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) & 15; }
+      else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) & 15; }
+      else { f = c ^ (b | ~d); g = (7 * i) & 15; }
+      const sum = (a + f + constants[i] + words[block + g]) | 0;
+      const shift = rotations[i >>> 4][i & 3];
+      const rotated = (sum << shift) | (sum >>> (32 - shift));
+      a = d; d = c; c = b; b = (b + rotated) | 0;
+    }
+    state[0] = (state[0] + a) | 0;
+    state[1] = (state[1] + b) | 0;
+    state[2] = (state[2] + c) | 0;
+    state[3] = (state[3] + d) | 0;
+  }
+  return state.map((word) => [0, 8, 16, 24].map((shift) => ((word >>> shift) & 255).toString(16).padStart(2, '0')).join('')).join('');
+};`,
   isoCountries: `const ISO_COUNTRIES = ${JSON.stringify(ISO_COUNTRIES)};`,
   countryName: `const countryName = (v) => {
   const q = String(v ?? '').trim().toLowerCase();
@@ -561,6 +869,9 @@ const HELPERS: Record<string, string> = {
 
 /** Dependencias entre helpers: puxar um traz o que ele usa. */
 const HELPER_DEPS: Record<string, string[]> = {
+  dig: ['at'],
+  rubyAnd: ['truthy'],
+  rubyOr: ['truthy'],
   toDateFmt: ['toDate'],
   gsubLit: ['gsub'],
   gsubHash: ['gsub'],
@@ -568,7 +879,9 @@ const HELPER_DEPS: Record<string, string[]> = {
   toCsv: ['list'],
   countryName: ['isoCountries'],
   countryAlpha3: ['isoCountries'],
-  toS: ['inspect'],
+  inspect: ['floatText'],
+  toS: ['inspect', 'floatText'],
+  formatMap: ['toS'],
   pluck: ['list'],
   where: ['list'],
   presence: ['blank'],
@@ -580,10 +893,13 @@ const HELPER_DEPS: Record<string, string[]> = {
   len: ['blank'],
   whereNot: ['where', 'list'],
   indexOf: ['list'],
-  sumOf: ['list'],
+  countOf: ['includes'],
   maxOf: ['list'],
   minOf: ['list'],
   boundOf: ['datePart', 'inZone'],
+  zonedResolve: ['zonedWall'],
+  zonedShift: ['zonedWall', 'zonedResolve'],
+  addCal: ['zonedShift'],
   decodeB64: [],
 };
 
@@ -620,7 +936,7 @@ type Token =
   | { kind: 'string'; value: string }
   | { kind: 'number'; value: string }
   | { kind: 'regex'; source: string; flags: string }
-  | { kind: 'ident'; value: string }
+  | { kind: 'ident'; value: string; synthetic?: boolean }
   | { kind: 'op'; value: string };
 
 const OPERATORS = [
@@ -628,58 +944,250 @@ const OPERATORS = [
   '?', ':', '.', ',', '(', ')', '[', ']', '{', '}', '|', ';', '+', '-', '*', '/', '%', '>', '<', '!',
 ];
 
+const RUBY_STRING_ENCODER = new TextEncoder();
+type RubyEscapeBytes = { bytes: number[]; end: number };
+
+function rubyDoubleEscapeBytes(src: string, start: number, flags = 0): RubyEscapeBytes | null {
+  const cp = src.codePointAt(start + 1);
+  if (cp === undefined || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+  const next = String.fromCodePoint(cp);
+  let end = start + 1 + next.length;
+  const bytes = (text: string): number[] => [...RUBY_STRING_ENCODER.encode(text)];
+  if (next === '\n') return { bytes: [], end };
+  if (next === '\r' && src[end] === '\n') return { bytes: [], end: end + 1 };
+  if (next === 'u') {
+    if (flags) return null;
+    let points: string[];
+    if (src[end] === '{') {
+      const close = src.indexOf('}', end + 1);
+      if (close < 0) return null;
+      const body = src.slice(end + 1, close);
+      if (!/^[ \t\v\f\r]*(?:[0-9a-fA-F]{1,6}(?:[ \t\v\f\r]+[0-9a-fA-F]{1,6})*)?[ \t\v\f\r]*$/.test(body)) return null;
+      points = body.trim() ? body.trim().split(/[ \t\v\f\r]+/) : [];
+      end = close + 1;
+    } else {
+      const point = src.slice(end).match(/^[0-9a-fA-F]{4}/)?.[0];
+      if (!point) return null;
+      points = [point];
+      end += point.length;
+    }
+    const codepoints = points.map((point) => Number.parseInt(point, 16));
+    if (codepoints.some((point) => point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff))) return null;
+    return { bytes: codepoints.flatMap((point) => bytes(String.fromCodePoint(point))), end };
+  }
+  if (/[0-7]/.test(next)) {
+    const digits = src.slice(start + 1).match(/^[0-7]{1,3}/)![0];
+    return { bytes: [Number.parseInt(digits, 8) & 0xff], end: start + 1 + digits.length };
+  }
+  if (next === 'x') {
+    const digits = src.slice(end).match(/^[0-9a-fA-F]{1,2}/)?.[0];
+    return digits ? { bytes: [Number.parseInt(digits, 16)], end: end + digits.length } : null;
+  }
+  if (next === 'c' || next === 'C' || next === 'M') {
+    const flag = next === 'M' ? 2 : 1;
+    if (flags & flag) return null;
+    if (next !== 'c') {
+      if (src[end] !== '-') return null;
+      end++;
+    }
+    let value: number;
+    if (src[end] === '\\') {
+      if (src[end + 1] === 'u' || src[end + 1] === 'U') return null;
+      const nested = rubyDoubleEscapeBytes(src, end, flags | flag);
+      if (!nested || nested.bytes.length !== 1) return null;
+      value = nested.bytes[0]!;
+      end = nested.end;
+    } else {
+      const operand = src.codePointAt(end);
+      if (operand === undefined || operand > 0x7f ||
+          (operand < 0x20 && ![9, 10, 11, 12, 13].includes(operand)) || operand === 0x7f) return null;
+      end++;
+      if (operand === 13 && src[end] === '\n') end++;
+      value = operand === 13 && src[end - 1] === '\n' ? 10 : operand;
+      if (flag === 1 && value === 63) return { bytes: [127], end };
+    }
+    return { bytes: [flag === 2 ? value | 0x80 : value & 0x9f], end };
+  }
+  const escapes: Record<string, string> = {
+    a: '\u0007', b: '\b', t: '\t', n: '\n', v: '\v', f: '\f',
+    r: '\r', e: '\u001b', s: ' ',
+  };
+  return { bytes: bytes(escapes[next] ?? next), end };
+}
+
+/** Decode consecutive escapes as UTF-8 bytes; invalid binary strings stay incomplete. */
+export function decodeRubyStringEscape(src: string, start: number, quote: '"' | "'"): { value: string; end: number } | null {
+  if (src[start] !== '\\') return null;
+  const bytes: number[] = [];
+  let end = start;
+  while (src[end] === '\\') {
+    let decoded: RubyEscapeBytes | null;
+    if (quote === "'") {
+      const cp = src.codePointAt(end + 1);
+      if (cp === undefined || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+      let next = String.fromCodePoint(cp);
+      let nextEnd = end + 1 + next.length;
+      if (next === '\r' && src[nextEnd] === '\n') { next = '\n'; nextEnd++; }
+      const value = next === "'" || next === '\\' ? next : '\\' + next;
+      decoded = { bytes: [...RUBY_STRING_ENCODER.encode(value)], end: nextEnd };
+    } else {
+      decoded = rubyDoubleEscapeBytes(src, end);
+    }
+    if (!decoded) return null;
+    bytes.push(...decoded.bytes);
+    end = decoded.end;
+  }
+  try {
+    // ignoreBOM preserves a BOM as data instead of silently consuming it.
+    return { value: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(new Uint8Array(bytes)), end };
+  } catch {
+    return null;
+  }
+}
+
+/** An already-rendered native expression is opaque to Ruby, including its pills. */
+function nativeFormulaAt(src: string, start: number): { value: string; end: number } | null {
+  const prefix = 'ap-formula-v1::{', suffix = '}::ap-formula-v1';
+  if (!src.startsWith(prefix, start)) return null;
+  const end = src.indexOf(suffix, start + prefix.length);
+  if (end < 0) return null;
+  const body = src.slice(start + prefix.length, end);
+  if (!body.trim() || body.includes(prefix)) return null;
+  let quote: string | undefined;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'") quote = ch;
+  }
+  if (quote) return null;
+  return { value: src.slice(start, end + suffix.length), end: end + suffix.length };
+}
+
 /** Aspas duplas do Ruby interpolam `#{...}`. Aspas simples não. */
-function scanString(src: string, i: number): { tokens: Token[]; end: number } | null {
-  const quote = src[i]!;
+function scanString(src: string, i: number, percent?: { open: string; close: string; interpolate: boolean }): { tokens: Token[]; end: number; interpolated: boolean } | null {
+  const quote = percent ? (percent.interpolate ? '"' : "'") : src[i]!;
+  if (quote !== '"' && quote !== "'") return null;
+  const close = percent?.close ?? quote;
+  let depth = 1;
   let j = i + 1;
   let literal = '';
   const tokens: Token[] = [];
+  let interpolated = false;
   const pushLiteral = () => {
     if (!literal) return;
     if (tokens.length) tokens.push({ kind: 'op', value: '+' });
     tokens.push({ kind: 'string', value: literal });
     literal = '';
   };
+  const pushInterpolation = (inner: Token[]) => {
+    pushLiteral();
+    if (tokens.length) tokens.push({ kind: 'op', value: '+' });
+    // A Ruby interpolation is a grouped expression converted to a string.
+    // Reuse the existing parser and to_s helper; evaluate the inner only once.
+    tokens.push(
+      { kind: 'op', value: '(' }, ...inner, { kind: 'op', value: ')' },
+      { kind: 'op', value: '.' }, { kind: 'ident', value: 'to_s', synthetic: true },
+    );
+  };
   while (j < src.length) {
     if (src[j] === '\\') {
-      const next = src[j + 1] ?? '';
-      literal += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+      if (percent && !percent.interpolate) {
+        const next = src[j + 1];
+        if (next === undefined) return null;
+        literal += next === percent.open || next === close || next === '\\' ? next : '\\' + next;
+        j += 2;
+        continue;
+      }
+      const decoded = decodeRubyStringEscape(src, j, quote);
+      if (decoded === null) return null;
+      literal += decoded.value;
+      j = decoded.end;
+      continue;
+    }
+    if (src[j] === '\r' && src[j + 1] === '\n') {
+      literal += '\n';
       j += 2;
       continue;
     }
+    // Native AP formulas are already rendered input expressions, not Ruby.
+    // Bind the complete wrapper so its quotes/pills/question marks stay opaque.
+    if (src.startsWith('ap-formula-v1::{', j)) {
+      const native = nativeFormulaAt(src, j);
+      if (!native) return null;
+      interpolated = true;
+      pushInterpolation([{ kind: 'pill', value: native.value }]);
+      j = native.end;
+      continue;
+    }
     if (src.startsWith('{{', j)) {
+      interpolated = true;
       const end = src.indexOf('}}', j + 2);
       if (end < 0) return null;
-      pushLiteral();
-      if (tokens.length) tokens.push({ kind: 'op', value: '+' });
-      tokens.push({ kind: 'pill', value: src.slice(j, end + 2) });
+      pushInterpolation([{ kind: 'pill', value: src.slice(j, end + 2) }]);
       j = end + 2;
       continue;
     }
     if (quote === '"' && src.startsWith('#{', j)) {
+      interpolated = true;
       const end = interpolationEnd(src, j + 2);
       if (end < 0) return null;
-      pushLiteral();
       const innerSrc = src.slice(j + 2, end).trim();
       if (innerSrc) {
         const inner = tokenize(innerSrc);
         if (!inner) return null;
-        if (tokens.length) tokens.push({ kind: 'op', value: '+' });
-        tokens.push(...inner);
+        pushInterpolation(inner);
       }
-      literal = '';
+      // An empty interpolation contributes no text; preserve the pending literal.
       j = end + 1;
       continue;
     }
-    if (src[j] === quote) {
+    if (percent && percent.open !== close && src[j] === percent.open) {
+      depth++;
+      literal += src[j++];
+      continue;
+    }
+    if (src[j] === close && --depth === 0) {
       if (!tokens.length) tokens.push({ kind: 'string', value: literal });
       else pushLiteral();
-      return { tokens, end: j + 1 };
+      // A string remains one atom, so a following method applies to all parts.
+      const grouped: Token[] = tokens.length > 1
+        ? [{ kind: 'op', value: '(' }, ...tokens, { kind: 'op', value: ')' }]
+        : tokens;
+      return { tokens: grouped, end: j + 1, interpolated };
     }
     literal += src[j];
     j++;
   }
   return null;
+}
+
+/** A bounded String-only subset: never percent shell/array/regex literals. */
+function scanPercentString(src: string, start: number): ReturnType<typeof scanString> {
+  if (src[start] !== '%') return null;
+  let delimiter = start + 1;
+  const kind = src[delimiter];
+  if (kind === 'q' || kind === 'Q') delimiter++;
+  const open = src[delimiter];
+  if (!open || !'([{<!|/'.includes(open)) return null;
+  const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}', '<': '>' };
+  return scanString(src, delimiter, { open, close: pairs[open] ?? open, interpolate: kind !== 'q' });
+}
+
+/** Read a static literal at a known offset, sharing the compiler's string grammar. */
+export function parseRubyStringLiteralAt(src: string, start: number): { value: string; end: number } | null {
+  const scanned = scanString(src, start);
+  if (!scanned || scanned.interpolated || scanned.tokens.length !== 1) return null;
+  const token = scanned.tokens[0]!;
+  return token.kind === 'string' ? { value: token.value, end: scanned.end } : null;
+}
+
+/** A complete static Ruby string literal; interpolation is handled as a formula. */
+export function parseRubyStringLiteral(source: string): string | null {
+  const src = source.trim();
+  const parsed = parseRubyStringLiteralAt(src, 0);
+  return parsed?.end === src.length ? parsed.value : null;
 }
 
 /** `/.../` só depois de `(`, `,` ou início. Divisão não entra aqui. */
@@ -705,7 +1213,17 @@ function regexAt(src: string, j: number): number | null {
 function interpolationEnd(src: string, j: number): number {
   let depth = 1;
   while (j < src.length) {
+    if (src.startsWith('ap-formula-v1::{', j)) {
+      const native = nativeFormulaAt(src, j);
+      if (!native) return -1;
+      j = native.end;
+      continue;
+    }
     const ch = src[j]!;
+    if (ch === '%') {
+      const percent = scanPercentString(src, j);
+      if (percent) { j = percent.end; continue; }
+    }
     if (ch === '"' || ch === "'") {
       const scanned = scanString(src, j);
       if (!scanned) return -1;
@@ -743,6 +1261,27 @@ function tokenize(src: string): Token[] | null {
       i++;
       continue;
     }
+    if (ch === '%') {
+      const prev = prevMeaningful();
+      const valuePosition = !prev ||
+        (prev.kind === 'op' && ![')', ']', '}', '.', '&.'].includes(prev.value)) ||
+        (prev.kind === 'ident' && ['if', 'elsif', 'then', 'else', 'not', 'and', 'or'].includes(prev.value));
+      if (valuePosition) {
+        const percent = scanPercentString(src, i);
+        if (!percent) return null;
+        // Retain percent syntax as a grouped atom, not a quoted Symbol/label.
+        tokens.push({ kind: 'op', value: '(' }, ...percent.tokens, { kind: 'op', value: ')' });
+        i = percent.end;
+        continue;
+      }
+    }
+    if (src.startsWith('ap-formula-v1::{', i)) {
+      const native = nativeFormulaAt(src, i);
+      if (!native) return null;
+      tokens.push({ kind: 'pill', value: native.value });
+      i = native.end;
+      continue;
+    }
     // pill ja convertida: {{...}}
     if (src.startsWith('{{', i)) {
       const end = src.indexOf('}}', i + 2);
@@ -754,8 +1293,28 @@ function tokenize(src: string): Token[] | null {
     if (ch === '"' || ch === "'") {
       const scanned = scanString(src, i);
       if (!scanned) return null;
-      tokens.push(...scanned.tokens);
-      i = scanned.end;
+      // Ruby joins adjacent quoted literals before applying a postfix method.
+      // Keep the complete String as one atom, including interpolated parts.
+      const parts = [...scanned.tokens];
+      let end = scanned.end;
+      let adjacent = false;
+      for (;;) {
+        let next = end;
+        for (;;) {
+          if (/[ \t\f\v]/.test(src[next] ?? '') && next < src.length) { next++; continue; }
+          if (src.startsWith('\\\n', next)) { next += 2; continue; }
+          if (src.startsWith('\\\r\n', next)) { next += 3; continue; }
+          break;
+        }
+        if (src[next] !== '"' && src[next] !== "'") break;
+        const following = scanString(src, next);
+        if (!following) return null;
+        parts.push({ kind: 'op', value: '+' }, ...following.tokens);
+        adjacent = true;
+        end = following.end;
+      }
+      tokens.push(...(adjacent ? [{ kind: 'op' as const, value: '(' }, ...parts, { kind: 'op' as const, value: ')' }] : parts));
+      i = end;
       continue;
     }
     // regex literal: só onde um valor é esperado (senão `/` é divisão)
@@ -774,6 +1333,9 @@ function tokenize(src: string): Token[] | null {
             j += 2;
             continue;
           }
+          // Dynamic Ruby patterns are not literal JS RegExp source. Refuse
+          // until interpolation/dialect have an exact lowering contract.
+          if (src.startsWith('#{', j) || src.startsWith('{{', j)) return null;
           source += src[j];
           j++;
         }
@@ -790,9 +1352,35 @@ function tokenize(src: string): Token[] | null {
       }
     }
     if (/[0-9]/.test(ch)) {
-      const m = src.slice(i).match(/^\d+(?:\.\d+)?/)!;
-      tokens.push({ kind: 'number', value: m[0] });
-      i += m[0].length;
+      const m = src.slice(i).match(/^(\d(?:_?\d)*)(?:\.(\d(?:_?\d)*))?(?:[eE]([+-]?\d(?:_?\d)*))?/)!;
+      const consumed = m[0].length;
+      const separators = m[0].includes('_');
+      for (let group = 0; group < m.length; group++) {
+        if (m[group] !== undefined) m[group] = m[group]!.replace(/_/g, '');
+      }
+      // Ruby leading-zero integers may be octal; do not introduce decimal
+      // coercion for that syntax while extending only decimal separators.
+      if (separators && m[1]!.length > 1 && m[1]!.startsWith('0')) return null;
+      const number = Number(m[0]);
+      // Ruby Integer tem precisao arbitraria; JS Number nao preserva esses tokens.
+      const float = m[2] !== undefined || m[3] !== undefined;
+      if (!Number.isFinite(number) || (!float && !Number.isSafeInteger(number))) return null;
+      let literal = m[0];
+      if (m[3] !== undefined) {
+        // Expand the decimal spelling, retaining the existing explicit Float
+        // hints for division and hash identity without adding a runtime type.
+        if (number === 0) literal = '0.0';
+        else {
+          const digits = m[1]! + (m[2] ?? '');
+          const point = m[1]!.length + Number(m[3]);
+          literal = point <= 0 ? `0.${'0'.repeat(-point)}${digits}`
+            : point >= digits.length ? `${digits}${'0'.repeat(point - digits.length)}.0`
+            : `${digits.slice(0, point)}.${digits.slice(point)}`;
+          literal = literal.replace(/^0+(?=\d)/, '');
+        }
+      }
+      tokens.push({ kind: 'number', value: literal });
+      i += consumed;
       continue;
     }
     if (/[A-Za-z_]/.test(ch)) {
@@ -809,6 +1397,29 @@ function tokenize(src: string): Token[] | null {
   return tokens;
 }
 
+/** Methods are lexical candidates. A ternary also requires complete supported
+ * syntax, without evaluating CODE. String text, pills and AP wrappers stay opaque. */
+export function rubySyntaxFeatures(source: string): { methods: string[]; ternary: boolean } | null {
+  const tokens = tokenize(source.trim().replace(/^=/, '').trim());
+  if (!tokens) return null;
+  const methods = new Set<string>();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const token = tokens[i]!, name = tokens[i + 1]!;
+    if (token.kind === 'op' && (token.value === '.' || token.value === '&.') && name.kind === 'ident' && !name.synthetic) {
+      methods.add(name.value);
+    }
+  }
+  let ternary = tokens.some(t => t.kind === 'op' && t.value === '?') &&
+    tokens.some(t => t.kind === 'op' && t.value === ':');
+  if (ternary) {
+    const registry = newBindingRegistry();
+    const state: State = { tokens, pos: 0, bindings: registry.bindings, pillNames: registry.pillNames,
+      helpers: new Set(), approximations: [], seq: registry.seq, dynamic: false };
+    ternary = parseExpr(state) !== null && state.pos === tokens.length;
+  }
+  return { methods: [...methods], ternary };
+}
+
 interface State {
   tokens: Token[];
   pos: number;
@@ -821,6 +1432,57 @@ interface State {
   dynamic: boolean;
   /** Parametro de bloco `gsub { |m| ... }`. */
   locals?: Map<string, string>;
+  /** Syntax-proven text types only; never inferred from unknown datapill values. */
+  textHints?: Map<string, TextHint>;
+  /** Values whose Ruby identity cannot be compared after JSON lowering. */
+  nonJsonComparisons?: Set<string>;
+  /** A known Float nested in an expression without usable text hints. */
+  lostFloatText?: Set<string>;
+}
+
+type TextHint = 'int' | 'float' | 'string' | 'symbol' | 'unrepresented' | { array: (TextHint | null)[] } |
+  { object: Record<string, TextHint | null>; rubyKeys?: 'symbol' | 'unsupported' };
+
+function textHint(js: string, s: State): TextHint | null {
+  while (js.startsWith('(') && js.endsWith(')')) js = js.slice(1, -1);
+  const stored = s.textHints?.get(js);
+  if (stored) return stored;
+  if (/^"(?:\\.|[^"\\])*"$/.test(js)) return 'string';
+  const scalar = numTy(js);
+  return scalar === 'any' ? null : scalar;
+}
+
+function rememberTextHint(js: string, hint: TextHint, s: State): string {
+  while (js.startsWith('(') && js.endsWith(')')) js = js.slice(1, -1);
+  (s.textHints ??= new Map()).set(js, hint);
+  return js;
+}
+
+function textCall(target: string, s: State, inspecting = false): string {
+  const hint = textHint(target, s);
+  let js: string;
+  if (hint === 'float') {
+    useHelper(s, 'floatText');
+    js = `floatText(${target})`;
+  } else {
+    const helper = inspecting ? 'inspect' : 'toS';
+    useHelper(s, helper);
+    js = `${helper}(${target}${hint ? `, ${JSON.stringify(hint)}` : ''})`;
+  }
+  rememberTextHint(js, 'string', s);
+  return js;
+}
+
+function numericTextHint(js: string, left: string, right: string, s: State): string {
+  const l = textHint(left, s), r = textHint(right, s);
+  if (l === 'float' || r === 'float') rememberTextHint(js, 'float', s);
+  else if (l === 'int' && r === 'int') rememberTextHint(js, 'int', s);
+  return js;
+}
+
+function numericType(js: string, s: State): 'int' | 'float' | 'any' {
+  const hint = textHint(js, s);
+  return hint === 'int' || hint === 'float' ? hint : 'any';
 }
 
 function useHelper(state: State, name: string): void {
@@ -836,6 +1498,45 @@ function bindPill(state: State, pill: string): string {
   state.pillNames.set(pill, name);
   state.bindings.set(name, pill);
   return name;
+}
+
+function jsonComparable(js: string, s: State): boolean {
+  while (js.startsWith('(') && js.endsWith(')')) js = js.slice(1, -1);
+  return !s.nonJsonComparisons?.has(js);
+}
+
+function markNonJsonComparison(js: string, s: State): string {
+  let key = js;
+  while (key.startsWith('(') && key.endsWith(')')) key = key.slice(1, -1);
+  (s.nonJsonComparisons ??= new Set()).add(key);
+  if (textHint(js, s) === null) rememberTextHint(js, 'unrepresented', s);
+  return js;
+}
+
+function inheritJsonComparison(js: string, inputs: string[], s: State): string {
+  if (inputs.some((input) => !jsonComparable(input, s))) markNonJsonComparison(js, s);
+  if (inputs.some((input) => hasLostFloatText(input, s))) markLostFloatText(js, s);
+  return js;
+}
+
+function hasLostFloatText(js: string, s: State): boolean {
+  while (js.startsWith('(') && js.endsWith(')')) js = js.slice(1, -1);
+  return s.lostFloatText?.has(js) ?? false;
+}
+
+function markLostFloatText(js: string, s: State): string {
+  let key = js;
+  while (key.startsWith('(') && key.endsWith(')')) key = key.slice(1, -1);
+  (s.lostFloatText ??= new Set()).add(key);
+  return js;
+}
+
+function hintContainsFloat(hint: TextHint | null): boolean {
+  if (hint === 'float') return true;
+  if (hint && typeof hint === 'object') {
+    return 'array' in hint ? hint.array.some(hintContainsFloat) : Object.values(hint.object).some(hintContainsFloat);
+  }
+  return false;
 }
 
 const peek = (s: State): Token | undefined => s.tokens[s.pos];
@@ -871,7 +1572,7 @@ function strftimeFormatKnown(fmtJs: string): boolean {
       i += 2;
       continue;
     }
-    if (!['%d', '%m', '%Y', '%y', '%H', '%M', '%S', '%I', '%p', '%z', '%Z', '%k', '%l', '%L', '%b', '%B', '%a', '%A', '%j', '%e'].includes(two)) return false;
+    if (!['%d', '%m', '%Y', '%y', '%H', '%M', '%S', '%I', '%p', '%z', '%Z', '%k', '%l', '%L', '%b', '%B', '%a', '%A', '%j', '%e', '%w', '%u', '%%'].includes(two)) return false;
     i++;
   }
   return true;
@@ -894,9 +1595,20 @@ function parseCalDuration(js: string): { unit: string; n: string } | null {
   return matched ? { unit: matched[1]!, n: matched[2]! } : null;
 }
 
+function calendarCall(target: string, method: string, s: State): string | null {
+  const unit = calendarUnit(method);
+  if (!unit) return null;
+  if (['day', 'month', 'year'].includes(method) && numericType(target, s) === 'any') {
+    useHelper(s, 'datePart');
+    return `datePart(${target}, '${method}')`;
+  }
+  return `__cal('${unit}', ${target})`;
+}
+
 /** Metodos sem argumento. */
 const NULLARY: Record<string, (target: string, s: State) => string> = {
-  to_s: (t, s) => (useHelper(s, 'toS'), `toS(${t})`),
+  to_s: (t, s) => textCall(t, s),
+  inspect: (t, s) => textCall(t, s, true),
   to_i: (t, s) => (useHelper(s, 'toI'), `toI(${t})`),
   to_f: (t, s) => (useHelper(s, 'toF'), `toF(${t})`),
   strip: (t, s) => (useHelper(s, 'strip'), `strip(${t})`),
@@ -904,6 +1616,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   downcase: (t, s) => (useHelper(s, 'downcase'), `downcase(${t})`),
   flatten: (t, s) => (useHelper(s, 'flatten'), `flatten(${t})`),
   presence: (t, s) => (useHelper(s, 'presence'), `presence(${t})`),
+  in_time_zone: (t, s) => (useHelper(s, 'inZone'), `inZone(${t}, "America/Los_Angeles")`),
   'present?': (t, s) => (useHelper(s, 'blank'), `!blank(${t})`),
   'blank?': (t, s) => (useHelper(s, 'blank'), `blank(${t})`),
   'empty?': (t, s) => (useHelper(s, 'blank'), `blank(${t})`),
@@ -922,7 +1635,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   uniq: (t, s) => (useHelper(s, 'list'), `[...new Set(list(${t}))]`),
   compact: (t, s) => (useHelper(s, 'list'), `list(${t}).filter((x) => x !== null && x !== undefined)`),
   join: (t, s) => (useHelper(s, 'join'), `join(${t}, "")`),
-  to_json: (t) => `JSON.stringify(${t})`,
+  to_json: (t, s) => rememberTextHint(`JSON.stringify(${t})`, 'string', s),
   encode_base64: (t, s) => (useHelper(s, 'b64'), `b64(${t})`),
   to_date: (t, s) => (useHelper(s, 'toDate'), `toDate(${t})`),
   to_currency: (t, s) => (
@@ -968,6 +1681,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   decode_url: (t) => `decodeURIComponent(String(${t} ?? ''))`,
   decode_hex: (t) => `Buffer.from(String(${t} ?? ''), 'hex').toString('utf8')`,
   to_country_name: (t, s) => (useHelper(s, 'countryName'), `countryName(${t})`),
+  md5_hexdigest: (t, s) => (useHelper(s, 'md5Hex'), rememberTextHint(`md5Hex(${t})`, 'string', s)),
   to_country_alpha3: (t, s) => (useHelper(s, 'countryAlpha3'), `countryAlpha3(${t})`),
   scrub: (t, s) => (s.approximations.push('scrub troca o caractere invalido por vazio.'), useHelper(s, 'scrub'), `scrub(${t})`),
   to_csv: (t, s) => (useHelper(s, 'toCsv'), `toCsv(${t})`),
@@ -978,12 +1692,13 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
 function applyCall(target: string, method: string, args: Arg[], s: State): string | null {
   const plain = args.filter((a) => a.kind === 'value').map((a) => a.js);
   const pairs = args.filter((a): a is HashArg => a.kind === 'hash');
+  if (!plain.length && !pairs.length && calendarUnit(method)) return calendarCall(target, method, s);
   if (!plain.length && !pairs.length && NULLARY[method]) return NULLARY[method]!(target, s);
 
   switch (method) {
     case 'where':
     case 'whereNot': {
-      if (!pairs.length) return null;
+      if (!pairs.length || plain.length) return null;
       const helper = method === 'whereNot' ? 'whereNot' : 'where';
       useHelper(s, helper);
       return pairs.reduce(
@@ -992,7 +1707,7 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       );
     }
     case 'pluck': {
-      if (!plain.length) return null;
+      if (!plain.length || pairs.length) return null;
       useHelper(s, 'pluck');
       return `pluck(${target}, [${plain.join(', ')}])`;
     }
@@ -1020,11 +1735,33 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       return `gsub(${target}, ${plain[0]}, ${plain[1]})`;
     }
     case 'split': {
+      if (pairs.length) return null;
+      if (plain.length === 2) {
+        const separator = parseRubyStringLiteral(plain[0]!);
+        // Regex captures, AWK whitespace and zero-width splits need distinct contracts.
+        if (separator === null || separator === '' || separator === ' ') return null;
+        useHelper(s, 'splitLiteralLimit');
+        return `splitLiteralLimit(${target}, ${plain[0]}, ${plain[1]})`;
+      }
       if (plain.length !== 1) return null;
       useHelper(s, 'split');
       return `split(${target}, ${plain[0]})`;
     }
+    case 'slice_after': {
+      if (pairs.length || plain.length !== 1) return null;
+      const pattern = plain[0]!;
+      if (parseRubyStringLiteral(pattern) === null && !pattern.startsWith('new RegExp(')) return null;
+      // Fuse only explicit materialization, preserving refusal of arbitrary Enumerators.
+      if (!eatOp(s, '.')) return null;
+      const materialize = peek(s);
+      if (materialize?.kind !== 'ident' || materialize.value !== 'to_a') return null;
+      s.pos++;
+      if (eatOp(s, '(') && !eatOp(s, ')')) return null;
+      useHelper(s, 'sliceAfterArray');
+      return `sliceAfterArray(${target}, ${pattern})`;
+    }
     case 'join': {
+      if (pairs.length || plain.length > 1) return null;
       useHelper(s, 'join');
       return `join(${target}, ${plain[0] ?? '""'})`;
     }
@@ -1032,10 +1769,16 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       useHelper(s, 'smartJoin');
       return `smartJoin(${target}, ${plain[0] ?? '""'})`;
     }
-    case 'include?': {
-      if (plain.length !== 1) return null;
+    case 'count': {
+      if (pairs.length || plain.length !== 1 || !jsonComparable(target, s) || !jsonComparable(plain[0]!, s)) return null;
+      useHelper(s, 'countOf');
+      return rememberTextHint(`countOf(${target}, ${plain[0]})`, 'int', s);
+    }
+    case 'include?':
+    case 'exclude?': {
+      if (plain.length !== 1 || pairs.length || !jsonComparable(target, s) || !jsonComparable(plain[0]!, s)) return null;
       useHelper(s, 'includes');
-      return `includes(${target}, ${plain[0]})`;
+      return `${method === 'exclude?' ? '!' : ''}includes(${target}, ${plain[0]})`;
     }
     case 'match?': {
       if (plain.length !== 1) return null;
@@ -1050,7 +1793,7 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
     }
     case 'to_json': {
       if (plain.length || pairs.length) return null;
-      return `JSON.stringify(${target})`;
+      return rememberTextHint(`JSON.stringify(${target})`, 'string', s);
     }
     case 'encode_base64': {
       if (plain.length || pairs.length) return null;
@@ -1081,7 +1824,7 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       return `dig(${target}, ${plain[0]})`;
     }
     case 'in_time_zone': {
-      if (plain.length !== 1) return null;
+      if (pairs.length || plain.length !== 1) return null;
       useHelper(s, 'inZone');
       return `inZone(${target}, ${plain[0]})`;
     }
@@ -1150,10 +1893,15 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       useHelper(s, 'list');
       return `list(${target}).slice(-Number(${plain[0]}))`;
     }
+    case 'take': {
+      if (plain.length !== 1 || pairs.length || hintContainsFloat(textHint(target, s)) || hasLostFloatText(target, s)) return null;
+      useHelper(s, 'sliceListCount');
+      return `sliceListCount(${target}, ${plain[0]})`;
+    }
     case 'drop': {
-      if (plain.length !== 1) return null;
-      useHelper(s, 'list');
-      return `list(${target}).slice(${plain[0]})`;
+      if (plain.length !== 1 || pairs.length) return null;
+      useHelper(s, 'sliceListCount');
+      return `sliceListCount(${target}, ${plain[0]}, true)`;
     }
     case 'concat': {
       if (plain.length !== 1) return null;
@@ -1198,15 +1946,19 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
     case 'to_s': {
       if (pairs.length || plain.length > 1) return null;
       if (!plain.length) return NULLARY.to_s!(target, s);
-      if (plain[0] === '"db"') {
+      // Recognize only the existing literal selectors, including their tagged
+      // Symbol emission. Do not erase Symbol identity for other method callers.
+      const format = ['db', 'iso8601', 'number'].find((name) =>
+        plain[0] === jsString(name) || plain[0] === `${jsString(name)} /* Ruby Symbol */`);
+      if (format === 'db') {
         useHelper(s, 'strftime');
         return `strftime(${target}, "%Y-%m-%d %H:%M:%S")`;
       }
-      if (plain[0] === '"iso8601"') {
+      if (format === 'iso8601') {
         useHelper(s, 'toDate');
         return `toDate(${target})`;
       }
-      if (plain[0] === '"number"') {
+      if (format === 'number') {
         useHelper(s, 'strftime');
         return `strftime(${target}, "%Y%m%d%H%M%S")`;
       }
@@ -1220,16 +1972,20 @@ function applyCall(target: string, method: string, args: Arg[], s: State): strin
       return `datePart(${target}, '${method}')`;
     }
     case 'ends_with?':
-    case 'starts_with?': {
-      if (plain.length !== 1) return null;
-      const call = method === 'ends_with?' ? 'endsWith' : 'startsWith';
-      return `String(${target} ?? '').${call}(String(${plain[0]} ?? ''))`;
+    case 'starts_with?':
+    case 'end_with?':
+    case 'start_with?': {
+      const rubyName = method === 'end_with?' || method === 'start_with?';
+      if (pairs.length || (!rubyName && plain.length !== 1) || textHint(target, s) === 'symbol' ||
+          plain.some((arg) => textHint(arg, s) === 'symbol' || arg.startsWith('new RegExp('))) return null;
+      useHelper(s, 'stringAffix');
+      return `stringAffix(${target}, [${plain.join(', ')}], ${method === 'starts_with?' || method === 'start_with?'})`;
     }
     case 'format_map': {
-      if (plain.length !== 1) return null;
-      s.approximations.push('format_map aproximado: troca %s pelo item.');
-      useHelper(s, 'list');
-      return `list(${target}).map((item) => String(${plain[0]}).split('%s').join(String(item ?? '')))`;
+      if (plain.length !== 1 || pairs.length || hasLostFloatText(target, s)) return null;
+      useHelper(s, 'formatMap');
+      const hint = textHint(target, s);
+      return rememberTextHint(`formatMap(${target}, ${plain[0]}${hint ? `, ${JSON.stringify(hint)}` : ''})`, { array: [] }, s);
     }
     default:
       return null;
@@ -1255,13 +2011,21 @@ function splitFieldOp(raw: string): { field: string; op: string } {
   return { field: m[1]!, op: m[2] ?? '' };
 }
 
-function parseArgs(s: State): Arg[] | null {
+function parseArgs(s: State, end: ')' | '}' = ')'): Arg[] | null {
   const args: Arg[] = [];
-  if (eatOp(s, ')')) return args;
+  if (eatOp(s, end)) return args;
   for (;;) {
     const token = peek(s);
     const next = s.tokens[s.pos + 1];
-    if (
+    const arrow = s.tokens[s.pos + 2];
+    if (token?.kind === 'op' && token.value === ':' && (next?.kind === 'ident' || next?.kind === 'string') &&
+        arrow?.kind === 'op' && arrow.value === '=>') {
+      s.pos += 3;
+      const value = parseExpr(s);
+      if (value === null) return null;
+      const { field, op } = splitFieldOp(next.value);
+      args.push({ kind: 'hash', field, op, js: value });
+    } else if (
       (token?.kind === 'string' || token?.kind === 'ident') &&
       next?.kind === 'op' &&
       (next.value === ':' || next.value === '=>')
@@ -1276,36 +2040,100 @@ function parseArgs(s: State): Arg[] | null {
       if (value === null) return null;
       args.push({ kind: 'value', js: value });
     }
-    if (eatOp(s, ',')) continue;
-    if (eatOp(s, ')')) return args;
+    if (eatOp(s, ',')) {
+      if (eatOp(s, end)) return args; // one terminal comma, never an empty slot
+      continue;
+    }
+    if (eatOp(s, end)) return args;
     return null;
   }
 }
 
+/** where takes one literal condition hash, with optional explicit braces. */
+function parseWhereArgs(s: State): Arg[] | null {
+  if (!eatOp(s, '{')) return parseArgs(s);
+  const args = parseArgs(s, '}');
+  eatOp(s, ','); // one trailing comma after the sole explicit hash argument
+  if (!args || args.some((arg) => arg.kind !== 'hash') || !eatOp(s, ')')) return null;
+  return args;
+}
+
+type HashKeyKind = 'symbol' | 'string' | 'integer' | 'float' | 'unknown' | 'unsupported';
+
+/** Preserve somente a identidade demonstravel pela sintaxe da chave. */
+function hashKeyKind(tokens: Token[], js: string, s: State): HashKeyKind {
+  // Arithmetic/unary hints retain Ruby Integer/Float identity through pills
+  // and grouping; do not guess it from a runtime JSON Number.
+  const numeric = numericType(js, s);
+  if (numeric !== 'any') return numeric === 'int' ? 'integer' : 'float';
+  if (js.startsWith('toS(') || js.startsWith('floatText(') || js.startsWith('inspect(')) return 'string';
+  if (js.startsWith('toI(') || js.startsWith('len(')) return 'integer';
+  if (js.startsWith('toF(')) return 'float';
+  let inner = tokens;
+  for (;;) {
+    const first = inner[0];
+    const last = inner[inner.length - 1];
+    if (first?.kind !== 'op' || first.value !== '(' || last?.kind !== 'op' || last.value !== ')') break;
+    let depth = 0;
+    let enclosed = true;
+    for (let i = 0; i < inner.length - 1; i++) {
+      const token = inner[i]!;
+      if (token.kind !== 'op') continue;
+      if (token.value === '(') depth++;
+      if (token.value === ')' && --depth === 0) { enclosed = false; break; }
+    }
+    if (!enclosed) break;
+    inner = inner.slice(1, -1);
+  }
+  if (inner.length === 1 && inner[0]?.kind === 'string') return 'string';
+  if (inner.length === 2 && inner[0]?.kind === 'op' && inner[0].value === ':' && (inner[1]?.kind === 'ident' || inner[1]?.kind === 'string')) {
+    return 'symbol';
+  }
+  if (inner.some((token) => token.kind === 'number') && inner.every((token) =>
+    token.kind === 'number' || (token.kind === 'op' && ['+', '-', '*', '/', '%', '(', ')'].includes(token.value)))) {
+    return inner.some((token) => token.kind === 'number' && token.value.includes('.')) ? 'float' : 'integer';
+  }
+  // Chaves calculadas com simbolos podem perder o tipo ao passar pelo runtime JS.
+  if (inner.some((token, index) => token.kind === 'op' && token.value === ':' && inner[index + 1]?.kind === 'ident')) {
+    return 'unsupported';
+  }
+  return 'unknown';
+}
+
 function parseHash(s: State): string | null {
   if (!eatOp(s, '{')) return null;
-  const parts: string[] = [];
+  const entries: { key: string; value: string; kind: HashKeyKind }[] = [];
   if (!eatOp(s, '}')) {
     for (;;) {
       const keyTok = peek(s);
       let key: string | null = null;
+      let kind: HashKeyKind = 'unknown';
       const colon = s.tokens[s.pos + 1];
       if (keyTok?.kind === 'ident' && colon?.kind === 'op' && colon.value === ':') {
         s.pos += 2;
         key = jsString(keyTok.value);
+        kind = 'symbol';
       } else if (keyTok?.kind === 'op' && keyTok.value === ':') {
         const name = s.tokens[s.pos + 1];
-        if (name?.kind !== 'ident') return null;
+        if (name?.kind !== 'ident' && name?.kind !== 'string') return null;
         s.pos += 2;
         if (!eatOp(s, '=>')) return null;
         key = jsString(name.value);
+        kind = 'symbol';
       } else {
+        const keyStart = s.pos;
         key = parseEquality(s);
-        if (key === null || (!eatOp(s, '=>') && !eatOp(s, ':'))) return null;
+        if (key !== null) kind = hashKeyKind(s.tokens.slice(keyStart, s.pos), key, s);
+        if (key === null) return null;
+        if (!eatOp(s, '=>')) {
+          // Ruby `"label": valor` cria Symbol, diferente de `"label" => valor`.
+          if (keyTok?.kind !== 'string' || s.pos !== keyStart + 1 || !eatOp(s, ':')) return null;
+          kind = 'symbol';
+        }
       }
       const value = parseExpr(s);
       if (value === null || key === null) return null;
-      parts.push(`${key}: ${value}`);
+      entries.push({ key, value, kind });
       if (eatOp(s, ',')) {
         if (eatOp(s, '}')) break;
         continue;
@@ -1314,7 +2142,38 @@ function parseHash(s: State): string | null {
       return null;
     }
   }
-  return `({${parts.join(', ')}})`;
+  const seen = new Set<string>();
+  const asObject = entries.length > 0 && entries.every((entry) => {
+    if (entry.kind !== 'string' && entry.kind !== 'symbol') return false;
+    if (!/^"(?:\\.|[^"\\])*"$/.test(entry.key)) return false;
+    if (entry.key === '"__proto__"' || entry.key === '"constructor"' || entry.key === '"prototype"') return false;
+    if (seen.has(entry.key)) return false;
+    seen.add(entry.key);
+    return true;
+  });
+  if (asObject) {
+    // An annotation keeps distinct source identities distinct in compile-only
+    // metadata. It adds no runtime representation of Ruby Symbol/Hash keys.
+    const js = `({${entries.map((entry) => `${entry.key}${entry.kind === 'symbol' ? ' /* Ruby Symbol key */' : ''}: ${entry.value}`).join(', ')}})`;
+    rememberTextHint(js, {
+      object: Object.fromEntries(entries.map((entry) => [JSON.parse(entry.key), textHint(entry.value, s)])),
+      ...(entries.some((entry) => entry.kind === 'symbol') ? { rubyKeys: 'symbol' as const } : {}),
+    }, s);
+    inheritJsonComparison(js, entries.map((entry) => entry.value), s);
+    return entries.some((entry) => entry.kind !== 'string' || !jsonComparable(entry.value, s)) ? markNonJsonComparison(js, s) : js;
+  }
+  useHelper(s, 'rubyHash');
+  const js = `rubyHash([${entries.map((entry) => `[${entry.key}, ${entry.value}, ${jsString(entry.kind)}]`).join(', ')}])`;
+  const literalFields = entries.every((entry) => (entry.kind === 'string' || entry.kind === 'symbol') && /^"(?:\\.|[^"\\])*"$/.test(entry.key));
+  if (literalFields && !entries.some((entry) => hintContainsFloat(textHint(entry.value, s)))) {
+    rememberTextHint(js, {
+      object: Object.fromEntries(entries.map((entry) => [JSON.parse(entry.key), textHint(entry.value, s)])),
+      ...(entries.some((entry) => entry.kind === 'symbol') ? { rubyKeys: 'symbol' as const } : {}),
+    }, s);
+  } else if (!literalFields) rememberTextHint(js, { object: {}, rubyKeys: 'unsupported' }, s);
+  inheritJsonComparison(js, entries.map((entry) => entry.value), s);
+  if (entries.some((entry) => hintContainsFloat(textHint(entry.value, s)))) markLostFloatText(js, s);
+  return entries.some((entry) => entry.kind !== 'string' || !jsonComparable(entry.value, s)) ? markNonJsonComparison(js, s) : js;
 }
 
 function parsePrimary(s: State): string | null {
@@ -1339,9 +2198,9 @@ function parsePrimary(s: State): string | null {
   }
   if (token.kind === 'op' && token.value === ':') {
     const name = s.tokens[s.pos + 1];
-    if (name?.kind === 'ident') {
+    if (name?.kind === 'ident' || name?.kind === 'string') {
       s.pos += 2;
-      return jsString(name.value);
+      return rememberTextHint(markNonJsonComparison(`(${jsString(name.value)} /* Ruby Symbol */)`, s), 'symbol', s);
     }
   }
   if (token.kind === 'op' && token.value === '{') return parseHash(s);
@@ -1359,12 +2218,18 @@ function parsePrimary(s: State): string | null {
         const item = parseExpr(s);
         if (item === null) return null;
         items.push(item);
-        if (eatOp(s, ',')) continue;
+        if (eatOp(s, ',')) {
+          if (eatOp(s, ']')) break; // Ruby permits one trailing comma, not an empty item.
+          continue;
+        }
         if (eatOp(s, ']')) break;
         return null;
       }
     }
-    return `[${items.join(', ')}]`;
+    const js = `[${items.join(', ')}]`;
+    rememberTextHint(js, { array: items.map((item) => textHint(item, s)) }, s);
+    inheritJsonComparison(js, items, s);
+    return items.some((item) => !jsonComparable(item, s)) ? markNonJsonComparison(js, s) : js;
   }
   if (token.kind === 'ident') {
     s.pos++;
@@ -1372,7 +2237,7 @@ function parsePrimary(s: State): string | null {
       // `skip` do Workato = nao preencher o campo. `undefined` some do objeto
       // devolvido pelo CODE, que e o mais proximo no AP.
       case 'skip':
-        s.approximations.push('skip do Workato virou vazio (o AP nao tem "nao preencher")');
+        s.approximations.push('skip do Workato virou undefined para omitir o campo no objeto devolvido pelo CODE');
         return 'undefined';
       case 'nil':
       case 'null':
@@ -1410,6 +2275,7 @@ function parsePrimary(s: State): string | null {
 }
 
 function parsePostfix(s: State): string | null {
+  const receiverStart = s.pos;
   let target = parsePrimary(s);
   if (target === null) return null;
 
@@ -1430,7 +2296,7 @@ function parsePostfix(s: State): string | null {
         if (!args) return null;
         const applied = applyCall(target, '[]', args, s);
         if (applied === null) return null;
-        target = guard(applied);
+        target = inheritJsonComparison(guard(applied), [target, ...args.map((arg) => arg.js)], s);
         continue;
       }
 
@@ -1454,22 +2320,41 @@ function parsePostfix(s: State): string | null {
         }
         if (name.value === '+') {
           useHelper(s, 'add');
-          target = guard(`add(${target}, ${arg})`);
+          target = inheritJsonComparison(guard(numericTextHint(`add(${target}, ${arg})`, target, arg, s)), [target, arg], s);
         } else if (name.value === '-') {
           useHelper(s, 'minus');
-          target = guard(`minus(${target}, ${arg})`);
+          target = guard(numericTextHint(`minus(${target}, ${arg})`, target, arg, s));
         } else if (name.value === '*') {
           useHelper(s, 'mul');
           s.approximations.push(MULTIPLY_NOTE);
-          target = guard(`mul(${target}, ${arg})`);
+          target = guard(numericTextHint(`mul(${target}, ${arg})`, target, arg, s));
         } else {
           useHelper(s, 'div');
-          target = guard(`div(${target}, ${arg}, ${jsString(numTy(target))}, ${jsString(numTy(arg))})`);
+          target = guard(numericTextHint(`div(${target}, ${arg}, ${jsString(numericType(target, s))}, ${jsString(numericType(arg, s))})`, target, arg, s));
         }
         continue;
       }
       if (name?.kind !== 'ident') return null;
       s.pos += 2;
+      if (name.value === 'md5_hexdigest' && textHint(target, s) === 'symbol') return null;
+      // Plain JS numbers cannot preserve known Ruby Float spelling in JSON.
+      if (name.value === 'to_json' && (hintContainsFloat(textHint(target, s)) || hasLostFloatText(target, s))) return null;
+
+      // Known Float values in compound receivers lose their Ruby type when
+      // represented as plain JSON/JS numbers. Refuse text conversion rather
+      // than silently print an Integer. Literal/to_f scalars retain a hint.
+      if (
+        (name.value === 'to_s' || name.value === 'inspect') &&
+        hasLostFloatText(target, s) &&
+        !/^rubyRound\(/.test(target.trim())
+      ) {
+        return null;
+      }
+      if ((name.value === 'to_s' || name.value === 'inspect' || name.value === 'format_map') && textHint(target, s) === null &&
+          !/^(?:floatText|toS|inspect)\(/.test(target) &&
+          s.tokens.slice(receiverStart, s.pos - 2).some((part) =>
+            (part.kind === 'number' && part.value.includes('.')) ||
+            (part.kind === 'ident' && part.value === 'to_f'))) return null;
 
       if (name.value === 'where') {
         const dot = s.tokens[s.pos];
@@ -1477,11 +2362,11 @@ function parsePostfix(s: State): string | null {
         if (dot?.kind === 'op' && dot.value === '.' && nxt?.kind === 'ident' && nxt.value === 'not') {
           s.pos += 2;
           if (!eatOp(s, '(')) return null;
-          const whereNotArgs = parseArgs(s);
+          const whereNotArgs = parseWhereArgs(s);
           if (!whereNotArgs) return null;
           const applied = applyCall(target, 'whereNot', whereNotArgs, s);
           if (applied === null) return null;
-          target = guard(applied);
+          target = inheritJsonComparison(guard(applied), [target, ...whereNotArgs.map((arg) => arg.js)], s);
           continue;
         }
       }
@@ -1493,9 +2378,10 @@ function parsePostfix(s: State): string | null {
       }
 
       if (eatOp(s, '(')) {
-        const args = parseArgs(s);
+        const args = name.value === 'where' ? parseWhereArgs(s) : parseArgs(s);
         if (!args) return null;
-        if ((name.value === 'gsub' || name.value === 'sub') && peek(s)?.kind === 'op' && peek(s)?.value === '{') {
+        const following = peek(s);
+        if ((name.value === 'gsub' || name.value === 'sub') && following?.kind === 'op' && following.value === '{') {
           const block = parseGsubBlock(target, name.value, args, s);
           if (block === null) return null;
           target = guard(block);
@@ -1503,23 +2389,23 @@ function parsePostfix(s: State): string | null {
         }
         const applied = applyCall(target, name.value, args, s);
         if (applied === null) return null;
-        target = guard(applied);
+        // Format/projection selectors are consumed; their Symbol identity is
+        // not part of the returned values' comparison semantics.
+        const comparisonInputs = (name.value === 'to_s' && args.length === 1) || name.value === 'pluck'
+          ? [target] : [target, ...args.map((arg) => arg.js)];
+        target = name.value === 'format_map' || name.value === 'present?' || name.value === 'to_json'
+          ? guard(applied) : inheritJsonComparison(guard(applied), comparisonInputs, s);
         continue;
       }
-      const cal = calendarUnit(name.value);
-      if (cal) {
-        const datePartName = name.value === 'day' || name.value === 'month' || name.value === 'year';
-        if (datePartName && !/^-?\d+(?:\.\d+)?$/.test(target)) {
-          useHelper(s, 'datePart');
-          target = guard(`datePart(${target}, '${name.value}')`);
-          continue;
-        }
-        target = `__cal('${cal}', ${target})`;
+      if (calendarUnit(name.value)) {
+        target = calendarCall(target, name.value, s)!;
         continue;
       }
       const nullary = NULLARY[name.value];
       if (!nullary) return null;
-      target = guard(nullary(target, s));
+      const applied = nullary(target, s);
+      // present? returns Boolean and to_json String, independently of receiver identity.
+      target = name.value === 'present?' || name.value === 'to_json' ? guard(applied) : inheritJsonComparison(guard(applied), [target], s);
       continue;
     }
 
@@ -1527,30 +2413,32 @@ function parsePostfix(s: State): string | null {
       s.pos++;
       const from = parseExpr(s);
       if (from === null) return null;
+      const retain = (next: string) => inheritJsonComparison(next, [target!, from], s);
       if (eatOp(s, ',')) {
         const len = parseExpr(s);
         if (len === null || !eatOp(s, ']')) return null;
         if (from.startsWith('new RegExp(')) {
           useHelper(s, 'regexAt');
-          target = `regexAt(${target}, ${from}, ${len})`;
+          target = retain(`regexAt(${target}, ${from}, ${len})`);
         } else {
           useHelper(s, 'sliceLen');
-          target = `sliceLen(${target}, ${from}, ${len})`;
+          target = retain(`sliceLen(${target}, ${from}, ${len})`);
         }
         continue;
       }
       if (!eatOp(s, ']')) return null;
       if (from.startsWith('__range(')) {
+        if (hintContainsFloat(textHint(target, s)) || hasLostFloatText(target, s)) return null;
         useHelper(s, 'sliceAt');
-        target = from.replace('__range(', `sliceAt(${target}, `);
+        target = retain(from.replace('__range(', `sliceAt(${target}, `));
         continue;
       }
       if (/^-?\d+$/.test(from)) {
         useHelper(s, 'at');
-        target = `at(${target}, ${from})`;
+        target = retain(`at(${target}, ${from})`);
       } else {
         useHelper(s, 'dig');
-        target = `dig(${target}, ${from})`;
+        target = retain(`dig(${target}, ${from})`);
       }
       continue;
     }
@@ -1559,6 +2447,7 @@ function parsePostfix(s: State): string | null {
 }
 
 function numTy(js: string): 'int' | 'float' | 'any' {
+  while (js.startsWith('(') && js.endsWith(')')) js = js.slice(1, -1);
   if (/^-?\d+\.\d+$/.test(js)) return 'float';
   if (/^-?\d+$/.test(js)) return 'int';
   if (js.startsWith('toF(')) return 'float';
@@ -1574,14 +2463,18 @@ function parseUnary(s: State): string | null {
   if (eatOp(s, '!')) {
     const inner = parseUnary(s);
     if (inner === null) return null;
-    return `(${inner} === null || ${inner} === undefined || ${inner} === false)`;
+    useHelper(s, 'truthy');
+    return `!truthy(${inner})`;
   }
   if (eatOp(s, '+')) return parseUnary(s);
   if (eatOp(s, '-')) {
     const inner = parseUnary(s);
     if (inner === null) return null;
     if (/^\d+(\.\d+)?$/.test(inner)) return `-${inner}`;
-    return `(-(${inner}))`;
+    const js = `(-(${inner}))`;
+    const hint = textHint(inner, s);
+    if (hint === 'int' || hint === 'float') rememberTextHint(js, hint, s);
+    return js;
   }
   return parsePostfix(s);
 }
@@ -1593,7 +2486,7 @@ function parsePower(s: State): string | null {
   const right = parsePower(s);
   if (right === null) return null;
   useHelper(s, 'pow');
-  return `pow(${left}, ${right})`;
+  return numericTextHint(`pow(${left}, ${right})`, left, right, s);
 }
 
 function parseMultiplicative(s: State): string | null {
@@ -1606,18 +2499,23 @@ function parseMultiplicative(s: State): string | null {
     const right = parsePower(s);
     if (right === null) return null;
     if (op.value === '*') {
+      if (textHint(left, s) === 'string') {
+        useHelper(s, 'repeatString');
+        left = rememberTextHint(`repeatString(${left}, ${right})`, 'string', s);
+        continue;
+      }
       useHelper(s, 'mul');
       s.approximations.push(MULTIPLY_NOTE);
-      left = `mul(${left}, ${right})`;
+      left = numericTextHint(`mul(${left}, ${right})`, left, right, s);
       continue;
     }
     if (op.value === '/') {
       useHelper(s, 'div');
-      left = `div(${left}, ${right}, ${jsString(numTy(left))}, ${jsString(numTy(right))})`;
+      left = numericTextHint(`div(${left}, ${right}, ${jsString(numericType(left, s))}, ${jsString(numericType(right, s))})`, left, right, s);
       continue;
     }
     useHelper(s, 'mod');
-    left = `mod(${left}, ${right})`;
+    left = numericTextHint(`mod(${left}, ${right})`, left, right, s);
   }
 }
 
@@ -1626,14 +2524,6 @@ function parseAdditive(s: State): string | null {
   if (left === null) return null;
   for (;;) {
     const token = peek(s);
-    // Literais adjacentes concatenam no Ruby: `"\n"\n"File"`.
-    // Só quando o token anterior também é string — senão o corpo de um `if` cola na condição.
-    if (token?.kind === 'string' && s.tokens[s.pos - 1]?.kind === 'string') {
-      s.pos++;
-      useHelper(s, 'add');
-      left = `add(${left}, ${jsString(token.value)})`;
-      continue;
-    }
     if (token?.kind === 'op' && (token.value === '+' || token.value === '-' || token.value === '<<')) {
       s.pos++;
       const right = parseMultiplicative(s);
@@ -1647,14 +2537,14 @@ function parseAdditive(s: State): string | null {
       }
       if (token.value === '-') {
         useHelper(s, 'minus');
-        left = `minus(${left}, ${right})`;
+        left = numericTextHint(`minus(${left}, ${right})`, left, right, s);
         continue;
       }
       // Um helper so: aninhar `String(left)+String(right)` duplica `left` a cada `+`
       // e estoura a memoria numa mensagem longa.
       if (token.value === '<<') useHelper(s, 'append');
       else useHelper(s, 'add');
-      left = token.value === '<<' ? `append(${left}, ${right})` : `add(${left}, ${right})`;
+      left = inheritJsonComparison(token.value === '<<' ? `append(${left}, ${right})` : numericTextHint(`add(${left}, ${right})`, left, right, s), [left, right], s);
       continue;
     }
     return left;
@@ -1670,7 +2560,7 @@ function parseComparison(s: State): string | null {
     s.pos++;
     const right = parseAdditive(s);
     if (right === null) return null;
-    const coerce = numericLiteral(left) !== numericLiteral(right);
+    const coerce: boolean = numericLiteral(left) !== numericLiteral(right);
     if (coerce) s.approximations.push(EQ_NOTE);
     useHelper(s, 'cmp');
     left = `cmp(${left}, ${right}, ${jsString(token.value)}, ${coerce})`;
@@ -1685,11 +2575,11 @@ function parseEquality(s: State): string | null {
     if (token?.kind !== 'op' || (token.value !== '==' && token.value !== '!=' && token.value !== '===')) return left;
     s.pos++;
     const right = parseComparison(s);
-    if (right === null) return null;
-    const coerce = numericLiteral(left) !== numericLiteral(right);
+    if (right === null || !jsonComparable(left, s) || !jsonComparable(right, s)) return null;
+    const coerce: boolean = numericLiteral(left) !== numericLiteral(right);
     if (coerce) s.approximations.push(EQ_NOTE);
     useHelper(s, 'eq');
-    const same = `eq(${left}, ${right}, ${coerce})`;
+    const same: string = `eq(${left}, ${right}, ${coerce})`;
     left = token.value === '!=' ? `!${same}` : same;
   }
 }
@@ -1701,7 +2591,8 @@ function parseAnd(s: State): string | null {
     if (!eatOp(s, '&&')) return left;
     const right = parseEquality(s);
     if (right === null) return null;
-    left = `((${left}) === null || (${left}) === undefined || (${left}) === false ? (${left}) : (${right}))`;
+    useHelper(s, 'rubyAnd');
+    left = inheritJsonComparison(`rubyAnd(${left}, () => (${right}))`, [left, right], s);
   }
 }
 
@@ -1714,58 +2605,69 @@ function parseOr(s: State): string | null {
     if (right === null) return null;
     // Ruby considera `nil`/`false` falsos; string vazia e VERDADEIRA. `??`
     // erraria com `false`, `||` erraria com `""`.
-    left = `((${left}) === null || (${left}) === undefined || (${left}) === false ? (${right}) : (${left}))`;
+    useHelper(s, 'rubyOr');
+    left = inheritJsonComparison(`rubyOr(${left}, () => (${right}))`, [left, right], s);
   }
 }
 
 function parseRange(s: State): string | null {
-  const left = parseOr(s);
+  const first = peek(s);
+  const beginless = first?.kind === 'op' && (first.value === '..' || first.value === '...');
+  const left = beginless ? 'null' : parseOr(s);
   if (left === null) return null;
   const token = peek(s);
   if (token?.kind !== 'op' || (token.value !== '..' && token.value !== '...')) return left;
   s.pos++;
-  const right = parseOr(s);
+  const next = peek(s);
+  const endless = !next || (next.kind === 'op' && [']', ')', ',', ';'].includes(next.value));
+  if (beginless && endless) return null;
+  const right = endless ? 'null' : parseOr(s);
   if (right === null) return null;
   return `__range(${left}, ${right}, ${token.value === '...'})`;
+}
+
+/** Branches have ternary precedence; parentheses may contain lower-precedence
+ * keyword operators/sequences. Keep the existing full if-expression branch. */
+function parseTernaryBranch(s: State): string | null {
+  const first = peek(s);
+  return first?.kind === 'ident' && first.value === 'if' ? parseIf(s) : parseTernary(s);
 }
 
 function parseTernary(s: State): string | null {
   const condition = parseRange(s);
   if (condition === null) return null;
   if (!eatOp(s, '?')) return condition;
-  const truthy = parseExpr(s);
+  // Recursive branches preserve Ruby's right associativity without consuming
+  // an outer `and`, `or` or `;` into the selected branch.
+  const truthy = parseTernaryBranch(s);
   if (truthy === null || !eatOp(s, ':')) return null;
-  const falsy = parseExpr(s);
+  const falsy = parseTernaryBranch(s);
   if (falsy === null) return null;
-  return `((${condition}) === null || (${condition}) === undefined || (${condition}) === false ? (${falsy}) : (${truthy}))`;
+  useHelper(s, 'truthy');
+  return inheritJsonComparison(`(truthy(${condition}) ? (${truthy}) : (${falsy}))`, [truthy, falsy], s);
 }
 
 function parseNot(s: State): string | null {
   if (!eatIdent(s, 'not')) return parseTernary(s);
-  const inner = parseTernary(s);
+  const inner = parseNot(s);
   if (inner === null) return null;
-  return `(${inner} === null || ${inner} === undefined || ${inner} === false)`;
+  useHelper(s, 'truthy');
+  return `!truthy(${inner})`;
 }
 
-function parseKeywordAnd(s: State): string | null {
+/** Ruby keyword and/or share precedence and associate left to right. */
+function parseKeywordOr(s: State): string | null {
   let left = parseNot(s);
   if (left === null) return null;
   for (;;) {
-    if (!eatIdent(s, 'and')) return left;
+    const token = peek(s);
+    if (token?.kind !== 'ident' || (token.value !== 'and' && token.value !== 'or')) return left;
+    s.pos++;
     const right = parseNot(s);
     if (right === null) return null;
-    left = `((${left}) === null || (${left}) === undefined || (${left}) === false ? (${left}) : (${right}))`;
-  }
-}
-
-function parseKeywordOr(s: State): string | null {
-  let left = parseKeywordAnd(s);
-  if (left === null) return null;
-  for (;;) {
-    if (!eatIdent(s, 'or')) return left;
-    const right = parseKeywordAnd(s);
-    if (right === null) return null;
-    left = `((${left}) === null || (${left}) === undefined || (${left}) === false ? (${right}) : (${left}))`;
+    const helper = token.value === 'and' ? 'rubyAnd' : 'rubyOr';
+    useHelper(s, helper);
+    left = inheritJsonComparison(`${helper}(${left}, () => (${right}))`, [left, right], s);
   }
 }
 
@@ -1801,28 +2703,32 @@ function parseIf(s: State): string | null {
     elseExpr = parsed;
   }
   if (!eatIdent(s, 'end')) return null;
+  useHelper(s, 'truthy');
   let out = elseExpr;
   for (let i = clauses.length - 1; i >= 0; i--) {
     const clause = clauses[i]!;
-    out = `((${clause.cond}) ? (${clause.expr}) : (${out}))`;
+    out = inheritJsonComparison(`(truthy(${clause.cond}) ? (${clause.expr}) : (${out}))`, [clause.expr, out], s);
   }
   return out;
 }
 
 function parseExpr(s: State): string | null {
-  if (peek(s)?.kind === 'ident' && peek(s)?.value === 'if') return parseIf(s);
+  const first = peek(s);
+  if (first?.kind === 'ident' && first.value === 'if') return parseIf(s);
   let left = parseKeywordOr(s);
   if (left === null) return null;
   while (eatOp(s, ';')) {
-    if (!peek(s) || peek(s)?.value === '}') break;
+    const next = peek(s);
+    if (!next || (next.kind === 'op' && next.value === '}')) break;
     const right = parseKeywordOr(s);
     if (right === null) return null;
-    left = `(${left}, ${right})`;
+    left = inheritJsonComparison(`(${left}, ${right})`, [right], s);
   }
   return left;
 }
 
 function splitJoinedStrings(js: string): [string, string] | null {
+  if (js.startsWith('(add(') && js.endsWith('))')) js = js.slice(1, -1);
   const matched = js.match(/^add\(("(?:\\.|[^"\\])*"), ("(?:\\.|[^"\\])*")\)$/);
   return matched ? [matched[1]!, matched[2]!] : null;
 }
@@ -1862,6 +2768,13 @@ function looseDurationSeconds(expr: string): number | null {
   return Number(matched[2]) * factor;
 }
 
+/** JSON transforma NaN/Infinity em null, inclusive dentro de arrays e hashes. */
+function containsNonFiniteNumber(value: unknown): boolean {
+  if (typeof value === 'number') return !Number.isFinite(value);
+  if (value !== null && typeof value === 'object') return Object.values(value).some(containsNonFiniteNumber);
+  return false;
+}
+
 /**
  * Compila uma expressao Workato (pills JA convertidas para `{{...}}`) em JS.
  * Devolve `null` quando algum token esta fora do recorte suportado.
@@ -1870,6 +2783,24 @@ export function compileRubyExpression(
   source: string,
   registry: BindingRegistry = newBindingRegistry(),
 ): CompiledExpr | null {
+  // A expressao recusada nao pode deixar inputs sem uso no CODE compartilhado.
+  // Mantenha as identidades dos Maps publicos nas compilacoes bem-sucedidas.
+  const staged: BindingRegistry = {
+    bindings: new Map(registry.bindings),
+    pillNames: new Map(registry.pillNames),
+    seq: { n: registry.seq.n },
+  };
+  const compiled = compileRubyExpressionInternal(source, staged);
+  if (!compiled) return null;
+  registry.bindings.clear();
+  for (const [name, pill] of staged.bindings) registry.bindings.set(name, pill);
+  registry.pillNames.clear();
+  for (const [pill, name] of staged.pillNames) registry.pillNames.set(pill, name);
+  registry.seq.n = staged.seq.n;
+  return { ...compiled, bindings: registry.bindings };
+}
+
+function compileRubyExpressionInternal(source: string, registry: BindingRegistry): CompiledExpr | null {
   const src = source.trim().replace(/^=/, '').trim();
   if (!src) return null;
   const phone = src.match(
@@ -1908,11 +2839,12 @@ export function compileRubyExpression(
     seq: registry.seq,
     dynamic: false,
   };
-  const expr = parseExpr(state);
+  let expr = parseExpr(state);
   if (expr === null || state.pos !== tokens.length) return null;
   const approximations = [...new Set(state.approximations)];
   const loose = looseDurationSeconds(expr);
   if (loose !== null && registry.bindings.size === before && !usesExistingBinding(expr, registry)) {
+    if (!Number.isFinite(loose) || (Number.isInteger(loose) && !Number.isSafeInteger(loose))) return null;
     approximations.push('Duracao solta virou segundos. 1.month e 1.year usam a media do ActiveSupport.');
     return {
       expr: String(loose),
@@ -1923,6 +2855,17 @@ export function compileRubyExpression(
       value: loose,
     };
   }
+  // A whole standalone Duration is serialized as seconds by Workato. Keep
+  // calendar markers during parsing so date arithmetic still uses addCal.
+  // Do not rewrite markers embedded in compound expressions or string values.
+  const standaloneDuration = parseCalDuration(expr);
+  if (standaloneDuration && !/\b__cal\(/.test(standaloneDuration.n)) {
+    useHelper(state, 'durationSeconds');
+    expr = `durationSeconds('${standaloneDuration.unit}', ${standaloneDuration.n})`;
+    if (standaloneDuration.unit === 'months' || standaloneDuration.unit === 'years') {
+      approximations.push('Duracao solta virou segundos. 1.month e 1.year usam a media do ActiveSupport.');
+    }
+  }
   if (/\b__cal\(/.test(expr) || /\b__range\(/.test(expr)) return null;
   if (registry.bindings.size === before && !usesExistingBinding(expr, registry)) {
     if (state.dynamic) {
@@ -1930,6 +2873,7 @@ export function compileRubyExpression(
     }
     try {
       const value = new Function(`${renderHelpers(state.helpers)}\nreturn (${expr});`)();
+      if (containsNonFiniteNumber(value)) return null;
       return {
         expr,
         bindings: registry.bindings,
@@ -1938,7 +2882,9 @@ export function compileRubyExpression(
         constant: true,
         value,
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && (error.message === INVALID_HASH_KEY || error.message === INVALID_DIGEST_INPUT || error.message === 'divided by 0' ||
+          error.message === 'AP-MIGRATION-INVALID-MEMBERSHIP' || error.message === 'AP-MIGRATION-INVALID-TAKE' || error.message === 'AP-MIGRATION-INVALID-DROP' || error.message === 'AP-MIGRATION-INVALID-RANGE' || error.message === 'AP-MIGRATION-INVALID-FORMAT-MAP')) return null;
       // Fuso anonimo e outros erros so aparecem na execucao.
       return { expr, bindings: registry.bindings, helpers: state.helpers, approximations };
     }

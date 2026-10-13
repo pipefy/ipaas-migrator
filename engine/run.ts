@@ -3,7 +3,7 @@
 // flow traz os passos que ja tem mapa. JSON invalido, arquivo ausente ou
 // gatilho sem piece (receita em branco) continuam no wrapper bloqueado.
 // Email/SMS by Workato: flow real + aviso, destino manual_revision (nao para o canvas).
-// ROUTER/Ruby com TODO ainda e ipaas_ready.
+// Conversao com TODO ou flow invalido exige revisao, mesmo com operacoes mapeadas.
 // O diagrama sai mesmo quando a transpilacao bloqueia.
 //
 // Uso: node src/run.mjs [caminho.json]
@@ -19,6 +19,7 @@ import { collapseOpKey } from './lib/collapse.ts';
 import { buildFlow } from './lib/flow-builder.ts';
 import { emptyDiagram, recipeToDiagram, type RecipeDiagram } from './lib/diagram.ts';
 import type { OpClassification, ParsedRecipe, ParsedStep } from './lib/types.ts';
+import { diagnosticsForError, type MigrationDiagnostic } from './lib/diagnostics.ts';
 
 interface Routing {
   status: 'OK' | 'ERROR';
@@ -30,6 +31,7 @@ interface Routing {
   has_router?: boolean;
   has_code_ruby?: boolean;
   todos?: number;
+  diagnostics?: MigrationDiagnostic[];
 }
 
 /** Texto que o flow 2 grava em `blocked_reason` no card. */
@@ -112,12 +114,13 @@ function emit(flow: unknown, diagram: RecipeDiagram, routing: Routing): void {
   process.stdout.write(`${JSON.stringify(routing)}\n`);
 }
 
-function fail(reason: string, extraNotes: string[] = [], diagram?: RecipeDiagram): void {
+function fail(reason: string, extraNotes: string[] = [], diagram?: RecipeDiagram, diagnostics: MigrationDiagnostic[] = []): void {
   const notes = [reason, ...extraNotes];
   emit(blockedFlow('Workato migration blocked', notes), diagram ?? emptyDiagram(reason), {
     status: 'ERROR',
     destination: 'manual_revision',
     blocked_reason: extraNotes.length ? `${reason}. ${extraNotes.join('; ')}` : reason,
+    diagnostics,
   });
 }
 
@@ -182,7 +185,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { flow, todos } = buildFlow(recipe, merged, kb);
+  const { flow, todos, diagnostics } = buildFlow(recipe, merged, kb);
   if (unmapped.length) {
     const block = formatUnmappedBlock(unmapped);
     emit(flow, diagram, {
@@ -195,6 +198,7 @@ async function main(): Promise<void> {
       has_router: hasKeyword(recipe.root, 'if'),
       has_code_ruby: recipe.hasRuby,
       todos: todos.length,
+      diagnostics,
     });
     return;
   }
@@ -211,22 +215,27 @@ async function main(): Promise<void> {
       has_router: hasKeyword(recipe.root, 'if'),
       has_code_ruby: recipe.hasRuby,
       todos: todos.length,
+      diagnostics,
     });
     return;
   }
 
+  const incomplete = todos.length > 0 || flow.flows.some((entry: any) => entry.valid !== true);
   emit(flow, diagram, {
-    status: 'OK',
-    destination: 'ipaas_ready',
+    status: incomplete ? 'ERROR' : 'OK',
+    destination: incomplete ? 'manual_revision' : 'ipaas_ready',
+    ...(incomplete ? { blocked_reason: `Conversao incompleta: ${todos.length} pendencia(s); revisao obrigatoria.` } : {}),
     mapped_operations: mapped,
     unmapped_operations: 0,
     has_router: hasKeyword(recipe.root, 'if'),
     has_code_ruby: recipe.hasRuby,
     todos: todos.length,
+    diagnostics,
   });
 }
 
 main().catch((err) => {
   const message = err instanceof Error ? err.message : String(err);
-  fail(`Falha no motor: ${message}`);
+  const diagnostics = diagnosticsForError(err);
+  fail(`Falha no motor: ${message}`, [], undefined, diagnostics);
 });

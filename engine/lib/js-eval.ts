@@ -1,36 +1,26 @@
-// js_eval da Workato já é JavaScript (`exports.main`). O step CODE do AP
-// lê o mesmo payload em `inputs.code_input.data` e exporta `code`.
+// js_eval Workato receives the declared fields as one object. flow-builder
+// flattens code_input.data into settings.input, which AP passes to `code`.
+const MAIN_ARROW_HEAD = /^exports\.main\s*=\s*(?:async\s*)?(?:\(\s*(?:\{[\s\S]*?\}|[A-Za-z_$][\w$]*)?\s*\)|[A-Za-z_$][\w$]*)\s*=>\s*/;
+const MAIN_FUNCTION_HEAD = /^exports\.main\s*=\s*(?:async\s*)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(\s*(?:\{[\s\S]*?\}|[A-Za-z_$][\w$]*)?\s*\)\s*/;
 
-const MAIN_HEAD = /^exports\.main\s*=\s*async\s*\(\s*\{([\s\S]*?)\}\s*\)\s*=>\s*/;
-
-function compactParams(raw: string): string {
-  return raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(', ');
-}
-
-/** Converte `exports.main = async ({ a, b }) => …` em `export const code`. */
+/** Adapt a standalone CommonJS main, preserving its function scope. */
 export function wrapJsEvalMain(source: string): string | null {
   const trimmed = String(source ?? '').trim();
-  const head = trimmed.match(MAIN_HEAD);
+  const arrow = trimmed.match(MAIN_ARROW_HEAD);
+  const head = arrow ?? trimmed.match(MAIN_FUNCTION_HEAD);
   if (!head) return null;
-  const params = compactParams(head[1] ?? '');
   const rest = trimmed.slice(head[0].length).replace(/;?\s*$/, '');
   if (!rest) return null;
+  if (!arrow && !rest.startsWith('{')) return null;
+  if (rest.startsWith('{') && (!rest.endsWith('}') || !rest.slice(1, -1).trim())) return null;
 
-  const dest = params ? `  const { ${params} } = inputs.code_input.data;` : '';
-  let inner: string;
-  if (rest.startsWith('{')) {
-    if (!rest.endsWith('}')) return null;
-    inner = rest.slice(1, -1).replace(/^\n/, '').replace(/\s+$/, '');
-  } else {
-    inner = `  return (${rest});`;
-  }
-  if (!inner.trim()) return null;
-
-  return ['export const code = async (inputs) => {', dest, inner, '};']
-    .filter((line) => line !== '')
-    .join('\n');
+  // Keep destructuring/defaults/body inside main: a field named `inputs` must
+  // not redeclare the AP wrapper parameter, and async rejections must propagate.
+  const main = trimmed.replace(/^exports\.main\s*=\s*/, '').replace(/;?\s*$/, '');
+  return [
+    'export const code = async (inputs) => {',
+    `  const main = ${main};`,
+    '  return await main(inputs);',
+    '};',
+  ].join('\n');
 }

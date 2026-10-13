@@ -184,6 +184,7 @@ async function main() {
         mapped: routing.mapped_operations ?? null,
         unmapped: routing.unmapped_operations ?? null,
         todos: routing.todos ?? null,
+        diagnostics: routing.diagnostics ?? [],
         hasRouter: routing.has_router ?? null,
         hasCodeRuby: routing.has_code_ruby ?? null,
         blockedReason: routing.blocked_reason ?? null,

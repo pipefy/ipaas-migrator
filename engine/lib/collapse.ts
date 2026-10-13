@@ -64,15 +64,24 @@ export function collapseOpKey(opKey: string): string {
   return `${collapseProvider(opKey.slice(0, i))}/${opKey.slice(i + 1)}`;
 }
 
+export class AmbiguousMigrationMapError extends Error {
+  constructor(readonly count: number) {
+    super('AP-MIGRATION-AMBIGUOUS-MAP');
+    this.name = 'AmbiguousMigrationMapError';
+  }
+}
+
 export function lookupMap<T>(merged: Record<string, T>, opKey: string): T | undefined {
   if (merged[opKey]) return merged[opKey];
   const collapsed = collapseOpKey(opKey);
   if (collapsed !== opKey && merged[collapsed]) return merged[collapsed];
   const collapsedLower = collapsed.toLowerCase();
+  const candidates: T[] = [];
   for (const [k, v] of Object.entries(merged)) {
     if (k.toLowerCase() === collapsedLower || collapseOpKey(k).toLowerCase() === collapsedLower) {
-      return v;
+      candidates.push(v);
     }
   }
-  return undefined;
+  if (candidates.length > 1) throw new AmbiguousMigrationMapError(candidates.length);
+  return candidates[0];
 }

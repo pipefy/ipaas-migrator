@@ -14,12 +14,14 @@ import type {
   WorkatoConditionsInput,
 } from './types.ts';
 import { collapseOpKey, lookupMap } from './collapse.ts';
+import { InvalidCompositionInputError, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
 import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvPureCode } from './xlsx-csv.ts';
 import { resolveZeroPhaseInput } from './phase-id.ts';
-import { PIPEFY_PIECE_VERSION, pipefyPropertySettings, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
+import { PIPEFY_PIECE_VERSION, pipefyPropertySettings, replaceGraphqlQuery, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
+import type { UpdateListFieldAdd } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
   resultLabelsFromSchema,
@@ -31,6 +33,7 @@ import {
 import { parseRubyRandomSleep, parseRubySleep, randomSleepCode, resolveRubySleep, resolveWaitUntilTime } from './delay.ts';
 import {
   convertPills,
+  containsMigrationMarker,
   detectRubyMethods,
   isRubyExpression,
   parseIncludeFormula,
@@ -39,6 +42,7 @@ import {
   stepBindingName,
   wrapApCase,
   bracketizePills,
+  wrapApFormula,
   type JobContextHits,
   type StepBinding,
   type StepNameMap,
@@ -54,6 +58,11 @@ import {
   renderHelpers,
   type BindingRegistry,
 } from './ruby-expr.ts';
+import {
+  hoistEmbeddedLookups,
+  parseWholeLookupFormula,
+  type ParsedLookup,
+} from './lookup-formula.ts';
 import { scheduleCronTodo, workatoScheduleToCron } from './schedule-cron.ts';
 import {
   firstPill,
@@ -87,6 +96,7 @@ import {
 export interface BuildResult {
   flow: any; // wrapper de export do AP
   todos: string[];
+  diagnostics: MigrationDiagnostic[];
 }
 
 interface LoopScope {
@@ -100,7 +110,9 @@ interface Ctx {
   merged: Record<string, MapEntry>;
   kb: Map<string, SlimPiece>;
   asToName: StepNameMap;
-  /** `as` de passos `skip: true` — convertPills nao emite pill para eles. */
+  /** Duplicate source aliases cannot select a step unambiguously. */
+  ambiguousAs: Set<string>;
+  /** Origens desativadas: consumidor ativo recebe diagnostico, sem valor inventado. */
   skippedAs: Set<string>;
   /** `as` de workato_list que um foreach percorre. */
   loopedListLines: Set<string>;
@@ -111,6 +123,7 @@ interface Ctx {
   loopScope: LoopScope[];
   piecesUsed: Set<string>;
   todos: string[];
+  diagnostics: MigrationDiagnostic[];
   canvasNotes: PendingCanvasNote[];
   /** Nota de update vazio ainda sem passo seguinte para ancorar. */
   noteAnchorPending?: number;
@@ -125,6 +138,8 @@ interface Ctx {
    * monta a cadeia (buildChain / gateOnTriggerFilter) os encadeia ANTES dele.
    */
   pendingCode: any[];
+  /** Provenance of composed formula parts, tied to an exact generated object slot. */
+  composedFormulas?: WeakMap<object, Map<string, ComposedFormula>>;
   /** Variaveis Workato da receita e a estrategia escolhida para cada uma. */
   vars: VarIndex;
   /** Labels do result_schema da recipe function, para o returnResponse. */
@@ -138,9 +153,15 @@ interface Ctx {
   notedDataTableIds: Set<string>;
 }
 
+interface ComposedFormula {
+  rendered: string;
+  parts: string[];
+  separator: string;
+}
+
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'SHEETS' | 'DOCS' | 'PROP';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS';
   content: string;
   anchorStepName?: string;
 }
@@ -211,6 +232,7 @@ function pills(input: string, ctx: Ctx, resolve = loopItemResolver(ctx)): string
     recipeId: ctx.recipeId,
     jobContextHits: ctx.jobContextHits,
     skippedAs: ctx.skippedAs,
+    invalidAs: ctx.ambiguousAs,
     projectVariables: ctx.projectVariables,
   });
 }
@@ -418,31 +440,6 @@ function waivedMissing(
   return out;
 }
 
-function noteMissingProps(
-  ctx: Ctx,
-  name: string,
-  target: MapTarget,
-  missing: string[],
-  sourceInput: Record<string, any>,
-): void {
-  if (!missing.length) return;
-  if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
-    return;
-  }
-  const keys = Object.entries(sourceInput)
-    .filter(([, value]) => !blankProp(value) && value !== '=skip')
-    .map(([key]) => key)
-    .slice(0, 12);
-  const listed = keys.length ? ` Chaves no JSON: ${keys.join(', ')}.` : '';
-  pushReviewNote(
-    ctx,
-    'PROP',
-    `Passo ${name}. A piece pede ${missing.join(', ')} e o JSON não traz esse valor.${listed}`,
-    '',
-    name,
-  );
-}
-
 function normalizeTargetValue(value: any, propType?: string, src?: string): any {
   if (src === 'api_call' || src === 'input' || src === 'input.data') return asAdhocBody(value);
   if (src === 'verb' && typeof value === 'string') return value.toUpperCase();
@@ -550,7 +547,16 @@ function envelopeDynamicProps(out: Record<string, any>, ctx: Ctx, target?: MapTa
   const types = targetPropTypes(ctx, target);
   for (const [prop, key] of Object.entries(DYNAMIC_ENVELOPE)) {
     if (types.get(prop) !== 'DYNAMIC' || out[prop] === undefined) continue;
-    out[prop] = { [key]: out[prop] };
+    const value = out[prop];
+    const envelope = { [key]: value };
+    const slots = ctx.composedFormulas?.get(out);
+    const composed = slots?.get(prop);
+    // Move provenance with the exact slot; never recover it by matching text.
+    if (composed && composed.rendered === value) {
+      ctx.composedFormulas!.set(envelope, new Map([[key, composed]]));
+    }
+    slots?.delete(prop);
+    out[prop] = envelope;
   }
 
   if (types.get('body') !== 'DYNAMIC' || out.body === undefined) return;
@@ -618,10 +624,22 @@ function convInput(
       const v = getPath(input, src);
       if (v === undefined || v === '=skip' || v === '') continue;
       const converted = deepConvert(v, ctx);
-      if (typeof converted === 'string') parts.push(converted);
+      if (typeof converted === 'string' || typeof converted === 'boolean' ||
+          (typeof converted === 'number' && Number.isFinite(converted))) {
+        parts.push(String(converted));
+      } else throw new InvalidCompositionInputError();
       consumedRoots.add(src.split('.')[0]!);
     }
-    if (parts.length) out[apProp] = parts.join(spec.separator ?? '');
+    if (parts.length) {
+      const separator = spec.separator ?? '';
+      out[apProp] = parts.join(separator);
+      if (parts.some((part) => /^TODO_FORMULA\(/.test(part))) {
+        ctx.composedFormulas ??= new WeakMap();
+        const slots = ctx.composedFormulas.get(out) ?? new Map<string, ComposedFormula>();
+        slots.set(apProp, { rendered: out[apProp], parts, separator });
+        ctx.composedFormulas.set(out, slots);
+      }
+    }
   }
 
   // 2) carrega chaves que ja sao props validas da piece (nao mapeadas nem consumidas)
@@ -782,12 +800,12 @@ function collectResidualRubyMethods(value: unknown, path: string, out: string[])
 
 /**
  * Marcadores TODO_ que sobraram no input convertido (pill sem equivalente,
- * formula nao traduzida). Geram todo/nota; `valid` do step PIECE mapeado
- * segue so as props obrigatorias da piece (mesmo nome).
+ * formula nao traduzida). Tambem invalidam o consumidor; props obrigatorias
+ * preenchidas nao tornam uma referencia invalida executavel.
  */
 function collectTodoMarkers(value: unknown, path: string, out: string[]): void {
   if (typeof value === 'string') {
-    if (value.includes('TODO_')) out.push(path || 'campo');
+    if (containsMigrationMarker(value)) out.push(path || 'campo');
     return;
   }
   if (Array.isArray(value)) {
@@ -796,6 +814,7 @@ function collectTodoMarkers(value: unknown, path: string, out: string[]): void {
   }
   if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
+      if (containsMigrationMarker(key)) out.push(path || 'campo');
       collectTodoMarkers(item, path ? `${path}.${key}` : key, out);
     }
   }
@@ -994,6 +1013,8 @@ function buildCodeStub(opKey: string, source: string, language = codeLanguage(op
 }
 
 interface Harvest {
+  /** Trigger configuration cannot depend on a CODE action running afterwards. */
+  allowCode: boolean;
   /** Nome do step CODE, sorteado so quando ha formula de fato para traduzir. */
   name: () => string;
   registry: BindingRegistry;
@@ -1002,6 +1023,22 @@ interface Harvest {
   approximations: string[];
   /** Formulas que o compilador recusou. Preferimos o texto da receita. */
   uncompiled: string[];
+  composed?: WeakMap<object, Map<string, ComposedFormula>>;
+}
+
+/** Resolve pills Workato dentro do corpo antes do compilador Ruby ver `{{step}}`. */
+function formulaBodyForCompile(body: string, ctx: Ctx): string {
+  const trimmed = body.trim();
+  const converted = pills(trimmed.startsWith('=') ? trimmed : `=${trimmed}`, ctx).trim();
+  const nested = converted.match(/^TODO_FORMULA\((.*)\)$/s);
+  if (nested) return nested[1]!.trim();
+  if (converted.startsWith('=')) return converted.slice(1).trim();
+  return converted;
+}
+
+function rubySourceForCompile(body: string, ctx: Ctx): string {
+  const inner = formulaBodyForCompile(body, ctx);
+  return inner.startsWith('=') ? inner : `=${inner}`;
 }
 
 /**
@@ -1009,35 +1046,133 @@ interface Harvest {
  * expressao JS equivalente. O que o compilador nao entende fica como estava —
  * marcador visivel vale mais que valor errado em silencio.
  */
-function replaceResidualRuby(value: any, harvest: Harvest, source: any, ctx: Ctx): any {
-  if (typeof value === 'string') {
-    const wrapped = value.match(/^TODO_FORMULA\((.*)\)$/s);
-    if (!wrapped) return value;
-    const lookup = parseLookupFormula(wrapped[1]!);
-    if (lookup) {
-      const stepName = nextName('step');
-      ctx.piecesUsed.add(TABLES_PIECE);
-      ctx.pendingCode.push(lookupFindStep(stepName, lookup));
-      const field = lookup.field.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      return field ? `{{${stepName}[0]['${field}']}}` : `{{${stepName}}}`;
+function stripFormulaQuotes(raw: string): string {
+  const t = raw.trim();
+  const q = t.match(/^(['"])([\s\S]*)\1$/);
+  return q ? q[2]! : t;
+}
+
+function lookupPillRef(stepName: string, field: string): string {
+  if (!field) return `{{${stepName}}}`;
+  const esc = field.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `{{${stepName}[0]['${esc}']}}`;
+}
+
+function scheduleLookupStep(parsed: ParsedLookup, ctx: Ctx, harvest: Harvest): string {
+  const name = nextName('lookup');
+  const filters = parsed.filters.map((filter) => {
+    const raw = pills(filter.value.startsWith('=') ? filter.value : `=${filter.value}`, ctx);
+    const value = resolveFormulas(raw, ctx, name, filter.value);
+    return { column: filter.column, value };
+  });
+  const table = stripFormulaQuotes(parsed.table);
+  const found = lookupFindStep(name, { table, filters });
+  found.settings.pieceVersion = pieceVersion(ctx, TABLES_PIECE);
+  found.valid = !hasTodoMarker(found.settings.input);
+  ctx.piecesUsed.add(TABLES_PIECE);
+  ctx.pendingCode.push(found);
+  pushReviewNote(ctx, 'LOOKUP', 'Confirmar importacao da tabela e identidade das colunas no destino.', '', name);
+  ctx.todos.push(`LOOKUP (${name}): confirmar identidade da tabela/colunas importadas.`);
+  ctx.diagnostics.push({
+    category: 'MANUAL_REVIEW',
+    reason: 'REVIEW_PENDING',
+    action: 'MANUAL_REVIEW',
+    severity: 'REVIEW',
+    stepName: name,
+  });
+  return lookupPillRef(name, parsed.field);
+}
+
+function resolveTodoFormulaBody(
+  rawBody: string,
+  harvest: Harvest,
+  source: any,
+  ctx: Ctx,
+  compositionPart: boolean,
+): string {
+    let body = rawBody;
+    const hoisted = hoistEmbeddedLookups(body, (parsed) => scheduleLookupStep(parsed, ctx, harvest));
+    body = hoisted;
+    if (hoisted !== rawBody && !/\b(?:lookup|data_table_lookup)\s*\(/.test(body)) {
+      const pillOnly = body.trim().replace(/^=\s*/, '');
+      if (/^\{\{[^}]+\}\}[\w?.!]*$/.test(pillOnly)) {
+        return compositionPart ? pillOnly : pillOnly;
+      }
     }
-    const compiled = compileRubyExpression(wrapped[1]!, harvest.registry);
+    const lookup = parseWholeLookupFormula(body);
+    if (lookup) {
+      const pill = scheduleLookupStep(lookup, ctx, harvest);
+      return lookup.suffix ? `${pill}${lookup.suffix}` : pill;
+    }
+    const compiled =
+      compileRubyExpression(rubySourceForCompile(body, ctx), harvest.registry) ??
+      compileRubyExpression(body, harvest.registry);
     if (!compiled) {
-      const original = typeof source === 'string' && source.trim() ? source.trim() : wrapped[1]!;
+      const original = typeof source === 'string' && source.trim() ? source.trim() : body;
+      const pillOnly = body.trim().replace(/^=\s*/, '');
+      if (/^\{\{[^}]+\}\}[\w?.!]*$/.test(pillOnly)) {
+        return compositionPart ? pillOnly : pillOnly;
+      }
+      if (harvest.allowCode) {
+        const key = `f${harvest.fields.length + 1}`;
+        harvest.fields.push({
+          key,
+          ruby: body,
+          expr: '/* AP-MIGRATION-TODO: traduzir formula Ruby abaixo */\n    null',
+        });
+        harvest.uncompiled.push(original);
+        return `{{${harvest.name()}.${key}}}`;
+      }
       harvest.uncompiled.push(original);
-      return value;
+      return `TODO_FORMULA(${rawBody})`;
     }
     if (compiled.constant) {
+      if (compositionPart && compiled.value === null && harvest.allowCode) {
+        const key = `f${harvest.fields.length + 1}`;
+        harvest.fields.push({ key, ruby: rawBody, expr: 'null' });
+        harvest.uncompiled.push(typeof source === 'string' ? source.trim() : rawBody);
+        return `{{${harvest.name()}.${key}}}`;
+      }
+      if (
+        compositionPart &&
+        !['string', 'number', 'boolean'].includes(typeof compiled.value) &&
+        compiled.value !== null
+      ) {
+        if (harvest.allowCode) {
+          const key = `f${harvest.fields.length + 1}`;
+          const expr =
+            compiled.value === null
+              ? 'null'
+              : '/* AP-MIGRATION-TODO: traduzir formula Ruby abaixo */\n    null';
+          harvest.fields.push({ key, ruby: rawBody, expr });
+          harvest.uncompiled.push(typeof source === 'string' ? source.trim() : rawBody);
+          return `{{${harvest.name()}.${key}}}`;
+        }
+        harvest.uncompiled.push(typeof source === 'string' ? source : rawBody);
+        return `TODO_FORMULA(${rawBody})`;
+      }
       harvest.approximations.push(...compiled.approximations);
       const evaluated = compiled.value;
-      if (evaluated === null || evaluated === undefined) return '';
-      return evaluated;
+      return compositionPart ? String(evaluated) : evaluated;
+    }
+    if (!harvest.allowCode) {
+      harvest.approximations.push(...compiled.approximations);
+      for (const helper of compiled.helpers) harvest.helpers.add(helper);
+      harvest.uncompiled.push(typeof source === 'string' && source.trim() ? source.trim() : rawBody);
+      return wrapApFormula(compiled.expr);
     }
     const key = `f${harvest.fields.length + 1}`;
-    harvest.fields.push({ key, ruby: wrapped[1]!, expr: compiled.expr });
+    harvest.fields.push({ key, ruby: body, expr: compiled.expr });
     for (const helper of compiled.helpers) harvest.helpers.add(helper);
     harvest.approximations.push(...compiled.approximations);
     return `{{${harvest.name()}.${key}}}`;
+}
+
+function replaceResidualRuby(value: any, harvest: Harvest, source: any, ctx: Ctx, compositionPart = false): any {
+  if (typeof value === 'string') {
+    const wrapped = value.match(/^TODO_FORMULA\((.*)\)$/s);
+    if (!wrapped) return value;
+    return resolveTodoFormulaBody(wrapped[1]!, harvest, source, ctx, compositionPart);
   }
   if (Array.isArray(value)) {
     return value.map((item, index) =>
@@ -1051,7 +1186,10 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any, ctx: Ctx
       const key = k.includes('TODO_FORMULA')
         ? String(replaceResidualRuby(k, harvest, (src as any)[k], ctx) ?? '')
         : k;
-      out[key] = replaceResidualRuby(v, harvest, (src as any)[k], ctx);
+      const composed = harvest.composed?.get(value)?.get(k);
+      out[key] = composed && composed.rendered === v
+        ? composed.parts.map((part) => replaceResidualRuby(part, harvest, undefined, ctx, true)).join(composed.separator)
+        : replaceResidualRuby(v, harvest, (src as any)[k], ctx);
     }
     return out;
   }
@@ -1104,18 +1242,21 @@ function formulaCodeStep(harvest: Harvest): any {
  * Converte as formulas residuais de um step em UM step CODE anterior a ele.
  * Devolve o valor com as referencias `{{formula_N.fX}}` no lugar.
  */
-function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any {
+function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any, allowCode = true): any {
   let assigned: string | undefined;
   const harvest: Harvest = {
+    allowCode,
     name: () => (assigned ??= nextName('formula')),
     registry: newBindingRegistry(),
     fields: [],
     helpers: new Set(),
     approximations: [],
     uncompiled: [],
+    composed: ctx.composedFormulas,
   };
   const replaced = replaceResidualRuby(value, harvest, source, ctx);
   if (harvest.uncompiled.length) {
+    ctx.diagnostics.push({ category: 'FORMULA', reason: 'UNCOMPILED_FORMULA', action: 'CHECK_DOCUMENTATION', stepName: owner, count: harvest.uncompiled.length });
     const formulas = [...new Set(harvest.uncompiled)].join('\n\n');
     pushReviewNote(
       ctx,
@@ -1135,6 +1276,9 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any): any
     );
   }
   const notes = [...new Set(harvest.approximations)];
+  if (harvest.fields.length || notes.length) {
+    ctx.diagnostics.push({ category: 'FORMULA', reason: 'FORMULA_REVIEW', action: notes.length ? 'CHECK_DOCUMENTATION' : 'MANUAL_REVIEW', stepName: owner, count: harvest.fields.length || notes.length });
+  }
   const review = (note: string, step: string) => {
     if (
       note === MULTIPLY_NOTE ||
@@ -1213,6 +1357,7 @@ export const REVIEW_MAPPER_LABEL = 'AVISO: mapper sem data';
 export const REVIEW_SHEETS_LABEL = 'REVISAR: coluna do find_rows';
 export const REVIEW_DOCS_LABEL = 'REVISAR: update_doc';
 export const REVIEW_PROP_LABEL = 'REVISAR: prop ausente';
+export const REVIEW_HTTP_LABEL = 'REVISAR: HTTP sem url';
 /** Frase estável da sticky note: o motor não entrega o arquivo de linhas. */
 export const LOOKUP_IMPORT_NOT_GENERATED =
   'O arquivo de importação com os dados da lookup table não foi gerado.';
@@ -1390,21 +1535,16 @@ function pushReviewNote(
     | 'SOAP'
     | 'GRAPHQL'
     | 'MAPPER'
-    | 'SHEETS'
+    | 'PROP'
     | 'DOCS'
-    | 'PROP',
+    | 'SHEETS'
+    | 'HTTP',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'PROP'
-      ? REVIEW_PROP_LABEL
-      : kind === 'DOCS'
-      ? REVIEW_DOCS_LABEL
-      : kind === 'SHEETS'
-      ? REVIEW_SHEETS_LABEL
-      : kind === 'MAPPER'
+    kind === 'HTTP' ? REVIEW_HTTP_LABEL : kind === 'PROP' ? REVIEW_PROP_LABEL : kind === 'DOCS' ? REVIEW_DOCS_LABEL : kind === 'SHEETS' ? REVIEW_SHEETS_LABEL : kind === 'MAPPER'
       ? REVIEW_MAPPER_LABEL
       : kind === 'GRAPHQL'
       ? REVIEW_GRAPHQL_LABEL
@@ -1444,13 +1584,7 @@ function pushReviewNote(
                             ? REVIEW_TEMPLATE_LABEL
                             : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'PROP'
-      ? 'review_prop'
-      : kind === 'DOCS'
-      ? 'review_docs'
-      : kind === 'SHEETS'
-      ? 'review_sheets'
-      : kind === 'MAPPER'
+    kind === 'HTTP' ? 'review_http' : kind === 'PROP' ? 'review_prop' : kind === 'DOCS' ? 'review_docs' : kind === 'SHEETS' ? 'review_sheets' : kind === 'MAPPER'
       ? 'review_mapper'
       : kind === 'GRAPHQL'
       ? 'review_graphql'
@@ -1563,14 +1697,15 @@ function placeCanvasNotes(trigger: any, pending: PendingCanvasNote[]): any[] {
   });
 }
 
-function todoPieceStep(name: string, displayName: string, input: Record<string, any>): any {
+function todoPieceStep(name: string, displayName: string, input: Record<string, any>, ctx: Ctx): any {
+  const converted = resolveFormulas(deepConvert(input, ctx), ctx, name, input);
   return {
     name,
     skip: false,
     type: 'PIECE',
     valid: false,
     settings: {
-      input,
+      input: converted,
       pieceName: TODO_PIECE,
       actionName: TODO_PIECE,
       pieceVersion: '~latest',
@@ -1755,75 +1890,6 @@ function buildListStore(
   );
 }
 
-/**
- * `current_index` da lista `____source` e a posicao no `.map` que ja percorre
- * essa lista (o mesmo lugar do `current_item`). Nao vira pill `['index']`:
- * o JSON nao nomeia essa chave.
- */
-function compileListBatchIndexes(
-  step: ParsedStep,
-  ctx: Ctx,
-): {
-  computed: ListBatchComputed[];
-  inputs: Record<string, string>;
-  prelude: string;
-  fields: string[];
-  approximations: string[];
-} {
-  const source = step.input?.list_items?.[SOURCE_KEY];
-  const raw = (step.input?.list_items ?? {}) as Record<string, unknown>;
-  const registry = newBindingRegistry();
-  const helpers = new Set<string>();
-  const approximations: string[] = [];
-  const computed: ListBatchComputed[] = [];
-  const fields: string[] = [];
-
-  for (const [field, value] of Object.entries(raw)) {
-    if (field === SOURCE_KEY) continue;
-    const rewritten = rewriteBatchIndex(value, source);
-    if (!rewritten) continue;
-    const converted = pills(rewritten, ctx);
-    const wrapped = converted.match(/^TODO_FORMULA\((.*)\)$/s);
-    const body = wrapped ? wrapped[1]! : converted;
-    if (body.includes('TODO_')) continue;
-    const savedBindings = new Map(registry.bindings);
-    const savedPills = new Map(registry.pillNames);
-    const savedSeq = registry.seq.n;
-    const compiled = compileRubyExpression(body, registry);
-    if (!compiled || compiled.constant) {
-      registry.bindings.clear();
-      for (const [key, pill] of savedBindings) registry.bindings.set(key, pill);
-      registry.pillNames.clear();
-      for (const [key, name] of savedPills) registry.pillNames.set(key, name);
-      registry.seq.n = savedSeq;
-      continue;
-    }
-    computed.push({ field, expr: compiled.expr });
-    fields.push(field);
-    for (const helper of compiled.helpers) helpers.add(helper);
-    approximations.push(...compiled.approximations);
-  }
-
-  const inputs: Record<string, string> = {};
-  for (const [binding, pill] of registry.bindings) {
-    if (pill === BATCH_INDEX_PILL) {
-      for (const slot of computed) {
-        slot.expr = slot.expr.replace(new RegExp(`\\b${binding}\\b`, 'g'), 'index');
-      }
-      continue;
-    }
-    inputs[binding] = pill;
-  }
-
-  return {
-    computed,
-    inputs,
-    prelude: renderHelpers(helpers),
-    fields,
-    approximations: [...new Set(approximations)],
-  };
-}
-
 function buildListBatch(
   step: ParsedStep,
   op: NonNullable<ReturnType<typeof variableOp>>,
@@ -1853,6 +1919,10 @@ function buildListBatch(
     );
   }
   const valid = !ruby.length && !hasTodoMarker(resolved) && indexed.computed.every((slot) => !slot.expr.includes('TODO_'));
+  if (indexed.computed.length) {
+    ctx.todos.push(`FORMULA (${codeName}): revisar CODE de indice em lote.`);
+    ctx.diagnostics.push({ category: 'FORMULA', reason: 'FORMULA_REVIEW', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: codeName });
+  }
   for (const note of indexed.approximations) {
     if (note === MULTIPLY_NOTE) {
       pushReviewNote(ctx, 'FORMULA', `Passo \`${codeName}\`.\n\n${note}`, codeName, codeName);
@@ -2257,194 +2327,6 @@ function pageRangeRuby(ruby: string): { count: string; list: string; field: stri
   return { count: match[1]!, field: match[2]!, fallback: match[3]!, list: match[4]! };
 }
 
-function isAllCardsPagePython(source: string): boolean {
-  const compact = compactCustomCode(source);
-  return compact.includes('import requests') && compact.includes('allCards') && compact.includes('endCursor') && compact.includes('def main');
-}
-
-function allCardsPageCode(source: string): string {
-  const operator = /operator:\s*gt,/.test(source) && !/operator:\s*gte,/.test(source) ? 'gt' : 'gte';
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  const pipe_id = inputs.pipe_id;',
-    '  const updated_at = inputs.updated_at;',
-    '  const carga_inicial = inputs.carga_inicial;',
-    '  const headers = { Authorization: `Bearer ${inputs.api_token}`, "Content-Type": "application/json" };',
-    '  const card_ids = [];',
-    '  let total_count = 0;',
-    '  let has_next_page = true;',
-    '  let after = "null";',
-    '  while (has_next_page) {',
-    '    const filter = carga_inicial ? "" : `filter: {field: \\"updated_at\\", operator: ' + operator + ', value: \\"${updated_at}\\"}`;',
-    '    const query = `query MyQuery { allCards(pipeId: \\"${pipe_id}\\" ${filter} after: ${after}) { totalCount pageInfo { hasNextPage endCursor } edges { node { id } } } }`;',
-    '    const response = await fetch("https://api.pipefy.com/graphql", { method: "POST", headers, body: JSON.stringify({ query }) });',
-    '    const data = await response.json();',
-    '    if (total_count === 0) total_count = data.data.allCards.totalCount;',
-    '    for (const card of data.data.allCards.edges) card_ids.push(card.node.id);',
-    '    const page_info = data.data.allCards.pageInfo;',
-    '    has_next_page = page_info.hasNextPage;',
-    '    after = has_next_page ? `"${page_info.endCursor}"` : "null";',
-    '  }',
-    '  return { card_ids, total_count };',
-    '};',
-  ].join('\n');
-}
-
-function isSlaCardPython(source: string): boolean {
-  const compact = compactCustomCode(source);
-  return compact.includes('client_credentials') && compact.includes('FetchCard') && compact.includes('elapsed_time_field_id') && compact.includes('def main');
-}
-
-function slaCardCode(): string {
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  const card_id = String(inputs.card_id);',
-    '  const from_id = String(inputs.from_id);',
-    '  const phases_list = String(inputs.phases ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
-    '  const tokenResponse = await fetch(inputs.token_url, {',
-    '    method: "POST",',
-    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
-    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
-    '  });',
-    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
-    '  const token = (await tokenResponse.json()).access_token;',
-    '  const graphql_url = `https://${inputs.tenant}.pipefy.com/graphql`;',
-    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
-    '  const query = { query: `query FetchCard { card(id: \\"${card_id}\\") { id fields { field { id } value } phases_history { duration phase { id name } } } }` };',
-    '  const response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
-    '  if (!response.ok) throw new Error(await response.text());',
-    '  const card = (await response.json()).data.card;',
-    '  const field_map = Object.fromEntries((card.fields ?? []).map((f) => [String(f.field.id), String(f.value)]));',
-    '  let sla_value = null;',
-    '  let elapsed_value = null;',
-    '  let total_duration = 0;',
-    '  for (const ph of card.phases_history) {',
-    '    if (phases_list.includes(ph.phase.name)) total_duration += Number(ph.duration || 0);',
-    '    if (String(ph.phase.id) === from_id) {',
-    '      sla_value = { card_id, field_id: `sla_${from_id}_1`, value: String(Math.round((Number(ph.duration || 0) / 3600) * 100) / 100) };',
-    '    }',
-    '  }',
-    '  if (total_duration > 0) {',
-    '    elapsed_value = { card_id, field_id: String(inputs.elapsed_time_field_id), value: String(Math.round((total_duration / 3600) * 100) / 100) };',
-    '  }',
-    '  const mutation_blocks = [];',
-    '  if (sla_value) mutation_blocks.push(sla_value);',
-    '  mutation_blocks.push({ card_id, field_id: String(inputs.sla_aux_field_id), value: "0" });',
-    '  if (elapsed_value) mutation_blocks.push(elapsed_value);',
-    '  const execute = async (mutations) => {',
-    '    const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
-    '    for (let attempt = 0; attempt < 3; attempt++) {',
-    '      try {',
-    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
-    '        if (!resp.ok) throw new Error(await resp.text());',
-    '        return true;',
-    '      } catch (error) {',
-    '        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 5000));',
-    '        else return false;',
-    '      }',
-    '    }',
-    '    return false;',
-    '  };',
-    '  let failed_updates = [];',
-    '  if (mutation_blocks.length && !(await execute(mutation_blocks))) failed_updates = mutation_blocks;',
-    '  return { output: { updated_fields: mutation_blocks, failed_updates } };',
-    '};',
-  ].join('\n');
-}
-
-function isSlaBatchPython(source: string): boolean {
-  const compact = compactCustomCode(source);
-  return compact.includes('MAX_RUNTIME_SECONDS') && compact.includes('last_cursor') && compact.includes('def main');
-}
-
-function slaBatchCode(): string {
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  const phase_names = String(inputs.phase_names ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
-    '  const tenant = inputs.tenant_endpoint || "app";',
-    '  let cursor = inputs.last_cursor || "first";',
-    '  const started = Date.now();',
-    '  const tokenResponse = await fetch(inputs.oauth_token_url, {',
-    '    method: "POST",',
-    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
-    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
-    '  });',
-    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
-    '  const token = (await tokenResponse.json()).access_token;',
-    '  const graphql_url = `https://${tenant}.pipefy.com/graphql`;',
-    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
-    '  const one_year_ago = Date.now() - 365 * 24 * 60 * 60 * 1000;',
-    '  let cards_updated = 0;',
-    '  const errors = [];',
-    '  while (Date.now() - started < 60000) {',
-    '    const after_clause = cursor !== "first" && cursor !== "done" ? `, after: \\"${cursor}\\"` : "";',
-    '    const query = { query: `query { phase(id: ${inputs.phase_id}) { cards(first: 30${after_clause}) { edges { node { id created_at current_phase { name } fields { name value } phases_history { duration phase { id name } } } cursor } } } }` };',
-    '    let response;',
-    '    try {',
-    '      response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
-    '      if (!response.ok) throw new Error(await response.text());',
-    '    } catch (error) {',
-    '      return { cards_updated, errors: [`GraphQL query failed: ${error}`], last_cursor: cursor, pending_phases: [] };',
-    '    }',
-    '    const edges = (await response.json()).data.phase.cards.edges;',
-    '    if (!edges.length) return { cards_updated, errors, last_cursor: "done", pending_phases: [] };',
-    '    const card_ids = [];',
-    '    const all_mutations = [];',
-    '    for (const edge of edges) {',
-    '      const node = edge.node;',
-    '      const created = new Date(String(node.created_at).slice(0, 10)).getTime();',
-    '      const reopened = (node.fields ?? []).find((field) => String(field.name).trim().toLowerCase() === "reopened flag");',
-    '      if (created < one_year_ago || reopened?.value === "Yes") continue;',
-    '      card_ids.push(node.id);',
-    '      let total_duration = 0;',
-    '      let current_phase_duration = null;',
-    '      let current_phase_id_for_sla = null;',
-    '      for (const ph of node.phases_history ?? []) {',
-    '        const duration = Number(ph.duration || 0);',
-    '        if (phase_names.includes(ph.phase.name)) total_duration += duration;',
-    '        if (node.current_phase.name === ph.phase.name) {',
-    '          current_phase_duration = Math.round((duration / 3600) * 100) / 100;',
-    '          current_phase_id_for_sla = ph.phase.id;',
-    '        }',
-    '      }',
-    '      if (current_phase_duration != null && current_phase_id_for_sla != null) {',
-    '        all_mutations.push({ card_id: node.id, field_id: `sla_${current_phase_id_for_sla}_1`, value: String(current_phase_duration) });',
-    '      }',
-    '      if (total_duration > 0) {',
-    '        all_mutations.push({ card_id: node.id, field_id: inputs.elapsed_time_field_id, value: String(Math.round((total_duration / 3600) * 100) / 100) });',
-    '      }',
-    '      all_mutations.push({ card_id: node.id, field_id: inputs.sla_aux_field_id, value: "0" });',
-    '    }',
-    '    const execute = async (mutations) => {',
-    '      const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
-    '      try {',
-    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
-    '        if (!resp.ok) throw new Error(await resp.text());',
-    '        return true;',
-    '      } catch { return false; }',
-    '    };',
-    '    const success = await execute(all_mutations);',
-    '    if (!success) {',
-    '      await new Promise((resolve) => setTimeout(resolve, 2000));',
-    '      const failed_cards = [...new Set(all_mutations.map((m) => m.card_id))];',
-    '      errors.push(...failed_cards);',
-    '      if (await execute(all_mutations.filter((m) => failed_cards.includes(m.card_id)))) {',
-    '        cards_updated += new Set(all_mutations.filter((m) => failed_cards.includes(m.card_id)).map((m) => m.card_id)).size;',
-    '      }',
-    '    } else {',
-    '      cards_updated += new Set(card_ids).size;',
-    '    }',
-    '    cursor = edges[edges.length - 1].cursor;',
-    '    await new Promise((resolve) => setTimeout(resolve, 1000));',
-    '  }',
-    '  return { cards_updated, errors, last_cursor: cursor, pending_phases: [] };',
-    '};',
-  ].join('\n');
-}
-
 function pageRangeCode(parsed: { count: string; list: string; field: string; fallback: string }): string {
   return [
     'export const code = async (inputs) => {',
@@ -2575,48 +2457,6 @@ function isSubscriberDedupePython(python: string): boolean {
   );
 }
 
-/**
- * Python que separa assinaturas `completed` das demais e monta o texto
- * "Assinaram" / "Não Assinaram". Outro corpo fica no stub.
- * `import requests` e `time.sleep` não entram aqui.
- */
-function isSignatureSummaryPython(python: string): boolean {
-  return (
-    compactCustomCode(python) ===
-    'def summarize_signatures(signatures): summary = {"completed": [], "not_completed_or_sent": []} for signature in signatures: if isinstance(signature, dict): # Verifica se o elemento da lista é um dicionário name = signature.get("name") status = signature.get("status") if name and status: if status == "completed": summary["completed"].append(name) else: summary["not_completed_or_sent"].append(name) return summary def main(input): sign_info_list = input["code_input"] result = summarize_signatures(sign_info_list) completed_signers = "; ".join(result["completed"]) not_completed_signers = "; ".join(result["not_completed_or_sent"]) summary_text = ( "Assinaram:\\n" + completed_signers + "\\n\\n" "Não Assinaram:\\n" + not_completed_signers ) return { "completed": result["completed"], "not_completed_or_sent": result["not_completed_or_sent"], "summary_text": summary_text }'
-  );
-}
-
-function signatureSummaryCode(): string {
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  const read = (obj, key) =>',
-    '    obj != null && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;',
-    '  const signatures = inputs.code_input;',
-    '  const summary = { completed: [], not_completed_or_sent: [] };',
-    '  for (const signature of signatures) {',
-    '    if (signature == null || typeof signature !== "object" || Array.isArray(signature)) continue;',
-    '    const name = read(signature, "name");',
-    '    const status = read(signature, "status");',
-    '    if (name && status) {',
-    '      if (status === "completed") summary.completed.push(name);',
-    '      else summary.not_completed_or_sent.push(name);',
-    '    }',
-    '  }',
-    '  const completed_signers = summary.completed.join("; ");',
-    '  const not_completed_signers = summary.not_completed_or_sent.join("; ");',
-    '  const summary_text =',
-    '    "Assinaram:\\n" + completed_signers + "\\n\\n" + "Não Assinaram:\\n" + not_completed_signers;',
-    '  return {',
-    '    completed: summary.completed,',
-    '    not_completed_or_sent: summary.not_completed_or_sent,',
-    '    summary_text,',
-    '  };',
-    '};',
-  ].join('\n');
-}
-
 function subscriberDedupeCode(): string {
   return [
     '// py_eval/invoke_custom_py_code',
@@ -2695,109 +2535,6 @@ function buildNodeIdsPython(name: string, display: string, step: ParsedStep, ctx
     '};',
   ].join('\n');
   return codeStep(name, display, input, code, !hasTodoMarker(input));
-}
-
-/**
- * Python que acha o rodapé cujo texto contém `<chancela>` e devolve
- * footer_id, end_index e content. Outro corpo fica no stub.
- */
-function isFooterAnchorPython(python: string): boolean {
-  const compact = python
-    .replace(/#.*$/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return (
-    compact ===
-    'def main(input): footers = input.get("footer", {}) or {} anchor = "<chancela>" for footer_id, footer in footers.items(): for content in footer.get("content", []) or []: paragraph = content.get("paragraph") or {} for element in paragraph.get("elements", []) or []: text_run = element.get("textRun") if not text_run: continue text = text_run.get("content", "") or "" if anchor in text: end_index = element.get("endIndex") or content.get("endIndex") return { "footer_id": footer_id, "end_index": end_index, "content": text } return { "footer_id": None, "end_index": None, "content": None }'
-  );
-}
-
-function footerAnchorCode(): string {
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  const footers = inputs.footer ?? {};',
-    '  const anchor = "<chancela>";',
-    '  for (const [footerId, footer] of Object.entries(footers)) {',
-    '    for (const content of footer?.content ?? []) {',
-    '      const paragraph = content?.paragraph ?? {};',
-    '      for (const element of paragraph?.elements ?? []) {',
-    '        const textRun = element?.textRun;',
-    '        if (!textRun) continue;',
-    '        const text = textRun.content ?? "";',
-    '        if (String(text).includes(anchor)) {',
-    '          return {',
-    '            footer_id: footerId,',
-    '            end_index: element?.endIndex ?? content?.endIndex ?? null,',
-    '            content: text,',
-    '          };',
-    '        }',
-    '      }',
-    '    }',
-    '  }',
-    '  return { footer_id: null, end_index: null, content: null };',
-    '};',
-  ].join('\n');
-}
-
-/**
- * Python que lê `doc.footers`, percorre cada rodapé e monta a lista `requests`
- * com `deleteContentRange`. A lista não é a biblioteca HTTP. Outro corpo fica no stub.
- * `import requests` não entra aqui.
- */
-function isFooterDeleteRangesPython(python: string): boolean {
-  const compact = python
-    .replace(/#.*$/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return (
-    compact ===
-    'def main(input): import json payload = input if isinstance(input.get("data"), str): payload = json.loads(input["data"]) doc = payload.get("doc") or {} footers = doc.get("footers") or {} requests = [] log = {"footer_ids_found": list(footers.keys()), "ranges": [], "skipped": []} for footer_id, footer in footers.items(): content = footer.get("content") or [] if not content: log["skipped"].append({"footerId": footer_id, "reason": "no_content"}) continue end_candidates = [] for el in content: ei = el.get("endIndex") if isinstance(ei, int): end_candidates.append(ei) if not end_candidates: log["skipped"].append({"footerId": footer_id, "reason": "no_endIndex"}) continue end = max(end_candidates) start = 1 end_minus_one = end - 1 if end_minus_one <= start: log["skipped"].append({"footerId": footer_id, "reason": "already_empty", "start": start, "end": end}) continue requests.append({ "deleteContentRange": { "range": { "segmentId": footer_id, "startIndex": start, "endIndex": end_minus_one } } }) log["ranges"].append({"footerId": footer_id, "start": start, "end": end_minus_one}) return { "requests": requests, "requests_count": len(requests), "log": log }'
-  );
-}
-
-function footerDeleteRangesCode(): string {
-  return [
-    '// py_eval/invoke_custom_py_code',
-    'export const code = async (inputs) => {',
-    '  let payload = inputs;',
-    '  if (typeof inputs?.data === "string") payload = JSON.parse(inputs.data);',
-    '  const doc = payload?.doc ?? {};',
-    '  const footers = doc?.footers ?? {};',
-    '  const requests = [];',
-    '  const log = { footer_ids_found: Object.keys(footers), ranges: [], skipped: [] };',
-    '  for (const [footer_id, footer] of Object.entries(footers)) {',
-    '    const content = footer?.content ?? [];',
-    '    if (!content.length) {',
-    '      log.skipped.push({ footerId: footer_id, reason: "no_content" });',
-    '      continue;',
-    '    }',
-    '    const end_candidates = [];',
-    '    for (const el of content) {',
-    '      const ei = el?.endIndex;',
-    '      if (Number.isInteger(ei)) end_candidates.push(ei);',
-    '    }',
-    '    if (!end_candidates.length) {',
-    '      log.skipped.push({ footerId: footer_id, reason: "no_endIndex" });',
-    '      continue;',
-    '    }',
-    '    const end = Math.max(...end_candidates);',
-    '    const start = 1;',
-    '    const end_minus_one = end - 1;',
-    '    if (end_minus_one <= start) {',
-    '      log.skipped.push({ footerId: footer_id, reason: "already_empty", start, end });',
-    '      continue;',
-    '    }',
-    '    requests.push({',
-    '      deleteContentRange: {',
-    '        range: { segmentId: footer_id, startIndex: start, endIndex: end_minus_one },',
-    '      },',
-    '    });',
-    '    log.ranges.push({ footerId: footer_id, start, end: end_minus_one });',
-    '  }',
-    '  return { requests, requests_count: requests.length, log };',
-    '};',
-  ].join('\n');
 }
 
 /** Só espaço some. `#ddd` dentro de string HTML não é comentário. */
@@ -3071,27 +2808,6 @@ function copyProp(input: Record<string, any>, dest: string, ...sources: string[]
   }
 }
 
-/** O valor já está no JSON, só com outro nome. Não inventa o que a receita não traz. */
-function copySource(
-  input: Record<string, any>,
-  source: Record<string, any>,
-  ctx: Ctx,
-  dest: string,
-  ...keys: string[]
-): void {
-  if (!blankProp(input[dest])) return;
-  for (const key of keys) {
-    if (!blankProp(input[key]) && input[key] !== '=skip') {
-      input[dest] = input[key];
-      return;
-    }
-    const raw = source[key];
-    if (blankProp(raw) || raw === '=skip') continue;
-    input[dest] = deepConvert(raw, ctx);
-    return;
-  }
-}
-
 /** Renomeia props Workato para o nome obrigatório da piece quando o valor já está no input. */
 function fillKnownProps(
   target: MapTarget,
@@ -3154,19 +2870,22 @@ function fillKnownProps(
   }
 
   if (target.piece === '@activepieces/piece-google-drive' && target.name === 'search-folder') {
-    const kind = String(input.kind ?? sourceInput.kind ?? '');
-    delete input.kind;
-    copyProp(input, 'parentFolder', 'folderId');
+    const kind = String(sourceInput.kind ?? input.kind ?? '').toLowerCase();
+    copySource(input, sourceInput, ctx, 'parentFolder', 'folderId');
     if (!blankProp(input.parentFolder)) delete input.folderId;
-    // Search By / Match / Search Text. `name` da Workato é o texto; kind Folders vira Show = folder.
-    if (blankProp(input.query)) {
-      copyProp(input, 'query', 'name');
-      if (!blankProp(input.query)) delete input.name;
+    // Workato Name is a partial name match. Only this known source field
+    // supplies the search selectors; a raw Query is not a name string.
+    if (!blankProp(sourceInput.name) && blankProp(sourceInput.query)) {
+      copySource(input, sourceInput, ctx, 'query', 'name');
+      if (!blankProp(input.query)) {
+        if (blankProp(input.queryTerm)) input.queryTerm = 'name';
+        if (blankProp(input.operator)) input.operator = 'contains';
+        delete input.name;
+      }
     }
-    if (blankProp(input.queryTerm)) input.queryTerm = 'name';
-    if (blankProp(input.operator)) input.operator = '=';
-    if (blankProp(input.type) && /folder/i.test(kind)) input.type = 'folder';
-    else if (blankProp(input.type) && /file/i.test(kind)) input.type = 'file';
+    if (blankProp(input.type) && (kind === 'folders' || kind === 'folder')) input.type = 'folder';
+    if (blankProp(input.type) && (kind === 'files' || kind === 'file')) input.type = 'file';
+    delete input.kind;
   }
 
   if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
@@ -3226,6 +2945,20 @@ function fillKnownProps(
     copyProp(input, 'organizationId', 'organization_id');
     copyProp(input, 'pipeId', 'pipe_id');
     copyProp(input, 'phaseId', 'phase_id');
+    const copyFromSource = (dest: string, ...keys: string[]) => {
+      if (!blankProp(input[dest])) return;
+      for (const key of keys) {
+        const value = sourceInput[key];
+        if (!blankProp(value) && value !== '=skip') {
+          input[dest] = deepConvert(value, ctx);
+          return;
+        }
+      }
+    };
+    copyFromSource('cardId', 'card_id', 'node_ID', 'Node_Id', 'node_id');
+    copyFromSource('organizationId', 'organization_id');
+    copyFromSource('pipeId', 'pipe_id');
+    copyFromSource('phaseId', 'phase_id');
     if (phaseFieldsBlank(input.phaseFields)) {
       const fieldId = input.field_id ?? sourceInput.field_id;
       const value = input.new_value !== undefined ? input.new_value : sourceInput.new_value;
@@ -3234,7 +2967,22 @@ function fillKnownProps(
         delete input.field_id;
         delete input.new_value;
       }
-    } else if (input.phaseFields && typeof input.phaseFields === 'object' && !Array.isArray(input.phaseFields)) {
+    }
+    if (phaseFieldsBlank(input.phaseFields)) {
+      const meta = new Set([
+        'organization_id', 'pipe_id', 'phase_id', 'card_id', 'id',
+        'node_ID', 'Node_Id', 'node_id', 'field_id', 'new_value',
+        'Fields_to_update', 'fields_to_update',
+      ]);
+      const fields: Record<string, any> = {};
+      for (const [key, value] of Object.entries(sourceInput)) {
+        if (meta.has(key) || blankProp(value) || value === '=skip') continue;
+        if (typeof value === 'string' && /^=\s*(?:\(\s*\)|null|clear)?\s*$/i.test(value.trim())) continue;
+        fields[key] = deepConvert(value, ctx);
+      }
+      if (Object.keys(fields).length) input.phaseFields = fields;
+    }
+    if (input.phaseFields && typeof input.phaseFields === 'object' && !Array.isArray(input.phaseFields)) {
       const packed = input.phaseFields as Record<string, any>;
       const keys = Object.keys(packed);
       if (!blankProp(packed.field_id) && packed.new_value !== undefined && keys.every((key) => key === 'field_id' || key === 'new_value')) {
@@ -3429,46 +3177,6 @@ function fillKnownProps(
 
 const TABLES_PIECE = '@activepieces/piece-tables';
 
-/** `lookup('tabela', 'coluna': valor)['campo']` vira busca na Tables. */
-function parseLookupFormula(source: string): { table: string; column: string; value: string; field: string } | null {
-  const match = source.trim().match(
-    /^lookup\(\s*(['"])([\s\S]+?)\1\s*,\s*(['"])([\s\S]+?)\3\s*:\s*([\s\S]+?)\)(?:\[\s*(['"])([\s\S]+?)\6\s*\])?$/,
-  );
-  if (!match) return null;
-  return { table: match[2]!, column: match[4]!, value: match[5]!.trim(), field: match[7] ?? '' };
-}
-
-function lookupFindStep(name: string, lookup: { table: string; column: string; value: string }): any {
-  const input = {
-    table_id: lookup.table,
-    filters: {
-      filters: [
-        {
-          field: { id: lookup.column, type: 'TEXT', name: lookup.column },
-          operator: 'EQ',
-          value: lookup.value,
-        },
-      ],
-    },
-  };
-  return {
-    name,
-    skip: false,
-    type: 'PIECE',
-    valid: true,
-    settings: {
-      input,
-      pieceName: TABLES_PIECE,
-      actionName: 'tables-find-records',
-      pieceVersion: '~latest',
-      propertySettings: {},
-      errorHandlingOptions: ERR(),
-    },
-    displayName: `Lookup ${lookup.table}`,
-    lastUpdatedDate: NOW,
-  };
-}
-
 /** `FROM {{lista}}` do Smart List. O id da tabela fica nessa referência, não no SQL inteiro. */
 function tableRefFromSql(sql: unknown): string | undefined {
   if (typeof sql !== 'string') return undefined;
@@ -3505,13 +3213,6 @@ function fillTablesProps(target: MapTarget, input: Record<string, any>): void {
   ) {
     copyProp(input, 'record_id', 'id');
   }
-}
-
-function columnFilters(parameters: unknown): { field: string; value: unknown }[] | null {
-  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return null;
-  const entries = Object.entries(parameters as Record<string, unknown>).filter(([, value]) => !blankProp(value));
-  if (!entries.length) return null;
-  return entries.map(([field, value]) => ({ field, value }));
 }
 
 /** `[{field_id, field_value}]` da Workato vira `{ slug: valor }` da piece. */
@@ -3646,21 +3347,6 @@ function biweeklyGate(next: any | undefined, weeks: number, anchor: string, time
   return check;
 }
 
-/** `col_*` com valor de busca. `=` sozinho é o operador sem operando. */
-function sheetSearchColumns(sourceInput: Record<string, any>): { key: string; header: string; value: unknown }[] {
-  const data = sourceInput.data;
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
-  const columns = [];
-  for (const [key, value] of Object.entries(data)) {
-    if (!key.startsWith('col_')) continue;
-    if (value === '=skip' || value == null || value === '' || value === '=') continue;
-    const header = key.slice(4);
-    if (!header) continue;
-    columns.push({ key, header, value });
-  }
-  return columns;
-}
-
 function fillSheetsFindRows(
   target: MapTarget,
   input: Record<string, any>,
@@ -3678,81 +3364,6 @@ function fillSheetsFindRows(
   if (input.matchCase == null || input.matchCase === '') input.matchCase = true;
   if (input.headerRow == null || input.headerRow === '') input.headerRow = true;
   return input;
-}
-
-/**
- * find_rows aceita um columnName. Várias colunas viram a planilha inteira
- * filtrada no passo seguinte, com o nome do passo original.
- */
-function buildSheetsMultiFind(
-  name: string,
-  display: string,
-  input: Record<string, any>,
-  columns: { header: string; value: unknown }[],
-  ctx: Ctx,
-): any {
-  const rowsName = nextName('sheet_rows');
-  const rowsInput: Record<string, any> = {
-    spreadsheetId: input.spreadsheetId,
-    sheetId: input.sheetId,
-    first_row_headers: true,
-  };
-  if (!blankProp(input.includeTeamDrives)) rowsInput.includeTeamDrives = input.includeTeamDrives;
-  const rowsTarget: MapTarget = { piece: GOOGLE_SHEETS_PIECE, name: 'get-many-rows', kind: 'action' };
-  const filters = resolveFormulas(
-    Object.fromEntries(columns.map((column) => [column.header, deepConvert(column.value, ctx)])),
-    ctx,
-    name,
-  );
-  const codeInput: Record<string, any> = {
-    spreadsheet_id: input.spreadsheetId ?? '',
-    rows: `{{${rowsName}}}`,
-    filters,
-    numberOfRows: input.numberOfRows ?? '',
-  };
-  const code = [
-    'export const code = async (inputs) => {',
-    '  const raw = inputs.rows;',
-    '  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : []);',
-    '  const filters = inputs.filters && typeof inputs.filters === "object" ? inputs.filters : {};',
-    '  const matched = list.filter((item) => {',
-    '    const values = item && item.values && typeof item.values === "object" ? item.values : {};',
-    '    return Object.keys(filters).every((header) => {',
-    '      const cell = values[header];',
-    '      const expected = filters[header];',
-    '      return String(cell == null ? "" : cell) === String(expected == null ? "" : expected);',
-    '    });',
-    '  });',
-    '  const limit = Number(inputs.numberOfRows);',
-    '  const taken = Number.isFinite(limit) && limit > 0 ? matched.slice(0, limit) : matched;',
-    '  return {',
-    '    spreadsheet_id: inputs.spreadsheet_id,',
-    '    rows: taken.map((item) => ({',
-    '      row_number: item && item.row != null ? item.row : item && item.row_number,',
-    '      values: item && item.values ? item.values : {},',
-    '    })),',
-    '  };',
-    '};',
-  ].join('\n');
-  const rowsMissing = missingRequiredProps(ctx, rowsTarget, rowsInput);
-  const rowsStep = {
-    name: rowsName,
-    skip: false,
-    type: 'PIECE',
-    valid: rowsMissing.length === 0 && !hasTodoMarker(rowsInput),
-    settings: {
-      input: rowsInput,
-      pieceName: GOOGLE_SHEETS_PIECE,
-      actionName: 'get-many-rows',
-      pieceVersion: pieceVersion(ctx, GOOGLE_SHEETS_PIECE),
-      propertySettings: propertySettings(rowsInput),
-      errorHandlingOptions: ERR(),
-    },
-    displayName: display,
-    lastUpdatedDate: NOW,
-    nextAction: codeStep(name, display, codeInput, code, !hasTodoMarker(codeInput)),
-  };
-  return rowsStep;
 }
 
 const SLACK_VIEWS = 'https://slack.com/api/views.';
@@ -3924,16 +3535,7 @@ function fillHttpSend(input: Record<string, any>, sourceInput: Record<string, an
     input.headers['Content-Type'] = deepConvert(contentType, ctx);
   }
   if (input.queryParams == null) input.queryParams = {};
-  if (input.authType == null) input.authType = 'none';
-  const requestVerb = request.verb ?? request.method;
-  if (blankProp(input.method) && !blankProp(requestVerb) && requestVerb !== '=skip') {
-    const method = deepConvert(requestVerb, ctx);
-    input.method = typeof method === 'string' && /^[a-z]+$/i.test(method) ? method.toUpperCase() : method;
-  }
-  const requestUrl = request.url ?? request.path;
-  if (blankProp(input.url) && !blankProp(requestUrl) && requestUrl !== '=skip') {
-    input.url = deepConvert(requestUrl, ctx);
-  }
+  if (input.authType == null) input.authType = 'NONE';
   if (input.body && typeof input.body === 'object' && typeof input.body.data === 'string') {
     input.body_type = 'raw';
   }
@@ -4080,6 +3682,7 @@ function buildPipefyGraphql(
   const missing = missingRequiredProps(ctx, PIPEFY_GRAPHQL_TARGET, input);
   if (missing.length) {
     ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
+    ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: name, count: missing.length });
   }
   return {
     name,
@@ -4155,6 +3758,27 @@ function docusignRoleSigners(sourceInput: Record<string, any>, ctx: Ctx): Array<
     signers.push(signer);
   }
   return signers.length ? signers : undefined;
+}
+
+function updateListFieldPiece(stepName: string, display: string, listAdd: UpdateListFieldAdd, ctx: Ctx): any {
+  const listTarget: MapTarget = { piece: PIPEFY_PIECE, name: 'updateListField', kind: 'action' };
+  const listMissing = missingRequiredProps(ctx, listTarget, listAdd);
+  return {
+    name: stepName,
+    skip: false,
+    type: 'PIECE',
+    valid: listMissing.length === 0 && !JSON.stringify(listAdd).includes('TODO'),
+    settings: {
+      input: listAdd,
+      pieceName: PIPEFY_PIECE,
+      actionName: 'updateListField',
+      pieceVersion: pieceVersion(ctx, PIPEFY_PIECE),
+      propertySettings: propertySettings(listAdd),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+  };
 }
 
 function buildAction(step: ParsedStep, ctx: Ctx): any {
@@ -4248,20 +3872,21 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const email = channelOp === 'email/send_mail';
     ctx.todos.push(
       email
-        ? `EMAIL (${name}): Email by Workato nao migra (nao vira SMTP nem Gmail). Avisar e seguir o canvas.`
-        : `SMS (${name}): SMS by Workato nao migra (nao vira Twilio). Avisar e seguir o canvas.`,
+        ? `EMAIL (${name}): Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta.`
+        : `SMS (${name}): SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta.`,
     );
+    ctx.diagnostics.push({ category: 'UNSUPPORTED_OPERATION', reason: 'UNSUPPORTED_CHANNEL', action: 'MANUAL_REVIEW', stepName: name });
     pushReviewNote(
       ctx,
       email ? 'EMAIL' : 'SMS',
       email
-        ? 'Email by Workato nao migra — nao usar piece-smtp nem Gmail. Recriar o envio no iPaaS. O canvas segue nos passos mapeados.'
-        : 'SMS by Workato nao migra — nao usar piece-twilio. Recriar o envio no iPaaS. O canvas segue nos passos mapeados.',
+        ? 'Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.'
+        : 'SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.',
       '',
       name,
     );
     const input = resolveFormulas(convInput(sourceInput, undefined, ctx), ctx, name, sourceInput);
-    return todoPieceStep(name, display, input);
+    return todoPieceStep(name, display, input, ctx);
   }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
@@ -4287,21 +3912,33 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       return codeStep(name, display, lifted.input, subscriberDedupeCode(), !hasTodoMarker(lifted.input));
     }
     if (isPython && isSignatureSummaryPython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, signatureSummaryCode(), !hasTodoMarker(lifted.input));
     }
     if (isPython && isAllCardsPagePython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, allCardsPageCode(lifted.source), !hasTodoMarker(lifted.input));
     }
     if (isPython && isSlaCardPython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, slaCardCode(), !hasTodoMarker(lifted.input));
     }
     if (isPython && isSlaBatchPython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, slaBatchCode(), !hasTodoMarker(lifted.input));
     }
     if (isPython && isFooterAnchorPython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, footerAnchorCode(), !hasTodoMarker(lifted.input));
     }
     if (isPython && isFooterDeleteRangesPython(lifted.source)) {
+      ctx.todos.push(`REVIEW (${name}): revisar adaptador Python aprovado e contrato de entrada/saida.`);
+      ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
       return codeStep(name, display, lifted.input, footerDeleteRangesCode(), !hasTodoMarker(lifted.input));
     }
     if (isRuby && isSharePointFileUrlRuby(lifted.source)) {
@@ -4321,6 +3958,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       }
     }
     ctx.todos.push(`CODE (${name}): traduzir "${opKey}" (${kind}) para JS. ${language} original embutido no step.`);
+    ctx.diagnostics.push({ category: 'CODE_TRANSLATION_REQUIRED', reason: 'UNTRANSLATED_CODE', action: 'SKIP_LLM', stepName: name });
     return codeStep(name, display, lifted.input, buildCodeStub(opKey, lifted.source, language));
   }
 
@@ -4338,10 +3976,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       return buildChain(step.children, ctx) ?? null;
     }
     ctx.todos.push(`NAO MAPEADA (${name}): "${opKey}" -> definir mapa (add-map).`);
-    return todoPieceStep(name, display, sourceInput);
+    return todoPieceStep(name, display, sourceInput, ctx);
   }
 
-  const t = entry.target;
+  let t = entry.target;
   ctx.piecesUsed.add(t.piece);
   noteLookupTable(ctx, opKey, sourceInput, name);
   const shaped = t.piece === SUBFLOW_PIECE ? applySubflowAction(opKey, t.name, sourceInput, ctx, name) : null;
@@ -4409,6 +4047,19 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       name,
     );
   }
+  const tableFilters = columnFilters(input.parameters ?? sourceInput.parameters);
+  if (collapseOpKey(opKey) === 'lookup_table/get_entry' && tableFilters) {
+    t = { piece: TABLES_PIECE, name: 'tables-find-records', kind: 'action' };
+    ctx.piecesUsed.add(TABLES_PIECE);
+    input.table_id = input.table_id ?? deepConvert(sourceInput.lookup_table_id, ctx);
+    input.filters = { filters: tableFilters.map(item => ({ field: { id: item.field, type: 'TEXT', name: item.field }, operator: 'EQ', value: deepConvert(item.value, ctx) })) };
+    delete input.parameters;
+    delete input.record_id;
+  }
+  if (t.piece === GOOGLE_SHEETS_PIECE && t.name === 'find_rows') {
+    const columns = sheetSearchColumns(sourceInput);
+    if (columns.length > 1) return buildSheetsMultiFind(name, display, input, columns, ctx);
+  }
   const workatoMapper = t.piece === DATA_MAPPER_PIECE && t.name === 'advanced_mapping';
   let mapperEmpty = false;
   if (workatoMapper) {
@@ -4422,22 +4073,17 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (mapperEmpty) {
     pushReviewNote(ctx, 'MAPPER', 'O Mapper by Workato não tinha data.', '', name);
   }
-  if (t.piece === GOOGLE_SHEETS_PIECE && t.name === 'find_rows') {
-    const columns = sheetSearchColumns(sourceInput);
-    if (columns.length > 1) return buildSheetsMultiFind(name, display, input, columns, ctx);
-  }
   const docsBatch = googleDocsBatchUpdate(t, input);
   if (docsBatch) {
-    const comment = step.comment ? ` Comentário: ${step.comment}.` : '';
-    pushReviewNote(
-      ctx,
-      'DOCS',
-      `Passo \`${name}\`. update_doc traz requests de documents.batchUpdate, não um texto. O passo sai custom_api_call. append_text não foi usado.${comment}`,
-      '',
-      name,
-    );
+    pushReviewNote(ctx, 'DOCS', 'update_doc preservado como documents.batchUpdate; append_text não foi usado.' + (step.comment ? ' Comentário: ' + step.comment : ''), '', name);
     const batchTarget: MapTarget = { piece: t.piece, name: 'custom_api_call', kind: 'action' };
+    envelopeDynamicProps(docsBatch, ctx, batchTarget);
     const batchMissing = missingRequiredProps(ctx, batchTarget, docsBatch);
+    if (batchMissing.length) {
+      ctx.todos.push('PROPS (' + name + '): preencher obrigatorias ausentes.');
+      ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: name, count: batchMissing.length });
+      noteMissingProps(ctx, name, batchTarget, batchMissing, sourceInput);
+    }
     return {
       name,
       skip: false,
@@ -4451,9 +4097,6 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
         propertySettings: settingsFor(t.piece, 'custom_api_call', docsBatch),
         errorHandlingOptions: ERR(),
       },
-      // O comentário no canvas faz o verificador gastar este passo no primeiro
-      // update_doc (o nome da action também casa). Sem comentário, o passo fica
-      // sem par. O título é o nome da action; o comentário continua na nota.
       displayName: step.name || display,
       lastUpdatedDate: NOW,
     };
@@ -4482,26 +4125,11 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     delete input.compression_format;
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
-  let emitted = t;
-  const filters = columnFilters(input.parameters ?? sourceInput.parameters);
-  if (collapseOpKey(opKey).endsWith('/get_entry') && filters) {
-    emitted = { piece: TABLES_PIECE, name: 'tables-find-records', kind: 'action' };
-    ctx.piecesUsed.add(TABLES_PIECE);
-    input.table_id = input.table_id ?? sourceInput.lookup_table_id;
-    input.filters = {
-      filters: filters.map((item) => ({
-        field: { id: item.field, type: 'TEXT', name: item.field },
-        operator: 'EQ',
-        value: deepConvert(item.value, ctx),
-      })),
-    };
-    delete input.parameters;
-    delete input.record_id;
-  }
-  const missing = waivedMissing(emitted, input, sourceInput, missingRequiredProps(ctx, emitted, input));
+  const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
   if (missing.length) {
     ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
-    noteMissingProps(ctx, name, emitted, missing, sourceInput);
+    ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: name, count: missing.length });
+    noteMissingProps(ctx, name, t, missing, sourceInput);
   }
   const unresolved: string[] = [];
   collectTodoMarkers(input, '', unresolved);
@@ -4516,46 +4144,73 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       );
     }
     ctx.todos.push(
-      `PILL (${name}): referencia que nao resolve no AP em ${unresolved.join(', ')} — revisar.`,
+      `PILL (${name}): ${unresolved.length} referencia(s) nao resolvida(s) — revisar.`,
     );
   }
-  const listAdd = t.name === 'custom_api_call' || t.name === 'send_request' ? updateListFieldFromGraphql(input) : null;
-  if (listAdd) {
+  const listSplit = t.name === 'custom_api_call' || t.name === 'send_request' ? updateListFieldFromGraphql(input) : null;
+  if (listSplit?.adds.length) {
     ctx.piecesUsed.add(PIPEFY_PIECE);
-    const listTarget: MapTarget = { piece: PIPEFY_PIECE, name: 'updateListField', kind: 'action' };
-    const listMissing = missingRequiredProps(ctx, listTarget, listAdd);
-    return {
+    const head = updateListFieldPiece(name, display, listSplit.adds[0]!, ctx);
+    let tail = head;
+    for (const extra of listSplit.adds.slice(1)) {
+      const next = updateListFieldPiece(nextName('step'), display, extra, ctx);
+      tail.nextAction = next;
+      tail = next;
+    }
+    if (listSplit.residualQuery) {
+      const residualInput = replaceGraphqlQuery(input, listSplit.residualQuery);
+      tail.nextAction = {
+        name: nextName('step'),
+        skip: false,
+        type: 'PIECE',
+        valid: missing.length === 0 && unresolved.length === 0,
+        settings: {
+          input: residualInput,
+          pieceName: t.piece,
+          actionName: t.name,
+          pieceVersion: pieceVersion(ctx, t.piece),
+          propertySettings:
+            t.piece === PIPEFY_PIECE
+              ? pipefyPropertySettings(residualInput, step.inputFields)
+              : settingsFor(t.piece, t.name, residualInput),
+          errorHandlingOptions: ERR(),
+        },
+        displayName: display,
+        lastUpdatedDate: NOW,
+      };
+    }
+    return head;
+  }
+  if (
+    t.piece === '@activepieces/piece-http' &&
+    t.name === 'send_request' &&
+    input.response_is_binary !== true &&
+    !httpUrlString(input.url)
+  ) {
+    pushReviewNote(
+      ctx,
+      'HTTP',
+      [
+        `Passo ${name} (${step.comment || step.name || opKey}).`,
+        'Não foi possível encontrar a URL deste passo HTTP.',
+        'Ela não existe na receita ou não foi encontrada.',
+      ].join('\n'),
+      '',
       name,
-      skip: false,
-      type: 'PIECE',
-      valid: listMissing.length === 0 && !JSON.stringify(listAdd).includes('TODO'),
-      settings: {
-        input: listAdd,
-        pieceName: PIPEFY_PIECE,
-        actionName: 'updateListField',
-        pieceVersion: pieceVersion(ctx, PIPEFY_PIECE),
-        propertySettings: propertySettings(listAdd),
-        errorHandlingOptions: ERR(),
-      },
-      displayName: display,
-      lastUpdatedDate: NOW,
-    };
+    );
   }
   return {
     name,
     skip: false,
     type: 'PIECE',
-    // Formula/pill residual ja viram todo; valid e so prop obrigatoria do mesmo nome.
-    valid: missing.length === 0,
+    valid: missing.length === 0 && unresolved.length === 0,
     settings: {
       input,
-      pieceName: emitted.piece,
-      actionName: emitted.name,
-      pieceVersion: pieceVersion(ctx, emitted.piece),
+      pieceName: t.piece,
+      actionName: t.name,
+      pieceVersion: pieceVersion(ctx, t.piece),
       propertySettings:
-        emitted.piece === PIPEFY_PIECE
-          ? pipefyPropertySettings(input, step.inputFields)
-          : settingsFor(emitted.piece, emitted.name, input),
+        t.piece === PIPEFY_PIECE ? pipefyPropertySettings(input, step.inputFields) : settingsFor(t.piece, t.name, input),
       errorHandlingOptions: ERR(),
     },
     displayName: display,
@@ -4643,7 +4298,8 @@ function convertCondition(
   const caseMethod = peeledLhs?.method ?? peeledRhs?.method;
   const lhs = peeledLhs?.inner ?? rawLhs;
   const firstValue = pills(lhs, ctx, resolve);
-  const wrapTextCase = (value: string) => (caseMethod ? wrapApCase(value, caseMethod) : value);
+  const wrapTextCase = (value: string, source: string) =>
+    (caseMethod ? wrapApCase(value, caseMethod, isRubyExpression(source)) : value);
   if (!mapped) {
     ctx.todos.push(
       `OPERANDO (${operand || 'vazio'}): sem equivalente no AP; virou igualdade — revisar.`,
@@ -4651,9 +4307,9 @@ function convertCondition(
     return cellGroups(
       {
         operator: 'TEXT_EXACTLY_MATCHES',
-        firstValue: caseMethod ? wrapApCase(firstValue, caseMethod) : firstValue,
+        firstValue: wrapTextCase(firstValue, lhs),
         secondValue: caseMethod
-          ? wrapApCase(pills(peeledRhs?.inner ?? rawRhs, ctx, resolve), caseMethod)
+          ? wrapTextCase(pills(peeledRhs?.inner ?? rawRhs, ctx, resolve), peeledRhs?.inner ?? rawRhs)
           : pills(rawRhs, ctx, resolve),
         caseSensitive: false,
       },
@@ -4670,8 +4326,8 @@ function convertCondition(
   }
   const condition: Record<string, any> = {
     operator: mapped.operator,
-    firstValue: wrapTextCase(firstValue),
-    secondValue: wrapTextCase(pills(peeledRhs?.inner ?? rawRhs, ctx, resolve)),
+    firstValue: wrapTextCase(firstValue, lhs),
+    secondValue: wrapTextCase(pills(peeledRhs?.inner ?? rawRhs, ctx, resolve), peeledRhs?.inner ?? rawRhs),
   };
   if (mapped.operator.startsWith('TEXT_')) condition.caseSensitive = false;
   return cellGroups(condition, false);
@@ -5051,10 +4707,8 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
  * `LOOP_ON_ITEMS`. Quando a saida e `lista.length - 1 != indice` (ou
  * `indice < lista.length - 1`) e o corpo indexa essa lista — direto ou via
  * `.pluck('campo')` — o laco e a propria lista. Lista vazia: o loop nao entra.
- * Sem lista, sem teto e sem condicao de saida, o marcador `REPEAT_UNSUPPORTED`
- * fica no lugar do bloco e o corpo segue uma vez. Com condicao e sem lista ou
- * teto, o corpo entra num `LOOP_ON_ITEMS` e so roda enquanto a condicao vale.
- * Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
+ * Sem lista e sem teto de voltas, o marcador `REPEAT_UNSUPPORTED` fica no lugar
+ * do bloco e o corpo segue uma vez. Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
  */
 function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
   pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
@@ -5128,7 +4782,7 @@ function loopOverTurnCount(
   const code = codeStep(
     codeName,
     'Voltas do repeat',
-    { bound: pills(bound.replace(/^=/, ''), ctx), extra: extraOne ? '1' : '0' },
+    resolveFormulas({ bound: pills(bound, ctx), extra: extraOne ? '1' : '0' }, ctx, codeName, { bound }),
     [
       'export const code = async (inputs) => {',
       '  const raw = Number(inputs.bound);',
@@ -5317,75 +4971,7 @@ function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedS
   return code;
 }
 
-/**
- * Repeat com condicao e sem lista ou teto. O iPaaS nao tem while: a lista tem
- * o mesmo teto da espera de relatorio, e o corpo so entra enquanto a condicao vale.
- */
-function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep): any {
-  const codeName = nextName('var_turns');
-  const code = codeStep(
-    codeName,
-    'Voltas do repeat',
-    { bound: String(STATUS_POLL_ATTEMPTS), extra: '0' },
-    [
-      'export const code = async (inputs) => {',
-      '  const raw = Number(inputs.bound);',
-      "  const extra = inputs.extra === '1' ? 1 : 0;",
-      '  const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw) + extra) : 0;',
-      '  return Array.from({ length: count }, (_, i) => i);',
-      '};',
-    ].join('\n'),
-    true,
-  );
-  const mark = ctx.pendingCode.length;
-  const firstLoopAction = withOverlay(ctx, variableOverlay(exit, ctx), () => {
-    const built = buildConditionGroups(asConditionsInput(exit.input), ctx);
-    const groups = resolveFormulas(built.groups, ctx, name) as any[][];
-    const body = buildChain(
-      step.children.filter((child) => child.keyword !== 'while_condition'),
-      ctx,
-    );
-    const router = {
-      name: nextName('router'),
-      skip: false,
-      type: 'ROUTER',
-      valid: !built.review && !hasTodoMarker(groups),
-      settings: {
-        branches: [
-          {
-            branchName: 'Condicao ainda vale',
-            branchType: 'CONDITION' as const,
-            conditions: groups,
-          },
-          { branchName: 'Parar', branchType: 'FALLBACK' as const },
-        ],
-        executionType: 'EXECUTE_FIRST_MATCH',
-      },
-      children: [body ?? null, null],
-      displayName: exit.comment || 'Enquanto a condicao vale',
-      lastUpdatedDate: NOW,
-    };
-    return prependPendingCode(router, ctx, mark);
-  });
-  code.nextAction = {
-    name,
-    skip: false,
-    type: 'LOOP_ON_ITEMS',
-    valid: true,
-    settings: { items: `{{${codeName}}}` },
-    displayName: step.comment || 'Repetir enquanto',
-    firstLoopAction,
-    lastUpdatedDate: NOW,
-  };
-  noteRepeatAdapted(
-    ctx,
-    name,
-    `O Repeat while nao tinha lista nem teto de voltas (${describeReadable(asConditionsInput(exit.input), ctx)}). O corpo repete enquanto essa condicao vale, no maximo ${STATUS_POLL_ATTEMPTS} voltas. O JSON nao traz esse teto.`,
-  );
-  return code;
-}
-
-/** Repeat sem lista, sem teto e sem condicao: marcador no lugar do bloco, corpo em seguida uma vez. */
+/** Repeat sem lista e sem teto: marcador no lugar do bloco, corpo em seguida uma vez. */
 function repeatUnsupported(step: ParsedStep, ctx: Ctx, name: string): any {
   const input = step.input && typeof step.input === 'object' ? step.input : {};
   return {
@@ -5430,6 +5016,8 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
     return buildStatusPoll(step, ctx, name, exit, seconds);
   }
   if (exit && conditionsOf(asConditionsInput(exit.input)).length) {
+    ctx.todos.push('REVIEW (' + name + '): conferir teto artificial da adaptacao condicional.');
+    ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
     return buildConditionalRepeat(step, ctx, name, exit);
   }
   return repeatUnsupported(step, ctx, name);
@@ -5520,6 +5108,7 @@ function attachRestToOpenBranch(node: any, rest: any, ctx: Ctx): boolean {
       }
       return true;
     }
+    if (node.nextAction && attachRestToOpenBranch(node.nextAction, rest, ctx)) return true;
     return false;
   }
   if (!isFallibleStep(node) && node.nextAction) {
@@ -5753,6 +5342,8 @@ function collectMonitorOwners(step: any, names: string[] = [], seen = new Set<an
   if (step.displayName === CATCH_ROUTER_LABEL) return names;
   if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
     collectMonitorOwners(step.continueOnFailureBranches?.onSuccess, names, seen);
+    collectMonitorOwners(step.nextAction, names, seen);
+    collectMonitorOwners(step.firstLoopAction, names, seen);
     return names;
   }
   if (step.firstLoopAction) collectMonitorOwners(step.firstLoopAction, names, seen);
@@ -5768,20 +5359,28 @@ function collectMonitorOwners(step: any, names: string[] = [], seen = new Set<an
  * o motor anda esse nextAction depois do ramo, então qualquer falha da cadeia
  * volta nele. Passo já reivindicado por um monitor de dentro fica como está.
  */
-function rewireOpenCatch(step: any, ctx: Ctx): any {
+function rewireOpenCatch(step: any, ctx: Ctx, fresh = new Set<any>()): any {
   if (!step) return step;
   if (step.settings?.actionName === 'stopFlow' || step.displayName === CATCH_ROUTER_LABEL) return step;
-  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
-    if (step.continueOnFailureBranches?.onSuccess) {
-      step.continueOnFailureBranches.onSuccess = rewireOpenCatch(step.continueOnFailureBranches.onSuccess, ctx);
+  if (claimedByCatch.has(step) && !step.continueOnFailureBranches) {
+    if (step.nextAction) step.nextAction = rewireOpenCatch(step.nextAction, ctx, fresh);
+    if (step.firstLoopAction) step.firstLoopAction = rewireOpenCatch(step.firstLoopAction, ctx, fresh);
+    if (Array.isArray(step.children)) {
+      step.children = step.children.map((child: any) => rewireOpenCatch(child, ctx, fresh));
     }
     return step;
   }
-  if (step.firstLoopAction) step.firstLoopAction = rewireOpenCatch(step.firstLoopAction, ctx);
-  if (Array.isArray(step.children)) {
-    step.children = step.children.map((child: any) => rewireOpenCatch(child, ctx));
+  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
+    if (step.continueOnFailureBranches?.onSuccess) {
+      step.continueOnFailureBranches.onSuccess = rewireOpenCatch(step.continueOnFailureBranches.onSuccess, ctx, fresh);
+    }
+    return step;
   }
-  const rest = step.nextAction ? rewireOpenCatch(step.nextAction, ctx) : undefined;
+  if (step.firstLoopAction) step.firstLoopAction = rewireOpenCatch(step.firstLoopAction, ctx, fresh);
+  if (Array.isArray(step.children)) {
+    step.children = step.children.map((child: any) => rewireOpenCatch(child, ctx, fresh));
+  }
+  const rest = step.nextAction ? rewireOpenCatch(step.nextAction, ctx, fresh) : undefined;
   if (!isFallibleStep(step)) {
     step.nextAction = rest;
     return step;
@@ -5792,6 +5391,7 @@ function rewireOpenCatch(step: any, ctx: Ctx): any {
   }
   if (rest) step.continueOnFailureBranches = { onSuccess: rest };
   claimedByCatch.add(step);
+  fresh.add(step);
   return step;
 }
 
@@ -5880,8 +5480,9 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     }
     const owners = collectMonitorOwners(first);
     const router = sharedCatchRouter(owners, null);
-    const head = rewireOpenCatch(first, ctx);
-    if (head) attachSharedRouter(head, router);
+    const fresh = new Set<any>();
+    const head = rewireOpenCatch(first, ctx, fresh);
+    if (head) attachSharedRouter(head, router, new Set(), fresh);
     return head ?? router;
   }
 
@@ -5895,28 +5496,39 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
 
   const owners = collectMonitorOwners(first);
   const router = sharedCatchRouter(owners, handlerHead);
-  const head = rewireOpenCatch(first, ctx);
-  attachSharedRouter(head, router);
+  const fresh = new Set<any>();
+  const head = rewireOpenCatch(first, ctx, fresh);
+  if (!attachSharedRouter(head, router, new Set(), fresh)) return appendToChain(head, router) ?? router;
   return head ?? null;
 }
 
 /** O router do catch fica no nextAction do primeiro passo falível deste monitor. */
-function attachSharedRouter(step: any, router: any, seen = new Set<any>()): boolean {
+function attachSharedRouter(step: any, router: any, seen = new Set<any>(), fresh = new Set<any>()): boolean {
   if (!step || seen.has(step) || step === router || step.displayName === CATCH_ROUTER_LABEL) return false;
   seen.add(step);
+  if (claimedByCatch.has(step) && !fresh.has(step)) {
+    if (attachSharedRouter(step.nextAction, router, seen, fresh)) return true;
+    if (attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen, fresh)) return true;
+    if (attachSharedRouter(step.firstLoopAction, router, seen, fresh)) return true;
+    for (const child of step.children ?? []) {
+      if (attachSharedRouter(child, router, seen, fresh)) return true;
+    }
+    return false;
+  }
   const ownedByInner =
     step.continueOnFailureBranches?.onFailure || step.nextAction?.displayName === CATCH_ROUTER_LABEL;
   if (ownedByInner) {
-    return attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen);
+    return attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen, fresh);
   }
   if (isFallibleStep(step)) {
     step.nextAction = router;
     return true;
   }
-  if (attachSharedRouter(step.nextAction, router, seen)) return true;
-  if (attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen)) return true;
+  if (attachSharedRouter(step.nextAction, router, seen, fresh)) return true;
+  if (attachSharedRouter(step.firstLoopAction, router, seen, fresh)) return true;
+  if (attachSharedRouter(step.continueOnFailureBranches?.onSuccess, router, seen, fresh)) return true;
   for (const child of step.children ?? []) {
-    if (attachSharedRouter(child, router, seen)) return true;
+    if (attachSharedRouter(child, router, seen, fresh)) return true;
   }
   return false;
 }
@@ -5990,7 +5602,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
     if (opKey === 'clock/scheduled_event' && t.name === 'cron_expression') {
       const cron = workatoScheduleToCron(root.input);
-      if (cron) input.cronExpression = cron;
+      if (cron) input.cronExpression = pills(cron, ctx);
       const weeks = biweeklyWeeks(root.input);
       if (weeks) {
         const timezone = String(root.input?.timezone ?? input.timezone ?? 'America/Sao_Paulo');
@@ -6010,9 +5622,13 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
         if (note) ctx.todos.push(note);
       }
     }
+    // Only constants can be computed before this trigger fires. A pending CODE
+    // after it would create a reference to a value unavailable at configuration.
+    input = resolveFormulas(input, ctx, 'trigger', root.input, false);
     const missing = waivedMissing(t, input, root.input ?? {}, missingRequiredProps(ctx, t, input));
     if (missing.length) {
       ctx.todos.push(`PROPS (trigger): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
+      ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: 'trigger', count: missing.length });
       noteMissingProps(ctx, 'trigger', t, missing, root.input ?? {});
     }
     return {
@@ -6043,7 +5659,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
       pieceName: TODO_PIECE,
       pieceVersion: '~latest',
       triggerName: TODO_PIECE,
-      input: root.input,
+      input: deepConvert(root.input ?? {}, ctx),
     },
     lastUpdatedDate: NOW,
   };
@@ -6057,6 +5673,63 @@ function collectLoopedListLines(step: ParsedStep, out: Set<string>): void {
   for (const child of step.children) collectLoopedListLines(child, out);
 }
 
+function collectAmbiguousAliases(root: ParsedStep): Set<string> {
+  const seen = new Set<string>();
+  const ambiguous = new Set<string>();
+  const visit = (step: ParsedStep) => {
+    if (step.as) {
+      if (seen.has(step.as)) ambiguous.add(step.as);
+      seen.add(step.as);
+    }
+    step.children.forEach(visit);
+  };
+  visit(root);
+  return ambiguous;
+}
+
+/** Audit every generated consumer, including trigger, CODE and nested branches.
+ * Only generated names and counts enter this diagnostic, never source payloads.
+ */
+function auditConversion(step: any, ctx: Ctx): void {
+  if (!step) return;
+  if (ctx.diagnostics.some((item) => item.stepName === step.name && item.category === 'CODE_TRANSLATION_REQUIRED')) {
+    step.valid = false;
+  }
+  if (step.settings?.pieceName === TODO_PIECE && !ctx.diagnostics.some((item) => item.stepName === step.name && item.category === 'UNSUPPORTED_OPERATION')) {
+    const controlFlow = step.settings?.actionName === REPEAT_ACTION;
+    ctx.diagnostics.push({ category: 'UNSUPPORTED_OPERATION', reason: controlFlow ? 'CONTROL_FLOW_UNSUPPORTED' : 'UNMAPPED_OPERATION', action: controlFlow ? 'PRODUCT_DECISION' : 'CHECK_DOCUMENTATION', stepName: step.name });
+  }
+  const unresolved: string[] = [];
+  collectTodoMarkers(step.settings?.input, '', unresolved);
+  if (unresolved.length) {
+    step.valid = false;
+    ctx.todos.push(`CONVERSION (${step.name}): ${unresolved.length} referencia(s) nao resolvida(s); revisao obrigatoria.`);
+    const hasKind = (value: unknown, kind: 'formula' | 'reference'): boolean => {
+      if (typeof value === 'string') return containsMigrationMarker(value, kind);
+      if (Array.isArray(value)) return value.some((item) => hasKind(item, kind));
+      if (value && typeof value === 'object') {
+        return Object.entries(value).some(([key, item]) => hasKind(key, kind) || hasKind(item, kind));
+      }
+      return false;
+    };
+    if (hasKind(step.settings?.input, 'reference')) {
+      ctx.diagnostics.push({ category: 'DATAPILL_SCHEMA', reason: 'UNRESOLVED_REFERENCE', action: 'NEEDS_CONTEXT', stepName: step.name });
+    }
+    if (hasKind(step.settings?.input, 'formula')) {
+      ctx.diagnostics.push({ category: 'FORMULA', reason: 'UNCOMPILED_FORMULA', action: 'CHECK_DOCUMENTATION', stepName: step.name });
+    }
+  }
+  if (step.valid === false && !ctx.todos.length) {
+    ctx.todos.push(`CONVERSION (${step.name}): etapa incompleta; revisao obrigatoria.`);
+  }
+  if (step.valid === false && !ctx.diagnostics.some((item) => item.stepName === step.name)) {
+    ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'INCOMPLETE_STEP', action: 'MANUAL_REVIEW', stepName: step.name });
+  }
+  auditConversion(step.nextAction, ctx);
+  for (const child of step.children ?? []) auditConversion(child, ctx);
+  auditConversion(step.onFailureAction, ctx);
+}
+
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
   nameSeq = 0;
   NOW = new Date().toISOString();
@@ -6064,11 +5737,13 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     merged,
     kb: new Map(kb.pieces.map((p) => [p.name, p])),
     asToName: new Map(),
+    ambiguousAs: collectAmbiguousAliases(recipe.root),
     skippedAs: new Set(),
     loopedListLines: new Set(),
     loopScope: [],
     piecesUsed: new Set(),
     todos: [],
+    diagnostics: [],
     canvasNotes: [],
     recipeName: recipe.name,
     recipeId: recipe.workatoId,
@@ -6085,9 +5760,17 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
   };
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
   assignNames(recipe.root, ctx, true);
+  if (ctx.ambiguousAs.size) {
+    ctx.todos.push(`SOURCE: ${ctx.ambiguousAs.size} origem(ns) ambigua(s); aliases duplicados exigem revisao.`);
+    ctx.diagnostics.push({ category: 'DATAPILL_SCHEMA', reason: 'AMBIGUOUS_SOURCE', action: 'NEEDS_CONTEXT', count: ctx.ambiguousAs.size });
+  }
   const trigger = buildTrigger(recipe.root, ctx);
   notePendingJobContext(ctx, lastStepName(trigger));
   noteProjectVariables(ctx, lastStepName(trigger));
+  auditConversion(trigger, ctx);
+  if (ctx.todos.length && !ctx.diagnostics.length) {
+    ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', count: ctx.todos.length });
+  }
 
   const flow = {
     name: recipe.name,
@@ -6111,5 +5794,636 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     ],
     status: 'PUBLISHED',
   };
-  return { flow: bracketizePills(flow), todos: [...new Set(ctx.todos)] };
+  return { flow: bracketizePills(flow), todos: [...new Set(ctx.todos)], diagnostics: uniqueDiagnostics(ctx.diagnostics) };
+}
+
+// CASE-067: approved engine extensions; current pipeline retained.
+function noteMissingProps(
+  ctx: Ctx,
+  name: string,
+  target: MapTarget,
+  missing: string[],
+  sourceInput: Record<string, any>,
+): void {
+  if (!missing.length) return;
+  if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
+    return;
+  }
+  const keys = Object.entries(sourceInput)
+    .filter(([, value]) => !blankProp(value) && value !== '=skip')
+    .map(([key]) => key)
+    .slice(0, 12);
+  const listed = keys.length ? ` Chaves no JSON: ${keys.join(', ')}.` : '';
+  pushReviewNote(
+    ctx,
+    'PROP',
+    `Passo ${name}. A piece pede ${missing.join(', ')} e o JSON não traz esse valor.${listed}`,
+    '',
+    name,
+  );
+}
+
+function compileListBatchIndexes(
+  step: ParsedStep,
+  ctx: Ctx,
+): {
+  computed: ListBatchComputed[];
+  inputs: Record<string, string>;
+  prelude: string;
+  fields: string[];
+  approximations: string[];
+} {
+  const source = step.input?.list_items?.[SOURCE_KEY];
+  const raw = (step.input?.list_items ?? {}) as Record<string, unknown>;
+  const registry = newBindingRegistry();
+  registry.bindings.set('index', BATCH_INDEX_PILL);
+  registry.pillNames.set(BATCH_INDEX_PILL, 'index');
+  const helpers = new Set<string>();
+  const approximations: string[] = [];
+  const computed: ListBatchComputed[] = [];
+  const fields: string[] = [];
+
+  for (const [field, value] of Object.entries(raw)) {
+    if (field === SOURCE_KEY) continue;
+    const rewritten = rewriteBatchIndex(value, source);
+    if (!rewritten) continue;
+    // Preserve the compiler-only index instead of letting native arithmetic
+    // fast paths wrap it in an AP formula before the local map can bind it.
+    const converted = rewritten.replace(/#\{_dp\('(.+?)'\)\}|_dp\('(.+?)'\)/g,
+      (_full, wrapped, bare) => pills(`#{_dp('${wrapped ?? bare}')}`, ctx));
+    const wrapped = converted.match(/^TODO_FORMULA\((.*)\)$/s);
+    const body = wrapped ? wrapped[1]! : converted;
+    if (containsMigrationMarker(body)) continue;
+    const savedBindings = new Map(registry.bindings);
+    const savedPills = new Map(registry.pillNames);
+    const savedSeq = registry.seq.n;
+    const compiled = compileRubyExpression(body, registry);
+    if (!compiled || compiled.constant) {
+      registry.bindings.clear();
+      for (const [key, pill] of savedBindings) registry.bindings.set(key, pill);
+      registry.pillNames.clear();
+      for (const [key, name] of savedPills) registry.pillNames.set(key, name);
+      registry.seq.n = savedSeq;
+      continue;
+    }
+    computed.push({ field, expr: compiled.expr });
+    fields.push(field);
+    for (const helper of compiled.helpers) helpers.add(helper);
+    approximations.push(...compiled.approximations);
+  }
+
+  const inputs: Record<string, string> = {};
+  for (const [binding, pill] of registry.bindings) {
+    if (pill === BATCH_INDEX_PILL) continue;
+    inputs[binding] = pill;
+  }
+
+  return {
+    computed,
+    inputs,
+    prelude: renderHelpers(helpers),
+    fields,
+    approximations: [...new Set(approximations)],
+  };
+}
+
+function isAllCardsPagePython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('import requests') && compact.includes('allCards') && compact.includes('endCursor') && compact.includes('def main');
+}
+
+function allCardsPageCode(source: string): string {
+  const operator = /operator:\s*gt,/.test(source) && !/operator:\s*gte,/.test(source) ? 'gt' : 'gte';
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const pipe_id = inputs.pipe_id;',
+    '  const updated_at = inputs.updated_at;',
+    '  const carga_inicial = inputs.carga_inicial;',
+    '  const headers = { Authorization: `Bearer ${inputs.api_token}`, "Content-Type": "application/json" };',
+    '  const card_ids = [];',
+    '  let total_count = 0;',
+    '  let has_next_page = true;',
+    '  let after = "null";',
+    '  while (has_next_page) {',
+    '    const filter = carga_inicial ? "" : `filter: {field: \\"updated_at\\", operator: ' + operator + ', value: \\"${updated_at}\\"}`;',
+    '    const query = `query MyQuery { allCards(pipeId: \\"${pipe_id}\\" ${filter} after: ${after}) { totalCount pageInfo { hasNextPage endCursor } edges { node { id } } } }`;',
+    '    const response = await fetch("https://api.pipefy.com/graphql", { method: "POST", headers, body: JSON.stringify({ query }) });',
+    '    const data = await response.json();',
+    '    if (total_count === 0) total_count = data.data.allCards.totalCount;',
+    '    for (const card of data.data.allCards.edges) card_ids.push(card.node.id);',
+    '    const page_info = data.data.allCards.pageInfo;',
+    '    has_next_page = page_info.hasNextPage;',
+    '    after = has_next_page ? `"${page_info.endCursor}"` : "null";',
+    '  }',
+    '  return { card_ids, total_count };',
+    '};',
+  ].join('\n');
+}
+
+function isSlaCardPython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('client_credentials') && compact.includes('FetchCard') && compact.includes('elapsed_time_field_id') && compact.includes('def main');
+}
+
+function slaCardCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const card_id = String(inputs.card_id);',
+    '  const from_id = String(inputs.from_id);',
+    '  const phases_list = String(inputs.phases ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
+    '  const tokenResponse = await fetch(inputs.token_url, {',
+    '    method: "POST",',
+    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
+    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
+    '  });',
+    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
+    '  const token = (await tokenResponse.json()).access_token;',
+    '  const graphql_url = `https://${inputs.tenant}.pipefy.com/graphql`;',
+    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
+    '  const query = { query: `query FetchCard { card(id: \\"${card_id}\\") { id fields { field { id } value } phases_history { duration phase { id name } } } }` };',
+    '  const response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
+    '  if (!response.ok) throw new Error(await response.text());',
+    '  const card = (await response.json()).data.card;',
+    '  const field_map = Object.fromEntries((card.fields ?? []).map((f) => [String(f.field.id), String(f.value)]));',
+    '  let sla_value = null;',
+    '  let elapsed_value = null;',
+    '  let total_duration = 0;',
+    '  for (const ph of card.phases_history) {',
+    '    if (phases_list.includes(ph.phase.name)) total_duration += Number(ph.duration || 0);',
+    '    if (String(ph.phase.id) === from_id) {',
+    '      sla_value = { card_id, field_id: `sla_${from_id}_1`, value: String(Math.round((Number(ph.duration || 0) / 3600) * 100) / 100) };',
+    '    }',
+    '  }',
+    '  if (total_duration > 0) {',
+    '    elapsed_value = { card_id, field_id: String(inputs.elapsed_time_field_id), value: String(Math.round((total_duration / 3600) * 100) / 100) };',
+    '  }',
+    '  const mutation_blocks = [];',
+    '  if (sla_value) mutation_blocks.push(sla_value);',
+    '  mutation_blocks.push({ card_id, field_id: String(inputs.sla_aux_field_id), value: "0" });',
+    '  if (elapsed_value) mutation_blocks.push(elapsed_value);',
+    '  const execute = async (mutations) => {',
+    '    const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
+    '    for (let attempt = 0; attempt < 3; attempt++) {',
+    '      try {',
+    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
+    '        if (!resp.ok) throw new Error(await resp.text());',
+    '        return true;',
+    '      } catch (error) {',
+    '        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 5000));',
+    '        else return false;',
+    '      }',
+    '    }',
+    '    return false;',
+    '  };',
+    '  let failed_updates = [];',
+    '  if (mutation_blocks.length && !(await execute(mutation_blocks))) failed_updates = mutation_blocks;',
+    '  return { output: { updated_fields: mutation_blocks, failed_updates } };',
+    '};',
+  ].join('\n');
+}
+
+function isSlaBatchPython(source: string): boolean {
+  const compact = compactCustomCode(source);
+  return compact.includes('MAX_RUNTIME_SECONDS') && compact.includes('last_cursor') && compact.includes('def main');
+}
+
+function slaBatchCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const phase_names = String(inputs.phase_names ?? "").split(/\\n/).map((p) => p.trim()).filter(Boolean);',
+    '  const tenant = inputs.tenant_endpoint || "app";',
+    '  let cursor = inputs.last_cursor || "first";',
+    '  const started = Date.now();',
+    '  const tokenResponse = await fetch(inputs.oauth_token_url, {',
+    '    method: "POST",',
+    '    headers: { "Content-Type": "application/x-www-form-urlencoded" },',
+    '    body: new URLSearchParams({ grant_type: "client_credentials", client_id: inputs.client_id, client_secret: inputs.client_secret }),',
+    '  });',
+    '  if (!tokenResponse.ok) throw new Error(await tokenResponse.text());',
+    '  const token = (await tokenResponse.json()).access_token;',
+    '  const graphql_url = `https://${tenant}.pipefy.com/graphql`;',
+    '  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };',
+    '  const one_year_ago = Date.now() - 365 * 24 * 60 * 60 * 1000;',
+    '  let cards_updated = 0;',
+    '  const errors = [];',
+    '  while (Date.now() - started < 60000) {',
+    '    const after_clause = cursor !== "first" && cursor !== "done" ? `, after: \\"${cursor}\\"` : "";',
+    '    const query = { query: `query { phase(id: ${inputs.phase_id}) { cards(first: 30${after_clause}) { edges { node { id created_at current_phase { name } fields { name value } phases_history { duration phase { id name } } } cursor } } } }` };',
+    '    let response;',
+    '    try {',
+    '      response = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify(query) });',
+    '      if (!response.ok) throw new Error(await response.text());',
+    '    } catch (error) {',
+    '      return { cards_updated, errors: [`GraphQL query failed: ${error}`], last_cursor: cursor, pending_phases: [] };',
+    '    }',
+    '    const edges = (await response.json()).data.phase.cards.edges;',
+    '    if (!edges.length) return { cards_updated, errors, last_cursor: "done", pending_phases: [] };',
+    '    const card_ids = [];',
+    '    const all_mutations = [];',
+    '    for (const edge of edges) {',
+    '      const node = edge.node;',
+    '      const created = new Date(String(node.created_at).slice(0, 10)).getTime();',
+    '      const reopened = (node.fields ?? []).find((field) => String(field.name).trim().toLowerCase() === "reopened flag");',
+    '      if (created < one_year_ago || reopened?.value === "Yes") continue;',
+    '      card_ids.push(node.id);',
+    '      let total_duration = 0;',
+    '      let current_phase_duration = null;',
+    '      let current_phase_id_for_sla = null;',
+    '      for (const ph of node.phases_history ?? []) {',
+    '        const duration = Number(ph.duration || 0);',
+    '        if (phase_names.includes(ph.phase.name)) total_duration += duration;',
+    '        if (node.current_phase.name === ph.phase.name) {',
+    '          current_phase_duration = Math.round((duration / 3600) * 100) / 100;',
+    '          current_phase_id_for_sla = ph.phase.id;',
+    '        }',
+    '      }',
+    '      if (current_phase_duration != null && current_phase_id_for_sla != null) {',
+    '        all_mutations.push({ card_id: node.id, field_id: `sla_${current_phase_id_for_sla}_1`, value: String(current_phase_duration) });',
+    '      }',
+    '      if (total_duration > 0) {',
+    '        all_mutations.push({ card_id: node.id, field_id: inputs.elapsed_time_field_id, value: String(Math.round((total_duration / 3600) * 100) / 100) });',
+    '      }',
+    '      all_mutations.push({ card_id: node.id, field_id: inputs.sla_aux_field_id, value: "0" });',
+    '    }',
+    '    const execute = async (mutations) => {',
+    '      const body = "mutation UpdateFields {\\n" + mutations.map((m, idx) => `n${idx + 1}: updateCardField(input: { card_id: \\"${m.card_id}\\", field_id: \\"${m.field_id}\\", new_value: \\"${m.value}\\" }) { clientMutationId }`).join("\\n") + "\\n}";',
+    '      try {',
+    '        const resp = await fetch(graphql_url, { method: "POST", headers, body: JSON.stringify({ query: body }) });',
+    '        if (!resp.ok) throw new Error(await resp.text());',
+    '        return true;',
+    '      } catch { return false; }',
+    '    };',
+    '    const success = await execute(all_mutations);',
+    '    if (!success) {',
+    '      await new Promise((resolve) => setTimeout(resolve, 2000));',
+    '      const failed_cards = [...new Set(all_mutations.map((m) => m.card_id))];',
+    '      errors.push(...failed_cards);',
+    '      if (await execute(all_mutations.filter((m) => failed_cards.includes(m.card_id)))) {',
+    '        cards_updated += new Set(all_mutations.filter((m) => failed_cards.includes(m.card_id)).map((m) => m.card_id)).size;',
+    '      }',
+    '    } else {',
+    '      cards_updated += new Set(card_ids).size;',
+    '    }',
+    '    cursor = edges[edges.length - 1].cursor;',
+    '    await new Promise((resolve) => setTimeout(resolve, 1000));',
+    '  }',
+    '  return { cards_updated, errors, last_cursor: cursor, pending_phases: [] };',
+    '};',
+  ].join('\n');
+}
+
+function isSignatureSummaryPython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    'def summarize_signatures(signatures): summary = {"completed": [], "not_completed_or_sent": []} for signature in signatures: if isinstance(signature, dict): # Verifica se o elemento da lista é um dicionário name = signature.get("name") status = signature.get("status") if name and status: if status == "completed": summary["completed"].append(name) else: summary["not_completed_or_sent"].append(name) return summary def main(input): sign_info_list = input["code_input"] result = summarize_signatures(sign_info_list) completed_signers = "; ".join(result["completed"]) not_completed_signers = "; ".join(result["not_completed_or_sent"]) summary_text = ( "Assinaram:\\n" + completed_signers + "\\n\\n" "Não Assinaram:\\n" + not_completed_signers ) return { "completed": result["completed"], "not_completed_or_sent": result["not_completed_or_sent"], "summary_text": summary_text }'
+  );
+}
+
+function signatureSummaryCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const read = (obj, key) =>',
+    '    obj != null && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;',
+    '  const signatures = inputs.code_input;',
+    '  const summary = { completed: [], not_completed_or_sent: [] };',
+    '  for (const signature of signatures) {',
+    '    if (signature == null || typeof signature !== "object" || Array.isArray(signature)) continue;',
+    '    const name = read(signature, "name");',
+    '    const status = read(signature, "status");',
+    '    if (name && status) {',
+    '      if (status === "completed") summary.completed.push(name);',
+    '      else summary.not_completed_or_sent.push(name);',
+    '    }',
+    '  }',
+    '  const completed_signers = summary.completed.join("; ");',
+    '  const not_completed_signers = summary.not_completed_or_sent.join("; ");',
+    '  const summary_text =',
+    '    "Assinaram:\\n" + completed_signers + "\\n\\n" + "Não Assinaram:\\n" + not_completed_signers;',
+    '  return {',
+    '    completed: summary.completed,',
+    '    not_completed_or_sent: summary.not_completed_or_sent,',
+    '    summary_text,',
+    '  };',
+    '};',
+  ].join('\n');
+}
+
+function isFooterAnchorPython(python: string): boolean {
+  const compact = python
+    .replace(/#.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (
+    compact ===
+    'def main(input): footers = input.get("footer", {}) or {} anchor = "<chancela>" for footer_id, footer in footers.items(): for content in footer.get("content", []) or []: paragraph = content.get("paragraph") or {} for element in paragraph.get("elements", []) or []: text_run = element.get("textRun") if not text_run: continue text = text_run.get("content", "") or "" if anchor in text: end_index = element.get("endIndex") or content.get("endIndex") return { "footer_id": footer_id, "end_index": end_index, "content": text } return { "footer_id": None, "end_index": None, "content": None }'
+  );
+}
+
+function footerAnchorCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const footers = inputs.footer ?? {};',
+    '  const anchor = "<chancela>";',
+    '  for (const [footerId, footer] of Object.entries(footers)) {',
+    '    for (const content of footer?.content ?? []) {',
+    '      const paragraph = content?.paragraph ?? {};',
+    '      for (const element of paragraph?.elements ?? []) {',
+    '        const textRun = element?.textRun;',
+    '        if (!textRun) continue;',
+    '        const text = textRun.content ?? "";',
+    '        if (String(text).includes(anchor)) {',
+    '          return {',
+    '            footer_id: footerId,',
+    '            end_index: element?.endIndex ?? content?.endIndex ?? null,',
+    '            content: text,',
+    '          };',
+    '        }',
+    '      }',
+    '    }',
+    '  }',
+    '  return { footer_id: null, end_index: null, content: null };',
+    '};',
+  ].join('\n');
+}
+
+function isFooterDeleteRangesPython(python: string): boolean {
+  const compact = python
+    .replace(/#.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (
+    compact ===
+    'def main(input): import json payload = input if isinstance(input.get("data"), str): payload = json.loads(input["data"]) doc = payload.get("doc") or {} footers = doc.get("footers") or {} requests = [] log = {"footer_ids_found": list(footers.keys()), "ranges": [], "skipped": []} for footer_id, footer in footers.items(): content = footer.get("content") or [] if not content: log["skipped"].append({"footerId": footer_id, "reason": "no_content"}) continue end_candidates = [] for el in content: ei = el.get("endIndex") if isinstance(ei, int): end_candidates.append(ei) if not end_candidates: log["skipped"].append({"footerId": footer_id, "reason": "no_endIndex"}) continue end = max(end_candidates) start = 1 end_minus_one = end - 1 if end_minus_one <= start: log["skipped"].append({"footerId": footer_id, "reason": "already_empty", "start": start, "end": end}) continue requests.append({ "deleteContentRange": { "range": { "segmentId": footer_id, "startIndex": start, "endIndex": end_minus_one } } }) log["ranges"].append({"footerId": footer_id, "start": start, "end": end_minus_one}) return { "requests": requests, "requests_count": len(requests), "log": log }'
+  );
+}
+
+function footerDeleteRangesCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  let payload = inputs;',
+    '  if (typeof inputs?.data === "string") payload = JSON.parse(inputs.data);',
+    '  const doc = payload?.doc ?? {};',
+    '  const footers = doc?.footers ?? {};',
+    '  const requests = [];',
+    '  const log = { footer_ids_found: Object.keys(footers), ranges: [], skipped: [] };',
+    '  for (const [footer_id, footer] of Object.entries(footers)) {',
+    '    const content = footer?.content ?? [];',
+    '    if (!content.length) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "no_content" });',
+    '      continue;',
+    '    }',
+    '    const end_candidates = [];',
+    '    for (const el of content) {',
+    '      const ei = el?.endIndex;',
+    '      if (Number.isInteger(ei)) end_candidates.push(ei);',
+    '    }',
+    '    if (!end_candidates.length) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "no_endIndex" });',
+    '      continue;',
+    '    }',
+    '    const end = Math.max(...end_candidates);',
+    '    const start = 1;',
+    '    const end_minus_one = end - 1;',
+    '    if (end_minus_one <= start) {',
+    '      log.skipped.push({ footerId: footer_id, reason: "already_empty", start, end });',
+    '      continue;',
+    '    }',
+    '    requests.push({',
+    '      deleteContentRange: {',
+    '        range: { segmentId: footer_id, startIndex: start, endIndex: end_minus_one },',
+    '      },',
+    '    });',
+    '    log.ranges.push({ footerId: footer_id, start, end: end_minus_one });',
+    '  }',
+    '  return { requests, requests_count: requests.length, log };',
+    '};',
+  ].join('\n');
+}
+
+function copySource(
+  input: Record<string, any>, source: Record<string, any>, ctx: Ctx,
+  dest: string, ...keys: string[]
+): void {
+  if (!blankProp(input[dest])) return;
+  const candidates = keys.flatMap(key => {
+    const converted = !blankProp(input[key]) && input[key] !== '=skip' ? input[key] : undefined;
+    const raw = !blankProp(source[key]) && source[key] !== '=skip' ? deepConvert(source[key], ctx) : undefined;
+    return converted !== undefined ? [converted] : raw !== undefined ? [raw] : [];
+  });
+  if (!candidates.length) return;
+  if (new Set(candidates.map(value => JSON.stringify(value))).size > 1) {
+    ctx.todos.push('PROPS: aliases de origem conflitantes; conversao incompleta.');
+    ctx.diagnostics.push({ category: 'MAPPING', reason: 'AMBIGUOUS_SOURCE', action: 'NEEDS_CONTEXT', count: candidates.length });
+    return;
+  }
+  input[dest] = candidates[0];
+}
+
+function parseLookupFormula(source: string): { table: string; column: string; value: string; field: string } | null {
+  const parsed = parseWholeLookupFormula(source);
+  if (!parsed || parsed.filters.length !== 1) return null;
+  const only = parsed.filters[0]!;
+  return { table: stripFormulaQuotes(parsed.table), column: only.column, value: only.value, field: parsed.field };
+}
+
+function lookupFindStep(
+  name: string,
+  lookup: { table: string; filters: { column: string; value: string }[] },
+): any {
+  const input = {
+    table_id: lookup.table,
+    filters: {
+      filters: lookup.filters.map((filter) => ({
+        field: { id: filter.column, type: 'TEXT', name: filter.column },
+        operator: 'EQ',
+        value: filter.value,
+      })),
+    },
+  };
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: true,
+    settings: {
+      input,
+      pieceName: TABLES_PIECE,
+      actionName: 'tables-find-records',
+      pieceVersion: '~latest',
+      propertySettings: {},
+      errorHandlingOptions: ERR(),
+    },
+    displayName: `Lookup ${lookup.table}`,
+    lastUpdatedDate: NOW,
+  };
+}
+
+function columnFilters(parameters: unknown): { field: string; value: unknown }[] | null {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return null;
+  const entries = Object.entries(parameters as Record<string, unknown>).filter(([, value]) => !blankProp(value) && value !== '=skip');
+  if (!entries.length) return null;
+  return entries.map(([field, value]) => ({ field, value }));
+}
+
+function sheetSearchColumns(sourceInput: Record<string, any>): { key: string; header: string; value: unknown }[] {
+  const data = sourceInput.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  const columns = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (!key.startsWith('col_')) continue;
+    if (value === '=skip' || value == null || value === '' || value === '=') continue;
+    const header = key.slice(4);
+    if (!header) continue;
+    columns.push({ key, header, value });
+  }
+  return columns;
+}
+
+function buildSheetsMultiFind(
+  name: string,
+  display: string,
+  input: Record<string, any>,
+  columns: { header: string; value: unknown }[],
+  ctx: Ctx,
+): any {
+  const rowsName = nextName('sheet_rows');
+  const rowsInput: Record<string, any> = {
+    spreadsheetId: input.spreadsheetId,
+    sheetId: input.sheetId,
+    first_row_headers: true,
+  };
+  if (!blankProp(input.includeTeamDrives)) rowsInput.includeTeamDrives = input.includeTeamDrives;
+  const rowsTarget: MapTarget = { piece: GOOGLE_SHEETS_PIECE, name: 'get-many-rows', kind: 'action' };
+  const filters = resolveFormulas(
+    Object.fromEntries(columns.map((column) => [column.header, deepConvert(column.value, ctx)])),
+    ctx,
+    name,
+  );
+  const codeInput: Record<string, any> = {
+    spreadsheet_id: input.spreadsheetId ?? '',
+    rows: `{{${rowsName}}}`,
+    filters,
+    numberOfRows: input.numberOfRows ?? '',
+  };
+  const code = [
+    'export const code = async (inputs) => {',
+    '  const raw = inputs.rows;',
+    '  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : []);',
+    '  const filters = inputs.filters && typeof inputs.filters === "object" ? inputs.filters : {};',
+    '  const matched = list.filter((item) => {',
+    '    const values = item && item.values && typeof item.values === "object" ? item.values : {};',
+    '    return Object.keys(filters).every((header) => {',
+    '      const cell = values[header];',
+    '      const expected = filters[header];',
+    '      return String(cell == null ? "" : cell) === String(expected == null ? "" : expected);',
+    '    });',
+    '  });',
+    '  const limit = Number(inputs.numberOfRows);',
+    '  const taken = Number.isFinite(limit) && limit > 0 ? matched.slice(0, limit) : matched;',
+    '  return {',
+    '    spreadsheet_id: inputs.spreadsheet_id,',
+    '    rows: taken.map((item) => ({',
+    '      row_number: item && item.row != null ? item.row : item && item.row_number,',
+    '      values: item && item.values ? item.values : {},',
+    '    })),',
+    '  };',
+    '};',
+  ].join('\n');
+  const resolvedRows = resolveFormulas(rowsInput, ctx, rowsName);
+  const resolvedCode = resolveFormulas(codeInput, ctx, name);
+  const rowsMissing = missingRequiredProps(ctx, rowsTarget, resolvedRows);
+  if (rowsMissing.length) {
+    ctx.todos.push('PROPS (' + rowsName + '): preencher obrigatorias ausentes.');
+    ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: rowsName, count: rowsMissing.length });
+    noteMissingProps(ctx, rowsName, rowsTarget, rowsMissing, rowsInput);
+  }
+  // Successful multi-column conversion is not a missing-column warning.
+  const rowsStep = {
+    name: rowsName,
+    skip: false,
+    type: 'PIECE',
+    valid: rowsMissing.length === 0 && !hasTodoMarker(resolvedRows),
+    settings: {
+      input: resolvedRows,
+      pieceName: GOOGLE_SHEETS_PIECE,
+      actionName: 'get-many-rows',
+      pieceVersion: pieceVersion(ctx, GOOGLE_SHEETS_PIECE),
+      propertySettings: propertySettings(rowsInput),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+    nextAction: codeStep(name, display, resolvedCode, code, !hasTodoMarker(resolvedCode)),
+  };
+  return rowsStep;
+}
+
+function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep): any {
+  const codeName = nextName('var_turns');
+  const code = codeStep(
+    codeName,
+    'Voltas do repeat',
+    { bound: String(STATUS_POLL_ATTEMPTS), extra: '0' },
+    [
+      'export const code = async (inputs) => {',
+      '  const raw = Number(inputs.bound);',
+      "  const extra = inputs.extra === '1' ? 1 : 0;",
+      '  const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw) + extra) : 0;',
+      '  return Array.from({ length: count }, (_, i) => i);',
+      '};',
+    ].join('\n'),
+    true,
+  );
+  const mark = ctx.pendingCode.length;
+  const firstLoopAction = withOverlay(ctx, variableOverlay(exit, ctx), () => {
+    const built = buildConditionGroups(asConditionsInput(exit.input), ctx);
+    const groups = resolveFormulas(built.groups, ctx, name) as any[][];
+    const body = buildChain(
+      step.children.filter((child) => child.keyword !== 'while_condition'),
+      ctx,
+    );
+    const router = {
+      name: nextName('router'),
+      skip: false,
+      type: 'ROUTER',
+      valid: !built.review && !hasTodoMarker(groups),
+      settings: {
+        branches: [
+          {
+            branchName: 'Condicao ainda vale',
+            branchType: 'CONDITION' as const,
+            conditions: groups,
+          },
+          { branchName: 'Parar', branchType: 'FALLBACK' as const },
+        ],
+        executionType: 'EXECUTE_FIRST_MATCH',
+      },
+      children: [body ?? null, null],
+      displayName: exit.comment || 'Enquanto a condicao vale',
+      lastUpdatedDate: NOW,
+    };
+    return prependPendingCode(router, ctx, mark);
+  });
+  code.nextAction = {
+    name,
+    skip: false,
+    type: 'LOOP_ON_ITEMS',
+    valid: true,
+    settings: { items: `{{${codeName}}}` },
+    displayName: step.comment || 'Repetir enquanto',
+    firstLoopAction,
+    lastUpdatedDate: NOW,
+  };
+  noteRepeatAdapted(
+    ctx,
+    name,
+    `O Repeat while nao tinha lista nem teto de voltas (${describeReadable(asConditionsInput(exit.input), ctx)}). O corpo repete enquanto essa condicao vale, no maximo ${STATUS_POLL_ATTEMPTS} voltas. O JSON nao traz esse teto.`,
+  );
+  return code;
 }

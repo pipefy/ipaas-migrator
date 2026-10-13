@@ -1,5 +1,6 @@
 // Conversao de data pills / formulas Workato -> templates Activepieces.
 import type { FormulaHit } from './types.ts';
+import { decodeRubyStringEscape, parseRubyStringLiteral, parseRubyStringLiteralAt, rubySyntaxFeatures } from './ruby-expr.ts';
 
 const RUBY_METHODS = [
   'where', 'pluck', 'gsub', 'smart_join', 'split', 'slice_after', 'map', 'select',
@@ -25,13 +26,67 @@ const LITERAL_FORMULA = /^=\s*(['"])((?:\\.|(?!\1)[^\\])*)\1\s*$/;
  *  A aspa de fechamento do pill e a primeira: `.*` engolia um `.gsub(..., '')` depois. */
 const SIMPLE_PILL = /^(?:#\{)?_(?:dp)?\('[^']*'\)\}?(?:\[['"]\w+['"]\])*$/;
 
-/**
- * Formula que e so um indice literal: `_dp(...)[0]`, `#{_dp(...)}[1]['campo']`.
- * O `[n]` entra na datapill. Nao e Ruby e nao vira step Code.
- * `}` opcional entre o pill e o indice cobre `#{_dp('...')}[0]`.
- */
-const INDEX_PILL =
-  /^=?\s*(?:#\{)?_dp\('([^']*)'\)\}?((?:\[\d+\])+)((?:\[['"][^'"]*['"]\])*)\}?\s*$/;
+/** JSON path strings are exact keys; only explicit numbers are indexes. */
+type PillPathSegment = string | number;
+
+/** Find the call terminator outside JSON strings, including keys containing apostrophes. */
+function structuredPillAt(src: string, start: number): { json: string; end: number } | null {
+  if (!src.startsWith("_dp('", start)) return null;
+  const bodyStart = start + 5;
+  let quoted = false;
+  for (let i = bodyStart; i < src.length; i++) {
+    if (quoted && src[i] === '\\') { i++; continue; }
+    if (src[i] === '"') { quoted = !quoted; continue; }
+    if (!quoted && src.startsWith("')", i)) return { json: src.slice(bodyStart, i), end: i + 2 };
+  }
+  return null;
+}
+
+type ParsedPillAccess = { segments: PillPathSegment[]; end: number } | 'invalid_literal';
+
+/** Read accesses without interpreting a trailing method as another key. */
+function readPillAccess(src: string): ParsedPillAccess | null {
+  const segments: PillPathSegment[] = [];
+  let i = 0;
+  while (src[i] === '[') {
+    const m = src.slice(i).match(/^\[(\d+)\]/);
+    if (m) {
+      const index = Number(m[1]);
+      if (!Number.isSafeInteger(index)) return null;
+      segments.push(index);
+      i += m[0].length;
+    } else {
+      if (src[i + 1] !== '"' && src[i + 1] !== "'") return null;
+      const literal = parseRubyStringLiteralAt(src, i + 1);
+      if (!literal || src[literal.end] !== ']') return 'invalid_literal';
+      segments.push(literal.value);
+      i = literal.end + 1;
+    }
+  }
+  return { segments, end: i };
+}
+
+/** Explicit quoted keys stay literal; only unquoted integer accesses are indexes. */
+function parsePillAccess(src: string): PillPathSegment[] | null {
+  const parsed = readPillAccess(src);
+  return parsed && parsed !== 'invalid_literal' && parsed.end === src.length ? parsed.segments : null;
+}
+
+function pureStructuredPill(src: string): { json: string; segments: PillPathSegment[] } | null {
+  let s = src.trim().replace(/^=\s*/, '');
+  const interpolated = s.startsWith('#{');
+  if (interpolated) s = s.slice(2);
+  const call = structuredPillAt(s, 0);
+  if (!call) return null;
+  let suffix = s.slice(call.end);
+  if (interpolated) {
+    if (suffix.startsWith('}')) suffix = suffix.slice(1);
+    else if (suffix.endsWith('}')) suffix = suffix.slice(0, -1);
+    else return null;
+  }
+  const segments = parsePillAccess(suffix);
+  return segments ? { json: call.json, segments } : null;
+}
 
 /**
  * Formula Workato (`=...`) que nao e apenas uma data pill. Ex.: `=now + 24.hours`.
@@ -39,11 +94,12 @@ const INDEX_PILL =
  */
 export function isRubyExpression(s: string): boolean {
   if (typeof s !== 'string' || !s.startsWith('=')) return false;
-  if (EMPTY_FORMULA.test(s) || LITERAL_FORMULA.test(s)) return false;
+  if (EMPTY_FORMULA.test(s)) return false;
+  if (LITERAL_FORMULA.test(s) && parseRubyStringLiteral(s.slice(1)) !== null) return false;
   if (isGraphqlFormula(s)) return false;
   const body = s.slice(1).trim();
   if (SIMPLE_PILL.test(body)) return false;
-  if (INDEX_PILL.test(s.trim())) return false;
+  if (pureStructuredPill(s)) return false;
   if (parseIncludeFormula(s)) return false;
   const peeled = peelTrailingCaseMethod(s);
   if (peeled) {
@@ -61,47 +117,21 @@ function isGraphqlFormula(s: string): boolean {
 /** `"A", "B"` / `'A','B'` — lista Ruby de strings. Qualquer outro token aborta. */
 export function parseRubyStringList(src: string): string[] | null {
   const values: string[] = [];
-  let cur = '';
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-  let started = false;
-  for (const ch of src) {
-    if (quote) {
-      if (escaped) {
-        cur += ch;
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (ch === quote) {
-        quote = null;
-        values.push(cur);
-        cur = '';
-        started = true;
-        continue;
-      }
-      cur += ch;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (ch === ',') {
-      if (!started) return null;
-      started = false;
-      continue;
-    }
-    if (/\s/.test(ch)) continue;
-    return null;
+  let i = 0;
+  const skipSpace = () => { while (i < src.length && /\s/.test(src[i]!)) i++; };
+  skipSpace();
+  while (i < src.length) {
+    const parsed = parseRubyStringLiteralAt(src, i);
+    if (!parsed) return null;
+    values.push(parsed.value);
+    i = parsed.end;
+    skipSpace();
+    if (i === src.length) return values;
+    if (src[i] !== ',') return null;
+    i++;
+    skipSpace();
   }
-  if (quote || escaped) return null;
-  if (!started && values.length === 0) return null;
-  if (!started) return null;
-  return values;
+  return null;
 }
 
 /** `=_dp(...).upcase` / `_dp(...).downcase` — so o metodo de caixa no fim. */
@@ -124,6 +154,12 @@ export interface IncludeFormula {
  * `=["A","B"].include?(_dp(...).upcase)` — membership Workato sobre uma lista
  * literal. O needle volta como formula `=` para o convertPills normal.
  */
+function nativeMembershipLiteralSafe(value: string): boolean {
+  // The native parser checks only the preceding character for an escaped
+  // closing quote, and its wrapper splitter does not track quoted delimiters.
+  return !value.endsWith('\\') && !value.includes('}::ap-formula-v1');
+}
+
 export function parseIncludeFormula(input: string): IncludeFormula | null {
   if (typeof input !== 'string') return null;
   const s = input.trim().replace(/^=/, '');
@@ -138,12 +174,18 @@ export function parseIncludeFormula(input: string): IncludeFormula | null {
     needle = peeled.inner;
     caseFold = true;
   }
+  // AP is_equal uses loose equality. Without a proven String receiver its
+  // result can differ from Ruby Array#include? (e.g. "1" versus Number 1).
+  // Keep unknown datapill types in the compiler instead of inferring a type.
+  const literalNeedle = parseRubyStringLiteral(needle.replace(/^=\s*/, ''));
+  if (literalNeedle === null || !nativeMembershipLiteralSafe(literalNeedle) ||
+      values.some((value) => !nativeMembershipLiteralSafe(value))) return null;
   const needleRaw = needle.startsWith('=') || needle.startsWith('#{') ? needle : `=${needle}`;
   if (isRubyExpression(needleRaw) && !peelTrailingCaseMethod(needleRaw)) return null;
   return { values, needleRaw, caseFold };
 }
 
-function wrapApFormula(expr: string): string {
+export function wrapApFormula(expr: string): string {
   return `ap-formula-v1::{${expr}}::ap-formula-v1`;
 }
 
@@ -190,6 +232,9 @@ function convertQuoteGsubText(s: string): string | null {
   const unquoted = unquoteRubyString(masked.trim());
   const body = unquoted ?? (masked.trim().startsWith('"') || masked.trim().startsWith("'") ? null : masked);
   if (body == null) return null;
+  // A decoded NUL belongs to user text. It cannot be confused with a masked
+  // call; use the compiler when literal data adds any NUL to the placeholders.
+  if ([...body].filter((ch) => ch === '\u0000').length !== formulas.length * 2) return null;
   return body.replace(/\u0000(\d+)\u0000/g, (_match, index) => formulas[Number(index)]!);
 }
 
@@ -204,12 +249,16 @@ function convertKnownRubyAfterPills(out: string): string | null {
 
   const include = s.match(/^\[(.*)\]\.include\?\((.+)\)$/s);
   if (include) {
+    if (!parseIncludeFormula(s)) return null;
     const values = parseRubyStringList(include[1]!);
     if (!values) return null;
     let needle = include[2]!.trim();
     const peeled = peelTrailingCaseMethod(needle);
+    const literalNeedle = parseRubyStringLiteral(peeled ? peeled.inner : needle);
+    if (literalNeedle === null) return null;
+    needle = JSON.stringify(literalNeedle);
     if (peeled) {
-      needle = `${apCaseFn(peeled.method)}(${peeled.inner})`;
+      needle = `${apCaseFn(peeled.method)}(${needle})`;
     }
     return wrapApFormula(membershipFormula(needle, values));
   }
@@ -232,7 +281,7 @@ function convertKnownRubyAfterPills(out: string): string | null {
   if (pillObject) return pillObject;
 
   const catalog = convertCatalogFormula(s);
-  if (catalog) return catalog.startsWith('{{') ? catalog : wrapApFormula(catalog);
+  if (catalog) return wrapApFormula(catalog);
   return null;
 }
 
@@ -263,10 +312,6 @@ function isSafeFormulaArg(value: string): boolean {
  */
 function convertCatalogFormula(src: string): string | null {
   const s = src.trim();
-
-  // `{{lista}}[{{índice}}]['GUID']` — o acesso por índice já está na expressão.
-  // Não vira step CODE: o valor continua a pill da lista, o índice e a chave.
-  if (/^\{\{[^{}]+\}\}\[\{\{[^{}]+\}\}\](?:\[['"]\w+['"]\])+$/.test(s)) return s;
 
   // `today` / `today+5.days`
   if (/^today$/.test(s)) return 'today()';
@@ -306,8 +351,8 @@ function convertCatalogFormula(src: string): string | null {
   const dayFloor = s.match(/^(\{\{[^{}]+\}\})\/(\d+)\.floor$/);
   if (dayFloor) return `round_down(divide(to_number(${dayFloor[1]}); ${dayFloor[2]}))`;
 
-  // `{{pill}}-90` e `{{pill}}.to_date-90`: data menos N dias, sem `.days`.
-  const dateMinus = s.match(/^(\{\{[^{}]+\}\})(?:\.to_date)?\s*-\s*(\d+)$/);
+  // Only an explicit date conversion proves date subtraction; untyped pills use CODE.
+  const dateMinus = s.match(/^(\{\{[^{}]+\}\})\.to_date\s*-\s*(\d+)$/);
   if (dateMinus) {
     const date = dateMinus[0].includes('.to_date') ? `to_date(${dateMinus[1]})` : dateMinus[1]!;
     return `add_days(${date}; -${dateMinus[2]})`;
@@ -317,7 +362,7 @@ function convertCatalogFormula(src: string): string | null {
   if (s === 'now') return 'now()';
 
   const daysAgo = s.match(/^(\d+)\.days\.ago$/);
-  if (daysAgo) return `subtract_days(today(); ${daysAgo[1]})`;
+  if (daysAgo) return `subtract_days(now(); ${daysAgo[1]})`;
 
   const nowFmt = s.match(/^now\.strftime\((['"])([^'"\\]+)\1\)$/);
   if (nowFmt) {
@@ -328,7 +373,7 @@ function convertCatalogFormula(src: string): string | null {
   const nowShift = s.match(/^\(now\s*-\s*(\d+)\.days\)\.strftime\((['"])([^'"\\]+)\2\)$/);
   if (nowShift) {
     const tokens = strftimeToApTokens(nowShift[3]!);
-    if (tokens) return `format_date(subtract_days(today(); ${nowShift[1]}); ${tokens})`;
+    if (tokens) return `format_date(subtract_days(now(); ${nowShift[1]}); ${tokens})`;
   }
 
   const todayMinus = s.match(
@@ -349,6 +394,9 @@ function convertCatalogFormula(src: string): string | null {
   // `({{pill}} + ({{meses}}.to_i).months)`. `%` fora do mapa (ex. `%03`) não entra.
   const shifted = parseCalendarShift(s);
   if (shifted) {
+    // The AP catalogue lacks faithful month/year normalization and end-of-month
+    // clamping. Let the existing Ruby compiler use its calendarAdd helper.
+    if (shifted.unit !== 'days') return null;
     const base = rubyCalendarShiftExpr(shifted.date, shifted.amount, shifted.unit);
     if (!shifted.format) return base;
     const tokens = strftimeToApTokens(shifted.format);
@@ -417,9 +465,8 @@ function convertCatalogFormula(src: string): string | null {
     ].join(' ');
   }
 
-  // `{{pill}}.include?("a") || {{pill}}.include?("b")`
-  const includes = parseIncludeChain(s);
-  if (includes) return includes;
+  // A pill has no proven String type here. AP contains coerces arrays and
+  // numbers to text; let the compiler preserve Ruby receiver semantics.
 
   // `{{pill}}.match?(/PHD/)` — teste booleano. Sem funcao regex no catalogo;
   // padrao literal (sem metacaractere e sem flag) e `contains`.
@@ -434,35 +481,9 @@ function convertCatalogFormula(src: string): string | null {
     return `extract_between(${between[1]}; "${between[2]}"; "${between[3]}")`;
   }
 
-  // `{{a}}.present? ? {{a}}[0].split("/").last(1)[0].to_s : {{b}}.present? ? … : ""`
-  const present = parsePresentTernary(s);
-  if (present) return present;
+  // AP is_not_empty only excludes null/empty strings. Ruby present? also
+  // excludes false, empty lists/hashes and whitespace; use reviewed CODE.
   return null;
-}
-
-/**
- * `present?` do Workato e `is_not_empty` do catalogo. O then desta receita e
- * o ultimo segmento do primeiro item (`[0].split(sep).last(1)[0].to_s`).
- */
-function parsePresentTernary(s: string): string | null {
-  const trimmed = s.trim();
-  if (/^(['"])\1$/.test(trimmed)) return '""';
-
-  const presentOnly = trimmed.match(new RegExp(`^(${PILL})\\.present\\?$`));
-  if (presentOnly) return `is_not_empty(${presentOnly[1]})`;
-
-  const m = trimmed.match(
-    new RegExp(
-      `^(${PILL})\\.present\\?\\s*\\?\\s*\\1\\[0\\]\\.split\\((['"])([^'"\\\\]+)\\2\\)\\.last\\(1\\)\\[0\\](?:\\.to_s)?\\s*:\\s*([\\s\\S]+)$`,
-    ),
-  );
-  if (!m) return null;
-  const pill = m[1]!;
-  const sep = m[3]!;
-  if (!isSafeFormulaArg(sep)) return null;
-  const els = parsePresentTernary(m[4]!.trim());
-  if (els == null) return null;
-  return `if(is_not_empty(${pill}); last_item(split(first_item(${pill}); "${sep}")); ${els})`;
 }
 
 /**
@@ -484,10 +505,7 @@ function convertWhereChain(s: string): string | null {
     [`.pluck('value')${scan}`]: first,
     [`.pluck('value')${scan}.to_s`]: first,
     [scan]: first,
-    ".pluck('value').compact.first": first,
-    ".pluck('value').compact.first.to_s": first,
     ".pluck('value').first": first,
-    ".pluck('value').compact.join": `join_list(${plucked}; "")`,
   };
   return tails[head[3]!] ?? null;
 }
@@ -582,27 +600,13 @@ export function addRubyCalendarMonths(
   return { year: y, month: m, day: Math.min(day, lastDayOfMonth(y, m)) };
 }
 
-function yearsToMonthsAmount(amount: string): string {
-  if (/^-?\d+$/.test(amount)) return String(Number(amount) * 12);
-  return amount;
-}
-
 /**
- * `.days` → `add_days`. `.months` / `.year` usam o clamp do Ruby: o catalogo
- * nao tem add_months; as partes vêm de `format_date`/`to_date` e o helper
- * `addRubyCalendarMonths` limita o dia ao ultimo do mes destino.
+ * Only days have a faithful direct AP catalogue equivalent. Month/year callers
+ * must use the compiler's calendarAdd, never reconstruct an invalid date string.
  */
 export function rubyCalendarShiftExpr(date: string, signedAmount: string, unit: DateUnit): string {
   if (unit === 'days') return `add_days(${date}; ${signedAmount})`;
-  const months = unit === 'years' ? yearsToMonthsAmount(signedAmount) : signedAmount;
-  return rubyAddMonthsCatalogExpr(date, months);
-}
-
-function rubyAddMonthsCatalogExpr(date: string, months: string): string {
-  const m = `add(to_number(format_date(${date}; MM)); ${months})`;
-  const d = `format_date(${date}; DD)`;
-  const iso = `replace(replace(replace("Y-M-D"; "Y"; format_date(${date}; YYYY)); "M"; ${m}); "D"; ${d})`;
-  return `to_date(${iso})`;
+  throw new Error('AP-MIGRATION-UNSUPPORTED-CALENDAR-SHIFT: use the CODE compiler for month/year shifts.');
 }
 
 /** `%d/%m/%Y` -> `DD/MM/YYYY`. Devolve null se houver diretiva fora do recorte. */
@@ -655,38 +659,26 @@ function parseLiteralMatch(s: string): string | null {
   return `contains(${m[1]}; "${source}")`;
 }
 
-/** `.include?("a")` (opcionalmente com `||`) -> contains / or(contains; ...). */
-function parseIncludeChain(s: string): string | null {
-  const parts = s.split('||').map((part) => part.trim());
-  const terms: string[] = [];
-  for (const part of parts) {
-    const m = part.match(/^(\{\{[^{}]+\}\})\.include\?\("([^"\\]+)"\)$/);
-    if (!m || !isSafeFormulaArg(m[2]!)) return null;
-    terms.push(`contains(${m[1]}; "${m[2]}")`);
-  }
-  if (!terms.length) return null;
-  if (terms.length === 1) return terms[0]!;
-  return terms.slice(1).reduce((acc, term) => `or(${acc}; ${term})`, terms[0]!);
-}
-
 /**
  * Ternario Ruby `cond ? a : b`. O `?` do operador nao cola num identificador
  * (`present?`, `ID?`). Interrogacao no meio da frase, com `:` so depois
  * (rotulo entre pills, `font-weight:`), nao e ternario.
  */
 function hasRubyTernary(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] !== '?') continue;
-    const prev = i > 0 ? s[i - 1]! : '';
-    if (/[\p{L}\p{N}_]/u.test(prev)) continue;
-    if (/^[^:]*:/.test(s.slice(i + 1))) return true;
-  }
-  return false;
+  return rubySyntaxFeatures(s)?.ternary ?? false;
 }
 
 /** metodos Ruby detectados na string (indicam necessidade de step CODE). */
 export function detectRubyMethods(s: string): string[] {
   const found = new Set<string>();
+  const features = rubySyntaxFeatures(s);
+  if (features) {
+    for (const m of RUBY_METHODS) if (features.methods.includes(m)) found.add(m);
+    if (features.ternary) found.add('ternary');
+    return [...found];
+  }
+  // Preserve conservative detection on malformed/unsupported source; it cannot
+  // make a refused formula valid or remove its marker.
   for (const m of RUBY_METHODS) {
     const re = new RegExp('\\.' + m.replace('?', '\\?') + '\\b|\\.' + m.replace('?', '') + '\\(');
     if (re.test(s)) found.add(m);
@@ -721,8 +713,10 @@ export type PillOptions = {
   recipeName?: string;
   recipeId?: string;
   jobContextHits?: JobContextHits;
-  /** `as` de passos `skip: true`. A pill nao aponta para step que nao executa. */
+  /** `as` de passos `skip: true`; consumidores ativos precisam de revisão. */
   skippedAs?: Set<string>;
+  /** Aliases repetidos/ambíguos não podem selecionar uma das origens. */
+  invalidAs?: Set<string>;
   /**
    * Consumidor tambem desligado: hash solto (passo apagado) nao vira TODO_ref —
    * o step pulado nao precisa da referencia para revisar.
@@ -765,11 +759,11 @@ function renderJobContext(key: string | undefined, options: PillOptions | undefi
   const hits = options?.jobContextHits;
   if (key === 'recipe_name') {
     if (hits) hits.name += 1;
-    return options?.recipeName ?? '';
+    return options?.recipeName || '{{TODO_pill}}';
   }
   if (key === 'recipe_id') {
     if (hits) hits.id += 1;
-    return options?.recipeId ?? '';
+    return options?.recipeId || '{{TODO_pill}}';
   }
   if (key === 'recipe_url' || key === 'job_url') {
     if (hits) hits.link += 1;
@@ -842,7 +836,7 @@ function aliasListHead(binding: StepBinding | undefined, segments: string[]): st
 }
 
 /** O Storage guarda a lista crua. A pill Workato ainda diz `list_items`. */
-export function withoutStripHead(binding: StepBinding | undefined, segments: string[]): string[] {
+export function withoutStripHead<T extends string | number>(binding: StepBinding | undefined, segments: T[]): T[] {
   const head = !binding || typeof binding === 'string' ? undefined : binding.stripHead;
   if (head && segments[0] === head) return segments.slice(1);
   return segments;
@@ -852,13 +846,14 @@ export function withoutStripHead(binding: StepBinding | undefined, segments: str
  * O Storage guarda o escalar na chave do campo. A pill Workato ainda diz
  * `variavel.campo`; o campo sai do path e o step do `get` entra no lugar.
  */
-function redirectScalarField(
+function redirectScalarField<T extends string | number>(
   binding: StepBinding | undefined,
   base: string,
-  segments: string[],
-): { base: string; segments: string[] } {
+  segments: T[],
+): { base: string; segments: T[] } {
   if (!binding || typeof binding === 'string' || !binding.scalarFields?.size) return { base, segments };
-  const step = binding.scalarFields.get(segments[0] ?? '');
+  const head = segments[0];
+  const step = typeof head === 'string' ? binding.scalarFields.get(head) : undefined;
   if (!step) return { base, segments };
   return { base: step, segments: segments.slice(1) };
 }
@@ -876,7 +871,9 @@ export function outputRootSegments(
 }
 
 function escapeApKey(key: string): string {
-  return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+    .replace(/\u0008/g, '\\b').replace(/\f/g, '\\f');
 }
 
 /** `data.card.id` -> `['data']['card']['id']`. Indice numerico fica `[0]`, sem aspas. */
@@ -894,6 +891,51 @@ export function formatApSegment(seg: string): string {
  */
 export function renderApTemplate(base: string, segments: string[] = []): string {
   return `{{${base}${segments.map(formatApSegment).join('')}}}`;
+}
+
+/** Inspect the reference base, excluding quoted field names from marker detection. */
+export function containsMigrationMarker(value: string, kind?: 'formula' | 'reference'): boolean {
+  let cursor = 0;
+  while (cursor < value.length) {
+    let start = value.indexOf('{{', cursor);
+    const literalEnd = start < 0 ? value.length : start;
+    if (kind !== 'reference' && /TODO_FORMULA\(/.test(value.slice(cursor, literalEnd))) return true;
+    if (start < 0) return false;
+    let quote: string | undefined;
+    let end = start + 2;
+    for (; end < value.length; end++) {
+      const ch = value[end];
+      if (quote) {
+        if (ch === '\\') { end++; continue; }
+        if (ch === quote) quote = undefined;
+      } else if (ch === "'" || ch === '"') quote = ch;
+      else if (value.startsWith('{{', end)) {
+        // An unfinished outer template cannot consume a subsequent marker.
+        start = end;
+        end++;
+      }
+      else if (value.startsWith('}}', end)) break;
+    }
+    if (end >= value.length) return false;
+    // TODO_* is the reserved base of unresolved templates. A field key in a
+    // valid step reference may freely contain the same characters.
+    const marker = value.slice(start + 2, end).match(/^\s*(TODO_[A-Za-z0-9_]+)(?=$|[.\[\s])/);
+    if (marker && (!kind || kind === (marker[1] === 'TODO_formula' ? 'formula' : 'reference'))) return true;
+    cursor = end + 2;
+  }
+  return false;
+}
+
+/** Structured JSON paths carry their own segment types, unlike the legacy dot renderer. */
+function renderPillTemplate(base: string, segments: PillPathSegment[] = []): string {
+  return `{{${base}${segments.map((segment) => typeof segment === 'number'
+    ? `[${segment}]` : `['${escapeApKey(segment)}']`).join('')}}}`;
+}
+
+function aliasPillListHead(binding: StepBinding | undefined, segments: PillPathSegment[]): PillPathSegment[] {
+  if (!binding || typeof binding === 'string' || !binding.headAlias) return segments;
+  const { from, to } = binding.headAlias;
+  return segments[0] === from ? [to, ...segments.slice(1)] : segments;
 }
 
 /** Propriedade de conta ou de projeto (`pdf_generator_api_key`, `d4sign.prd.url`) vira a variavel iPaaS `PDF_GENERATOR_API_KEY`. */
@@ -938,7 +980,13 @@ export function bracketizePills<T>(value: T, key?: string): T {
 }
 
 /** `lowercase` / `uppercase` no catalogo AP, depois que as pills ja viraram `{{...}}`. */
-export function wrapApCase(value: string, method: 'upcase' | 'downcase'): string {
+export function wrapApCase(value: string, method: 'upcase' | 'downcase', rubyResidual = false): string {
+  const residual = rubyResidual && value.match(/^TODO_FORMULA\((.*)\)$/s);
+  if (residual) {
+    // Keep a generated whole-value Ruby residual visible to harvest. Wrapping
+    // it as AP quoted text would hide it and uppercase the marker itself.
+    return `TODO_FORMULA((${residual[1]!}).${method})`;
+  }
   const fn = apCaseFn(method);
   const already = value.match(/^ap-formula-v1::\{(.*)\}::ap-formula-v1$/s);
   const inner = already
@@ -974,13 +1022,15 @@ function renderDataPill(
   } catch {
     return '{{TODO_pill}}';
   }
+  if (!dp || typeof dp !== 'object' || Array.isArray(dp)) return '{{TODO_pill}}';
   const path: any[] = Array.isArray(dp.path) ? dp.path : [];
   if (dp.pill_type === 'job_context') {
+    if (!Array.isArray(dp.path)) return '{{TODO_pill}}';
     const key = path.find((element) => typeof element === 'string') as string | undefined;
     const job = renderJobContext(key, options);
     if (job !== null) return job;
     // Sem `line`. Usar o mapa emitia `{{undefined['…']}}`.
-    return '';
+    return '{{TODO_pill}}';
   }
   if (
     (dp.pill_type === 'account_property' || dp.pill_type === 'project_property') &&
@@ -989,8 +1039,17 @@ function renderDataPill(
     const kind = dp.pill_type === 'account_property' ? 'conta' : 'projeto';
     return renderPropertyVariable(kind, dp.property_name, options);
   }
-  const line = dp.line ?? dp.provider;
-  const mapped = asToName.get(line);
+  if (!Array.isArray(dp.path) && !(dp.pill_type === 'foreach_meta' && dp.key === 'index')) {
+    return '{{TODO_pill}}';
+  }
+  if (path.some((element) => typeof element !== 'string' &&
+    !(typeof element === 'number' && Number.isSafeInteger(element) && element >= 0) &&
+    !(element && typeof element === 'object' && !Array.isArray(element)))) {
+    return '{{TODO_pill}}';
+  }
+  const rawLine = dp.line ?? dp.provider;
+  const line = typeof rawLine === 'string' || typeof rawLine === 'number' ? String(rawLine) : undefined;
+  const mapped = asToName.get(line ?? '');
   const mappedName = stepBindingName(mapped);
 
   // O catch do Workato nao vira passo. A mensagem aponta para o step que falhou,
@@ -1001,28 +1060,30 @@ function renderDataPill(
     if (key === 'type') return CATCH_TYPE_TOKEN;
   }
 
-  // Passo `skip: true` nao executa e pode nem entrar no flow. Emitir
-  // `{{step_N}}` ou `TODO_ref_<hash>` aponta para um step que nao existe.
-  if (options?.skippedAs?.has(String(line))) return '';
+  if (line && options?.invalidAs?.has(line)) return '{{TODO_ref}}';
+
+  // A disabled producer has no output. Its active consumers cannot receive
+  // an invented empty value; only an explicitly disabled consumer may omit it.
+  if (options?.skippedAs?.has(String(line))) return options?.omitDangling ? '' : '{{TODO_ref}}';
 
   // `line` e o `as` do passo de origem. Sem entrada no mapa, a pill aponta para
   // um passo que nao existe na receita — acontece quando o passo e apagado e a
   // referencia fica para tras. Repassar o hash cru gerava template que o AP
   // resolve como vazio em silencio; marcar invalida o step para revisao.
   // Consumidor desligado: o hash solto e resto de um passo pulado/apagado.
-  if (!mappedName && /^[0-9a-f]{6,}$/i.test(String(line))) {
+  if (!mappedName) {
     if (options?.omitDangling) return '';
-    return `{{TODO_ref_${line}}}`;
+    return '{{TODO_ref}}';
   }
 
   // Mesmo indice que `_('data.foreach.<as>.index')`: o `as` do foreach aponta
   // para `loop_N.item`, e o indice mora no loop.
   if (dp.pill_type === 'foreach_meta' && dp.key === 'index') {
-    const loop = (mappedName ?? String(line)).replace(/\.item$/, '');
+    const loop = mappedName.replace(/\.item$/, '');
     return renderApTemplate(loop, ['index']);
   }
 
-  let base = mappedName ?? line;
+  let base = mappedName;
   if (
     mappedName &&
     path.length === 1 &&
@@ -1032,12 +1093,17 @@ function renderDataPill(
     if (counted) return counted;
   }
   const pathHead = path.find((element) => typeof element === 'string') as string | undefined;
-  let segments: string[] = outputRootSegments(mapped, pathHead);
-  const render = () => renderApTemplate(base, aliasListHead(mapped, segments));
+  let segments: PillPathSegment[] = outputRootSegments(mapped, pathHead);
+  let activeBinding = mapped;
+  const render = () => {
+    const stored = redirectScalarField(activeBinding, base,
+      withoutStripHead(activeBinding, aliasPillListHead(activeBinding, segments)));
+    return renderPillTemplate(stored.base, stored.segments);
+  };
 
   for (const element of path) {
     if (!element || typeof element !== 'object') {
-      segments.push(String(element));
+      segments.push(element);
       continue;
     }
     if (element.path_element_type === 'size') {
@@ -1050,29 +1116,24 @@ function renderDataPill(
         // Item do foreach e o valor cru, sem o envelope da piece.
         base = item;
         segments = [];
+        activeBinding = undefined;
         continue;
       }
       // Sem foreach no escopo. O Workato usa o primeiro item da lista
       // (docs "Lists"); listas sao indexadas em 0.
-      if (segments.length) segments[segments.length - 1] += '[0]';
-      else base = `${base}[0]`;
+      segments.push(0);
       continue;
     }
     return '{{TODO_pill}}';
   }
-  const stored = redirectScalarField(mapped, base, withoutStripHead(mapped, aliasListHead(mapped, segments)));
-  return renderApTemplate(stored.base, stored.segments);
+  return render();
 }
 
-function extraHashPath(brackets: string): string {
-  return [...brackets.matchAll(/\[['"](\w+)['"]\]/g)].map((m) => m[1]).join('.');
-}
-
-function appendPillPath(pill: string, extra: string): string {
+function appendPillPath(pill: string, extra: PillPathSegment[]): string {
   if (!pill) return '';
-  if (!extra) return pill;
-  const access = extra.split('.').filter(Boolean).map(formatApSegment).join('');
-  if (!/^\{\{[^}]+\}\}$/.test(pill)) return `${pill}${access}`;
+  if (!extra.length || containsMigrationMarker(pill)) return pill;
+  const access = renderPillTemplate('', extra).slice(2, -2);
+  if (!/^\{\{[^}]+\}\}$/.test(pill)) return '{{TODO_pill}}';
   return `{{${pill.slice(2, -2)}${access}}}`;
 }
 
@@ -1088,6 +1149,36 @@ function isRepeatIndexPill(json: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isForeachIndexPill(json: string): boolean {
+  try {
+    const dp = JSON.parse(json) as { pill_type?: string; key?: string };
+    return dp.pill_type === 'foreach_meta' && dp.key === 'index';
+  } catch {
+    return false;
+  }
+}
+
+function renderDynamicIndexedPillPath(
+  listPill: string,
+  indexPill: string,
+  extra: PillPathSegment[],
+): string {
+  if (!/^\{\{[^}]+\}\}$/.test(listPill) || !/^\{\{[^}]+\}\}$/.test(indexPill)) return '{{TODO_pill}}';
+  let suffix = '';
+  for (const segment of extra) {
+    if (typeof segment === 'number') suffix += `[${segment}]`;
+    else if (/[\n\r\t\b\f]/.test(segment)) {
+      // Controls need escaped double quotes for both JS and Ruby. Prevent
+      // Ruby interpolation of literal hash characters in the field name.
+      suffix += `[${JSON.stringify(segment).replace(/#/g, '\\#')}]`;
+    } else {
+      suffix += `['${escapeApKey(segment)}']`;
+    }
+  }
+  // Dynamic indexing is Ruby computation, not a concatenation of AP templates.
+  return `TODO_FORMULA(${listPill}[${indexPill}]${suffix})`;
 }
 
 /**
@@ -1130,42 +1221,57 @@ function replaceListIndexAccess(
   return { out, replaced };
 }
 
-/** `_dp(...)[0]` / `#{_dp(...)}[0]['campo']` → indice dentro da datapill. */
-function convertIndexPathFormula(
+/** `_dp(...)['literal.key'][0]` → exact keys and indexes inside the template. */
+function convertPillPathFormula(
   input: string,
   asToName: StepNameMap,
   resolveLoopItem?: LoopItemResolver,
   options?: PillOptions,
 ): string | null {
-  const m = input.trim().match(INDEX_PILL);
-  if (!m) return null;
-  const rendered = renderDataPill(m[1]!, asToName, resolveLoopItem, options);
-  if (!rendered) return '';
-  if (!/^\{\{[^{}]+\}\}$/.test(rendered) || rendered.includes('TODO_')) return null;
-  const keys = [...(m[3] ?? '').matchAll(/\[['"]([^'"]*)['"]\]/g)].map((hit) =>
-    formatApSegment(hit[1]!),
-  );
-  return `{{${rendered.slice(2, -2)}${m[2]}${keys.join('')}}}`;
-}
+  const parsed = pureStructuredPill(input);
+  if (parsed) {
+    const rendered = renderDataPill(parsed.json, asToName, resolveLoopItem, options);
+    return appendPillPath(rendered, parsed.segments);
+  }
 
-/**
- * `_dp(...)['a']['b']` → `{{step.a.b}}`.
- * So a pill inteira: `.+?` voltava ate o ultimo `["campo"]` e engolia
- * `pill + "/" + pill["campo"]`. A chave de fora nao entra no JSON da pill.
- */
-function convertHashPathFormula(
-  input: string,
-  asToName: StepNameMap,
-  resolveLoopItem?: LoopItemResolver,
-  options?: PillOptions,
-): string | null {
-  const m = input.trim().match(
-    /^=?(?:#\{)?_dp\('([^']*)'\)\}?((?:\[['"]\w+['"]\])+)$/,
-  );
-  if (!m) return null;
-  const rendered = renderDataPill(m[1], asToName, resolveLoopItem, options);
-  if (rendered.includes('TODO_')) return null;
-  return appendPillPath(rendered, extraHashPath(m[2]));
+  let source = input.trim().replace(/^=\s*/, '');
+  const interpolated = source.startsWith('#{');
+  if (interpolated) source = source.slice(2);
+  const call = structuredPillAt(source, 0);
+  if (!call) return null;
+  let suffix = source.slice(call.end);
+  if (interpolated) {
+    if (suffix.startsWith('}')) suffix = suffix.slice(1);
+    else if (suffix.endsWith('}')) suffix = suffix.slice(0, -1);
+    else return null;
+  }
+
+  const staticAccess = readPillAccess(suffix);
+  if (staticAccess === 'invalid_literal') return '{{TODO_pill}}';
+  if (staticAccess && staticAccess.end === suffix.length) {
+    const rendered = renderDataPill(call.json, asToName, resolveLoopItem, options);
+    return appendPillPath(rendered, staticAccess.segments);
+  }
+
+  if (suffix.startsWith('[_dp(')) {
+    const indexCall = structuredPillAt(suffix, 1);
+    if (indexCall && suffix[indexCall.end] === ']') {
+      const indexJson = indexCall.json;
+      if (isForeachIndexPill(indexJson) && !isRepeatIndexPill(indexJson)) {
+        const rest = suffix.slice(indexCall.end + 1);
+        const tail = parsePillAccess(rest);
+        if (tail) {
+          const listRendered = renderDataPill(call.json, asToName, resolveLoopItem, options);
+          const indexRendered = renderDataPill(indexJson, asToName, resolveLoopItem, options);
+          if (listRendered && indexRendered && !containsMigrationMarker(listRendered + indexRendered)) {
+            return renderDynamicIndexedPillPath(listRendered, indexRendered, tail);
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -1202,6 +1308,41 @@ function convertWhereListFormula(
   return wrapApFormula(formatWhereList(listRef, hit.field, hit.value, hit.key));
 }
 
+/** `_('data....', 'list_meta', ...)` — so o primeiro argumento importa; `____Size` e o tamanho da lista. */
+const FLAT_DATA_PILL_RE =
+  /_\(\s*(['"])data\.([^'"]+)\1(?:\s*,\s*(?:'[^']*'|"[^"]*"))*\s*\)/g;
+
+function renderFlatDataRef(ref: string, asToName: StepNameMap, options?: PillOptions): string {
+  const parts = String(ref).split('.');
+  if (parts[0] === 'workato' && parts[1] === 'job_context' && parts[2]) {
+    const job = renderJobContext(parts[2], options);
+    if (job !== null) return job;
+  }
+  if (parts[parts.length - 1] === '____Size') {
+    let listParts = parts.slice(0, -1);
+    if (listParts[listParts.length - 1] === 'first') listParts = listParts.slice(0, -1);
+    const listPill = renderDataRef(listParts.join('.'), asToName, options);
+    return wrapApFormula(`length(${listPill})`);
+  }
+  return renderDataRef(ref, asToName, options);
+}
+
+/** Campo que e so uma pill achatada Workato (com metadados extras), nao Ruby. */
+function convertWholeFlatDataPill(
+  input: string,
+  asToName: StepNameMap,
+  options?: PillOptions,
+): string | null {
+  const body = input.trim().replace(/^=\s*/, '');
+  const withToS = body.match(/^_\(\s*(['"])data\.([^'"]+)\1(?:\s*,\s*(?:'[^']*'|"[^"]*"))*\s*\)\s*\.to_s\s*$/);
+  if (withToS) return renderFlatDataRef(withToS[2], asToName, options);
+  const m = body.match(
+    /^_\(\s*(['"])data\.([^'"]+)\1(?:\s*,\s*(?:'[^']*'|"[^"]*"))*\s*\)\s*$/,
+  );
+  if (!m) return null;
+  return renderFlatDataRef(m[2], asToName, options);
+}
+
 /**
  * `data.<provider>.<as>.<path>` (forma do `_('...')`) -> template AP.
  *
@@ -1210,12 +1351,14 @@ function convertWhereListFormula(
  */
 function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions): string {
   const parts = String(ref).split('.');
+  if (parts.length < 2 || parts.some((part) => part === '')) return '{{TODO_pill}}';
   const as = parts[1];
   const path = parts.slice(2).join('.');
-  if (as && options?.skippedAs?.has(as)) return '';
-  if (as && !asToName.has(as) && /^[0-9a-f]{6,}$/i.test(as) && options?.omitDangling) return '';
+  if (as && options?.invalidAs?.has(as)) return '{{TODO_ref}}';
+  if (as && options?.skippedAs?.has(as)) return options?.omitDangling ? '' : '{{TODO_ref}}';
   const binding = as ? asToName.get(as) : undefined;
-  const mapped = stepBindingName(binding) || parts.slice(0, 2).join('_');
+  const mapped = stepBindingName(binding);
+  if (!mapped) return options?.omitDangling ? '' : '{{TODO_ref}}';
   if (parts[0] === 'foreach' && /^index\b/.test(path)) {
     const loop = mapped.replace(/\.item$/, '');
     return `{{${loop}.${path}}}`;
@@ -1296,13 +1439,32 @@ export function convertPills(
   if (typeof input !== 'string') return input;
   if (EMPTY_FORMULA.test(input)) return '';
   const literal = input.match(LITERAL_FORMULA);
-  if (literal) return literal[2]!;
+  if (literal) {
+    const decoded = parseRubyStringLiteral(input.slice(1));
+    if (decoded !== null) {
+      if (/_dp\(|_\(\s*['"]data\./.test(decoded)) {
+        return convertPills(decoded, asToName, resolveLoopItem, options);
+      }
+      return decoded;
+    }
+  }
   const whereList = convertWhereListFormula(input, asToName, resolveLoopItem, options);
   if (whereList) return tidyJobContext(whereList);
-  const hashPath = convertHashPathFormula(input, asToName, resolveLoopItem, options);
-  if (hashPath) return tidyJobContext(hashPath);
-  const indexPath = convertIndexPathFormula(input, asToName, resolveLoopItem, options);
-  if (indexPath) return tidyJobContext(indexPath);
+  const pillPath = convertPillPathFormula(input, asToName, resolveLoopItem, options);
+  if (pillPath !== null) return tidyJobContext(pillPath);
+  const wholeFlat = convertWholeFlatDataPill(input, asToName, options);
+  if (wholeFlat !== null) return tidyJobContext(wholeFlat);
+
+  // A whole-field #{...} pill expression has the same contract as its body.
+  // Static paths were handled above; dynamic access must reach the CODE compiler
+  // without an unmatched interpolation wrapper (or a falsely valid raw string).
+  const wrappedSource = input.trim().replace(/^=\s*/, '');
+  if (wrappedSource.startsWith('#{') && rubyInterpolationEnd(wrappedSource, 2) === wrappedSource.length - 1) {
+    const body = wrappedSource.slice(2, -1);
+    if (/_dp\('|_\('data\.|\{\{/.test(body)) {
+      return convertPills(`=${body}`, asToName, resolveLoopItem, options);
+    }
+  }
 
   let out = input;
   // Formula Ruby (=now + 24.hours): sem equivalente em template AP. Marca de
@@ -1325,43 +1487,65 @@ export function convertPills(
     },
   );
 
-  // 1) pill estruturada: #{_dp('{...json...}')} ou _dp('{...}') sem interpolacao.
-  // A primeira alternativa so casa quando `}` cola no `')`. `.+?` ate `'\)\}`
-  // engolia `.strftime("...")` e a pill seguinte, porque o fechamento vinha
-  // de outra interpolacao. O JSON da pill nao tem aspa simples.
-  out = out.replace(/#\{_dp\('([^']*)'\)\}|_dp\('(.+?)'\)/g, (_m, a, b) => {
-    return renderDataPill(a ?? b, asToName, resolveLoopItem, options);
-  });
+  // 1) structured pill. Inspect the call terminator outside JSON strings;
+  // a quote in a field key must neither truncate JSON nor retain #{...}.
+  let replaced = '';
+  let cursor = 0;
+  const calls = /_dp\('/g;
+  let callStart: RegExpExecArray | null;
+  while ((callStart = calls.exec(out))) {
+    const call = structuredPillAt(out, callStart.index);
+    if (!call) return '{{TODO_pill}}';
+    const wrapped = out.slice(callStart.index - 2, callStart.index) === '#{' && out[call.end] === '}';
+    const start = wrapped ? callStart.index - 2 : callStart.index;
+    const end = call.end + (wrapped ? 1 : 0);
+    replaced += out.slice(cursor, start) + renderDataPill(call.json, asToName, resolveLoopItem, options);
+    cursor = end;
+    calls.lastIndex = end;
+  }
+  out = replaced + out.slice(cursor);
 
-  // 2) pill interpolada: #{_('data.<provider>.<as>.<path>')}
-  out = out.replace(/#\{_\('data\.([^']+)'\)\}/g, (_m, ref) => renderDataRef(ref, asToName, options));
-
-  // 2b) mesma pill SEM interpolacao, dentro de formula: `_('data...')` e
-  // `_('data...', 'foreach_meta')`. Sem isso a referencia Workato vazava crua
-  // para o template (e para o JS do step CODE), onde nao resolve nada.
-  out = out.replace(/_\('data\.([^']+)'(?:\s*,\s*'[^']*')?\)/g, (_m, ref) =>
-    renderDataRef(ref, asToName, options),
+  // 2) pill achatada Workato: #{_('data...')} ou `_(...)` com metadados extras.
+  out = out.replace(
+    new RegExp(`#\\{${FLAT_DATA_PILL_RE.source}\\}`, 'g'),
+    (_m, _q: string, ref: string) => renderFlatDataRef(ref, asToName, options),
+  );
+  out = out.replace(FLAT_DATA_PILL_RE, (_m, _q: string, ref: string) =>
+    renderFlatDataRef(ref, asToName, options),
   );
 
   // 3) #{...} que sobrou sem pill. Interpolação com {{pill}} ou método fica
   // para o compilador Ruby; `}` de dentro do pill não fecha a interpolação.
-  out = replaceBareInterpolation(out);
+  if (!rubyExpression && !graphqlFormula) out = replaceBareInterpolation(out);
 
-  // 4) {{step}}['a']['b'] residual (formula mista) -> {{step.a.b}}
-  out = out.replace(/\{\{([^{}]+)\}\}((?:\[['"]\w+['"]\])+)/g, (_m, inner, brackets) => {
-    return `{{${inner}.${extraHashPath(brackets)}}}`;
-  });
-
-  // 5) prefixo '=' de formula
+  // 4) prefixo '=' de formula, antes de absorver [0]['campo'] na pill.
+  // Os atalhos (split/present/where) ainda precisam ver o indice fora da pill.
   if (out.startsWith('=')) out = out.slice(1);
-
-  if (graphqlFormula) {
-    const body = unquoteRubyString(out) ?? out;
-    return tidyJobContext(convertGraphqlInterpolations(body));
-  }
 
   const known = convertKnownRubyAfterPills(out);
   if (known) return tidyJobContext(known);
+
+  out = out.replace(/(\{\{[^{}]+\}\})((?:\[(?:\d+|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\])+)/g, (match, rendered, brackets) => {
+    const segments = parsePillAccess(brackets);
+    return segments ? appendPillPath(rendered, segments) : '{{TODO_pill}}';
+  });
+
+  const folded = convertKnownRubyAfterPills(out);
+  if (folded) return tidyJobContext(folded);
+
+  if (graphqlFormula) {
+    // Harvest owns whole Ruby expressions, never marker-shaped substrings of
+    // an arbitrary document. Retain the source String when this conversion
+    // creates a residual, so CODE can render its interpolation as one value.
+    let residual = false;
+    const body = unquoteRubyString(out, (expression) => {
+      const converted = convertGraphqlInterpolation(expression);
+      if (converted.startsWith('TODO_FORMULA(')) residual = true;
+      return converted;
+    });
+    if (body === null || residual) return tidyJobContext(`TODO_FORMULA(${out.trim()})`);
+    return tidyJobContext(body);
+  }
 
   const cleaned = out.trim();
   if (listIndex.replaced && /^\{\{[^{}]+\}\}$/.test(cleaned)) return tidyJobContext(cleaned);
@@ -1373,7 +1557,7 @@ export function convertPills(
       slots.push(formula);
       return `\u0000f${slots.length - 1}\u0000`;
     });
-    const unquoted = unquoteRubyString(masked);
+    const unquoted = parseRubyStringLiteral(masked);
     if (unquoted != null) {
       const restored = unquoted.replace(/\u0000f(\d+)\u0000/g, (_match, index) => slots[Number(index)]!);
       return tidyJobContext(restored);
@@ -1383,10 +1567,55 @@ export function convertPills(
   // Formula que so restou metodo Ruby depois de dropar a pill de um passo skip.
   if (options?.omitDangling && rubyExpression && !/\{\{/.test(cleaned)) return '';
 
+  if (rubyExpression && detectRubyMethods(cleaned).length === 0 && isPillIndexChain(cleaned)) {
+    return tidyJobContext(cleaned);
+  }
+
   return tidyJobContext(rubyExpression ? `TODO_FORMULA(${cleaned})` : out);
 }
 
-function unquoteRubyString(src: string): string | null {
+function bracketEnd(src: string, open: number): number {
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i]!;
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === '[') depth++;
+    if (ch === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Only static accesses can be folded into an AP template; dynamic indices need CODE. */
+function isPillIndexChain(src: string): boolean {
+  let i = 0;
+  const s = src.trim();
+  if (!s.startsWith('{{')) return false;
+  while (i < s.length) {
+    if (s.startsWith('{{', i)) {
+      const end = s.indexOf('}}', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+      continue;
+    }
+    if (s[i] !== '[') return false;
+    const close = bracketEnd(s, i);
+    if (close < 0) return false;
+    if (!parsePillAccess(s.slice(i, close + 1))) return false;
+    i = close + 1;
+  }
+  return true;
+}
+
+function unquoteRubyString(src: string, interpolate?: (expression: string) => string): string | null {
   const s = src.trim();
   const quote = s[0];
   if (quote !== '"' && quote !== "'") return /^(mutation|query)\b/i.test(s) ? s : null;
@@ -1394,15 +1623,21 @@ function unquoteRubyString(src: string): string | null {
   let out = '';
   while (i < s.length) {
     if (s[i] === '\\') {
-      const next = s[i + 1] ?? '';
-      out += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+      const decoded = decodeRubyStringEscape(s, i, quote);
+      if (decoded === null) return null;
+      out += decoded.value;
+      i = decoded.end;
+      continue;
+    }
+    if (s[i] === '\r' && s[i + 1] === '\n') {
+      out += '\n';
       i += 2;
       continue;
     }
     if (quote === '"' && s.startsWith('#{', i)) {
       const end = rubyInterpolationEnd(s, i + 2);
       if (end < 0) return null;
-      out += s.slice(i, end + 1);
+      out += interpolate ? interpolate(s.slice(i + 2, end).trim()) : s.slice(i, end + 1);
       i = end + 1;
       continue;
     }
@@ -1416,27 +1651,9 @@ function unquoteRubyString(src: string): string | null {
   return null;
 }
 
-function convertGraphqlInterpolations(doc: string): string {
-  let out = '';
-  let i = 0;
-  while (i < doc.length) {
-    if (!doc.startsWith('#{', i)) {
-      out += doc[i];
-      i++;
-      continue;
-    }
-    const end = rubyInterpolationEnd(doc, i + 2);
-    if (end < 0) {
-      out += doc[i];
-      i++;
-      continue;
-    }
-    const expr = doc.slice(i + 2, end).trim();
-    const known = convertKnownRubyAfterPills(expr);
-    if (known) out += known;
-    else if (/^\{\{[^{}]+\}\}(?:\[\{\{[^{}]+\}\}\])*$/.test(expr)) out += expr;
-    else out += `TODO_FORMULA(${expr})`;
-    i = end + 1;
-  }
-  return out;
+function convertGraphqlInterpolation(expr: string): string {
+  const known = convertKnownRubyAfterPills(expr);
+  if (known) return known;
+  if (/^\{\{[^{}]+\}\}(?:\[\{\{[^{}]+\}\}\])*$/.test(expr)) return expr;
+  return `TODO_FORMULA(${expr})`;
 }
