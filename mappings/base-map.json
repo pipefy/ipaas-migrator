@@ -373,7 +373,7 @@
       "manual": false
     },
     "slack_bot/bot_command_v2": {
-      "target": { "piece": "@activepieces/piece-slack", "name": "new_command", "kind": "trigger" },
+      "target": null,
       "propMap": {},
       "difficulty": "medium",
       "manual": false,
@@ -703,7 +703,7 @@
       "notes": "piece NetSuite nao tem add_object; descer para SuiteTalk via custom_api_call."
     },
     "netsuite/search_object_v2": {
-      "target": { "piece": "@activepieces/piece-netsuite", "name": "runSuiteQL", "kind": "action" },
+      "target": null,
       "propMap": {},
       "difficulty": "high",
       "manual": false,
@@ -892,11 +892,7 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (Dayforce REST)."
     },
     "click_up_connector_744758_1661261772/get_object": {
-      "target": {
-        "piece": "@activepieces/piece-clickup",
-        "name": "get_task_by_name",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "ou custom_api_call Prop obrigatoria que depende da conta do cliente (workspace_id, space_id, list_id); escolher na importacao."
@@ -908,17 +904,14 @@
       "notes": "ou task_updated conforme evento"
     },
     "clickup/get_object": {
-      "target": {
-        "piece": "@activepieces/piece-clickup",
-        "name": "get_task_by_name",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "ou custom_api_call Prop obrigatoria que depende da conta do cliente (workspace_id, space_id, list_id); escolher na importacao."
     },
     "clickup/new_event": {
       "target": {"piece":"@activepieces/piece-clickup","name":"clickup_trigger_task_created","kind":"trigger"},
+      "propMap": {"team_id":"workspace_id"},
       "difficulty": "medium",
       "manual": false,
       "notes": "ou task_updated conforme evento"
@@ -971,6 +964,7 @@
     },
     "convertapi/merge_pdf_file": {
       "target": {"piece":"@activepieces/piece-pdf","name":"mergePdfs","kind":"action"},
+      "propMap": {"Files":"pdfFiles","FileName":"outputFileName"},
       "difficulty": "low",
       "manual": false
     },
@@ -985,6 +979,7 @@
         "name": "new_or_updated_object",
         "kind": "trigger"
       },
+      "propMap": {"object":"module"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (module); escolher na importacao."
@@ -1203,6 +1198,7 @@
         "name": "new_lead",
         "kind": "trigger"
       },
+      "propMap": {"page_id":"page","form_id":"form"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (page); escolher na importacao."
@@ -1623,6 +1619,7 @@
         "name": "new_response",
         "kind": "trigger"
       },
+      "propMap": {"id":"form_id"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (form_id); escolher na importacao."
@@ -1904,7 +1901,8 @@
       "notes": "recriar Lookup Table table_id e o id da Lookup Table Workato; trocar pelo id da Table do iPaaS.",
       "propMap": {
         "lookup_table_id": "table_id",
-        "parameters": "values"
+        "parameters": "values",
+        "entries": "values"
       }
     },
     "lookup_table/add_entry": {
@@ -2251,7 +2249,7 @@
       "manual": false
     },
     "netsuite/create_record": {
-      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -2276,7 +2274,7 @@
       "manual": false
     },
     "netsuite_rest/create_record": {
-      "target": {"piece":"@activepieces/piece-netsuite","name":"custom_api_call","kind":"action"},
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -2396,6 +2394,7 @@
     },
     "new_connector_6_connector_186728_1628717731/card_delete": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"cardDeleted","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId"},
       "difficulty": "low",
       "manual": false
     },
@@ -2635,7 +2634,7 @@
       "manual": false
     },
     "pdf/generate_document": {
-      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "notes": "ou piece-google-docs template"
@@ -2646,7 +2645,7 @@
       "manual": false
     },
     "pdf_monkey_connector_4204416_1779192759/generate_document": {
-      "target": {"piece":"@activepieces/piece-pdf","name":"textToPdf","kind":"action"},
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "notes": "ou piece-google-docs template"
@@ -2716,6 +2715,7 @@
     },
     "pipefy/Delete_Card": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"deleteCard","kind":"action"},
+      "propMap": {"Card_ID": "cardId", "card_id": "cardId"},
       "difficulty": "low",
       "manual": false
     },
@@ -2756,6 +2756,7 @@
     },
     "pipefy/card_delete": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"cardDeleted","kind":"trigger"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId"},
       "difficulty": "low",
       "manual": false
     },
@@ -2788,7 +2789,7 @@
     },
     "pipefy/create_card": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"createCard","kind":"action"},
-      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId"},
+      "propMap": {"organization_id":"organizationId","pipe_id":"pipeId","Pipe_ID":"pipeId","Start_form_fields":"startFormFields","start_form_fields":"startFormFields"},
       "ignoreSourceProps": ["pipe"],
       "collectRemainingTo": "startFormFields",
       "difficulty": "low",
@@ -2872,6 +2873,7 @@
     },
     "pipefy/get_phase_cards": {
       "target": {"piece":"@activepieces/piece-pipefy","name":"getCardsByPhase","kind":"action"},
+      "propMap": {"phase_id": "phaseId", "pipe_id": "pipeId", "organization_id": "organizationId"},
       "difficulty": "low",
       "manual": false
     },
@@ -3486,6 +3488,7 @@
     },
     "salesforce/new_custom_object": {
       "target": {"piece":"@activepieces/piece-salesforce","name":"new_record","kind":"trigger"},
+      "propMap": {"sobject_name":"object"},
       "difficulty": "low",
       "manual": false
     },
@@ -3500,11 +3503,7 @@
       "manual": false
     },
     "salesforce/upload_file_content": {
-      "target": {
-        "piece": "@activepieces/piece-salesforce",
-        "name": "add_file_to_record",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "propMap": {
@@ -3636,7 +3635,7 @@
       }
     },
     "slack/bot_command_v2": {
-      "target": {"piece":"@activepieces/piece-slack","name":"new_command","kind":"trigger"},
+      "target": null,
       "difficulty": "low",
       "manual": false
     },
@@ -3693,7 +3692,7 @@
       }
     },
     "slack/post_bot_reply_v2": {
-      "target": {"piece":"@activepieces/piece-slack","name":"send_channel_message","kind":"action"},
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "notes": "thread/reply"
@@ -3740,11 +3739,7 @@
       "notes": "ignoreBots=true evita o flow disparar com mensagens de bot (padrao seguro)."
     },
     "slack_bot/post_bot_reply_v2": {
-      "target": {
-        "piece": "@activepieces/piece-slack",
-        "name": "send_channel_message",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "notes": "thread/reply channel vem do evento do Workbot; informar o canal.",
@@ -3785,6 +3780,7 @@
         "name": "insert-row",
         "kind": "action"
       },
+      "propMap": {"columns":"table_column_values"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (database, schema); escolher na importacao."
@@ -3917,7 +3913,7 @@
       "notes": "sem piece nativa; migrar de fora via HTTP (SAP SuccessFactors OData)."
     },
     "teams/bot_command": {
-      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"new-channel-message","kind":"trigger"},
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "aprox. de bot command"
@@ -3928,7 +3924,7 @@
       "manual": false
     },
     "teams/post_blocks_message": {
-      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_send_channel_message","kind":"action"},
+      "target": null,
       "propMap": { "channel": "channelId", "blocks": "content" },
       "difficulty": "low",
       "manual": false
@@ -3940,7 +3936,7 @@
       "manual": false
     },
     "teams_bot/bot_command": {
-      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"new-channel-message","kind":"trigger"},
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "aprox. de bot command"
@@ -3951,7 +3947,7 @@
       "manual": false
     },
     "teams_bot/post_blocks_message": {
-      "target": {"piece":"@activepieces/piece-microsoft-teams","name":"microsoft_teams_send_channel_message","kind":"action"},
+      "target": null,
       "difficulty": "low",
       "manual": false
     },
@@ -4205,7 +4201,7 @@
       "manual": false
     },
     "zendesk/create_upload": {
-      "target": {"piece":"@activepieces/piece-zendesk","name":"custom_api_call","kind":"action"},
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -4328,11 +4324,7 @@
       "manual": false
     },
     "oracle/execute_procedure": {
-      "target": {
-        "piece": "@activepieces/piece-oracle-database",
-        "name": "run_custom_sql",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "procedure Oracle via run_custom_sql / PL/SQL."
@@ -4463,11 +4455,7 @@
       "notes": "Sunshine custom objects via Zendesk custom_api_call."
     },
     "zendesk_secondary/create_upload": {
-      "target": {
-        "piece": "@activepieces/piece-zendesk",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -4604,6 +4592,7 @@
         "name": "ask_chatgpt",
         "kind": "action"
       },
+      "propMap": {"max_tokens":"maxTokens","prompt":"prompt"},
       "difficulty": "low",
       "manual": false
     },
@@ -4630,6 +4619,7 @@
         "name": "ask_gpt",
         "kind": "action"
       },
+      "propMap": {"max_tokens":"maxTokens","prompt":"prompt"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (deploymentId, maxTokens); escolher na importacao."
@@ -4969,11 +4959,7 @@
       "notes": "batch CSV Workato vira new_file; filtrar mime CSV na importacao."
     },
     "google_gemini/analyze_document": {
-      "target": {
-        "piece": "@activepieces/piece-google-gemini",
-        "name": "generate_content_with_filesearch",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "low",
       "manual": false
     },
@@ -5106,7 +5092,86 @@
     "hubspot/new_or_updated_object_batch": {
       "target": {
         "piece": "@activepieces/piece-hubspot",
-        "name": "custom_api_call",
+        "name": "new-or-updated-company",
+        "kind": "trigger"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "revisar o objeto (contact/deal/company), como new_or_updated_object."
+    },
+    "mongo/search_documents": {
+      "target": {
+        "piece": "@activepieces/piece-mongodb",
+        "name": "find_documents",
+        "kind": "action"
+      },
+      "difficulty": "medium",
+      "manual": false
+    },
+    "mongo/insert_documents_batch": {
+      "target": {
+        "piece": "@activepieces/piece-mongodb",
+        "name": "insert_documents",
+        "kind": "action"
+      },
+      "propMap": {"input_document":"documents","collection":"collection"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "aws_sqs/send_message": {
+      "target": {
+        "piece": "@activepieces/piece-amazon-sqs",
+        "name": "sendMessage",
+        "kind": "action"
+      },
+      "propMap": {"QueueUrl":"queueUrl","MessageBody":"messageBody"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "typeform/new_response": {
+      "target": {
+        "piece": "@activepieces/piece-typeform",
+        "name": "new_submission",
+        "kind": "trigger"
+      },
+      "difficulty": "low",
+      "manual": false
+    },
+    "qrcode/generate_qr_code": {
+      "target": {
+        "piece": "@activepieces/piece-qrcode",
+        "name": "text_to_qrcode",
+        "kind": "action"
+      },
+      "propMap": {"URL":"text"},
+      "difficulty": "low",
+      "manual": false
+    },
+    "xero/search_contacts": {
+      "target": {
+        "piece": "@activepieces/piece-xero",
+        "name": "xero_find_contact",
+        "kind": "action"
+      },
+      "propMap": {"Name":"value"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "xero/create_contact": {
+      "target": {
+        "piece": "@activepieces/piece-xero",
+        "name": "xero_create_contact",
+        "kind": "action"
+      },
+      "propMap": {"Name":"name"},
+      "difficulty": "medium",
+      "manual": false
+    },
+    "xero/create_purchase_order": {
+      "propMap": {"ContactID":"contact_id","line_items":"line_item"},
+      "target": {
+        "piece": "@activepieces/piece-xero",
+        "name": "xero_create_purchase_order",
         "kind": "action"
       },
       "difficulty": "medium",
@@ -5128,6 +5193,7 @@
         "name": "airtable_create_record",
         "kind": "action"
       },
+      "propMap": {"base_id":"base","table_id":"tableId"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (base, tableId); escolher na importacao."
@@ -5249,16 +5315,13 @@
         "name": "updated_list_item",
         "kind": "trigger"
       },
+      "propMap": {"list_id":"listId"},
       "difficulty": "medium",
       "manual": false,
       "notes": "Workato new+updated; piece tem new_list_item e updated_list_item separados. Prop obrigatoria que depende da conta do cliente (siteId, listId); escolher na importacao."
     },
     "smartsheet/get_row_by_id": {
-      "target": {
-        "piece": "@activepieces/piece-smartsheet",
-        "name": "find_rows_by_query",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5415,11 +5478,7 @@
       "manual": false
     },
     "box/upload_file_content": {
-      "target": {
-        "piece": "@activepieces/piece-box",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5595,11 +5654,7 @@
       "notes": "piece-shopify nao tem updated_order; mais perto e new_order."
     },
     "pipedrive/get_object": {
-      "target": {
-        "piece": "@activepieces/piece-pipedrive",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5622,11 +5677,7 @@
       "manual": false
     },
     "pipedrive/search_records_by_query": {
-      "target": {
-        "piece": "@activepieces/piece-pipedrive",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5724,11 +5775,7 @@
       "manual": false
     },
     "fresh_desk/update_ticket_v2": {
-      "target": {
-        "piece": "@activepieces/piece-freshdesk",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5782,6 +5829,7 @@
         "name": "downloadDocument",
         "kind": "action"
       },
+      "propMap": {"id":"document_id"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (document_id); escolher na importacao."
@@ -5792,6 +5840,7 @@
         "name": "create_work_item",
         "kind": "action"
       },
+      "propMap": {"type":"work_item_type","System__2e__Title":"title","project":"project"},
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (project, work_item_type, title); escolher na importacao."
@@ -5815,11 +5864,7 @@
       "manual": false
     },
     "bamboohr/create_employee": {
-      "target": {
-        "piece": "@activepieces/piece-bamboohr",
-        "name": "custom_api_call",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false
     },
@@ -5848,21 +5893,13 @@
       "manual": false
     },
     "pdf_tools/convert_to_pdf": {
-      "target": {
-        "piece": "@activepieces/piece-pdf",
-        "name": "textToPdf",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "medium",
       "manual": false,
       "notes": "ou imageToPdf conforme o input."
     },
     "cisco_spark/post_blocks_message": {
-      "target": {
-        "piece": "@activepieces/piece-webex",
-        "name": "createMessage",
-        "kind": "action"
-      },
+      "target": null,
       "difficulty": "low",
       "manual": false,
       "propMap": {

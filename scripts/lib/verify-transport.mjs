@@ -926,11 +926,41 @@ function matchesMaterializedVariable(step, action) {
 /** Declare só com schema, sem `data`. Não vira `put` e não consome o update. */
 function scalarDeclareIsEmpty(action) {
   if (action?.opKey !== 'workato_variable/declare_variable') return false;
-  const variables = action.input?.variables;
+  const input = action.input ?? {};
+  if (input.value != null && typeof input.name === 'string' && !input.variables) return false;
+  const variables = input.variables;
   if (!variables || typeof variables !== 'object' || !variables.schema) return false;
   const data = variables.data;
   if (data == null) return true;
   return typeof data === 'object' && !Array.isArray(data) && Object.keys(data).length === 0;
+}
+
+const ELIDED_SIZED_CREATE_LIST_SNIPPET = 'create_list elidido: o foreach itera o array de origem';
+const UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET = 'foi substituído por catch_webhook';
+const TODO_REVIEW_LABELS = [
+  'REVISAR: operação sem mapa',
+  'REVISAR: email',
+  'REVISAR: sms',
+  'AVISO: repeat adaptado',
+];
+
+function matchesElidedSizedCreateList(action, notes) {
+  if (collapseOpKey(action.opKey) !== 'workato_list/create_list' || !action.as) return false;
+  return notes.some(
+    (note) =>
+      String(note.content ?? '').includes(ELIDED_SIZED_CREATE_LIST_SNIPPET) &&
+      String(note.content ?? '').includes(action.as),
+  );
+}
+
+function hasCanvasNoteForTodoStep(notes, step) {
+  const name = String(step.name ?? '');
+  const display = String(step.displayName ?? '');
+  return notes.some((note) => {
+    const content = String(note.content ?? '');
+    if (!TODO_REVIEW_LABELS.some((label) => content.includes(label))) return false;
+    return content.includes(`\`${name}\``) || content.includes(name) || (display && content.includes(display));
+  });
 }
 
 /** `update_card` só com ids. A Workato não muda o card; o motor não emite o passo. */
@@ -1062,6 +1092,13 @@ export function findMissingActions(workatoActions, steps, operations, notes = []
     const asyncWait = String(action.opKey ?? '').endsWith('/wait_for_async_jobs');
     const found =
       (asyncWait && takeNote((note) => String(note?.content ?? '').includes(ASYNC_WAIT_NOTE))) ||
+      (!asyncWait &&
+        matchesElidedSizedCreateList(action, notes) &&
+        takeNote(
+          (note) =>
+            String(note.content ?? '').includes(ELIDED_SIZED_CREATE_LIST_SNIPPET) &&
+            String(note.content ?? '').includes(action.as),
+        )) ||
       (!asyncWait && openCards && take((step) => matchesOpenCards(step), action)) ||
       (!asyncWait && !openCards && entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action), action)) ||
       (!asyncWait && (entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
@@ -1339,6 +1376,7 @@ export function verifyTransport({
   operations = {},
   source = 'anexo',
   draftStatus = null,
+  routing = null,
 } = {}) {
   const tree = collectWorkatoTree(recipe);
   const trigger = flowTrigger(flow);
@@ -1355,7 +1393,8 @@ export function verifyTransport({
   const brokenVariables = collectBrokenVariables(steps);
   const emptyRepeats = collectEmptyRepeatSteps(steps);
   const emailGaps = collectEmailGaps(tree.actions, steps);
-  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations, canvasNotes(flow));
+  const flowNotes = canvasNotes(flow);
+  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations, flowNotes);
   const findings = [];
 
   const scheduleSteps = steps.filter((step) => pieceNameOf(step) === '@activepieces/piece-schedule');
@@ -1368,6 +1407,24 @@ export function verifyTransport({
       'bloqueia',
       'gatilho',
       `Workato clock/scheduled_event virou ${triggerPiece}`,
+      String(trigger?.name ?? 'trigger'),
+    ));
+  }
+
+  const triggerOpKey = tree.trigger?.provider && tree.trigger?.name
+    ? `${tree.trigger.provider}/${tree.trigger.name}`
+    : '';
+  const triggerMap = triggerOpKey ? lookupMap(operations, triggerOpKey) : null;
+  if (
+    triggerPiece === '@activepieces/piece-webhook' &&
+    String(trigger?.settings?.triggerName ?? '') === 'catch_webhook' &&
+    flowNotes.some((note) => String(note.content ?? '').includes(UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET)) &&
+    (!triggerMap?.target || triggerMap.target.kind !== 'trigger' || triggerMap.target.name !== 'catch_webhook')
+  ) {
+    findings.push(finding(
+      'bloqueia',
+      'gatilho placeholder',
+      `Gatilho Workato ${collapseOpKey(triggerOpKey)} sem equivalente; catch_webhook placeholder`,
       String(trigger?.name ?? 'trigger'),
     ));
   }
@@ -1536,6 +1593,18 @@ export function verifyTransport({
   }
 
   for (const step of steps) {
+    if (!isTodoPiece(step) || opNameOf(step) === 'REPEAT_UNSUPPORTED') continue;
+    if (!hasCanvasNoteForTodoStep(flowNotes, step)) {
+      findings.push(finding(
+        'revisar',
+        'TODO sem nota',
+        `passo ${step.name} (${pieceNameOf(step)}/${opNameOf(step)}) sem sticky note de revisão`,
+        step.name,
+      ));
+    }
+  }
+
+  for (const step of steps) {
     if (step.type !== 'LOOP_ON_ITEMS') continue;
     const items = String(step.settings?.items ?? '').trim();
     if (!items || items.includes('TODO')) {
@@ -1611,6 +1680,18 @@ export function verifyTransport({
     findings.push(finding('info', 'nome', `receita "${recipeName}" vs flow "${flowName}"`));
   }
 
+  if (routing?.destination === 'manual_revision') {
+    const reason = String(routing.blocked_reason ?? routing.blockedReason ?? 'manual_revision').trim();
+    const diags = routing.diagnostics ?? [];
+    const diag = diags
+      .map((d) => `${d.category ?? '?'}/${d.reason ?? '?'}`)
+      .filter(Boolean)
+      .join('; ');
+    const detail = diag && !reason.includes(diag) ? `${reason} — ${diag}` : reason;
+    const reviewOnly = diags.length > 0 && diags.every((d) => d.severity === 'REVIEW' || d.reason === 'FORMULA_REVIEW');
+    findings.push(finding(reviewOnly ? 'revisar' : 'bloqueia', 'manual_revision', detail.slice(0, 500)));
+  }
+
   const seen = new Set();
   const deduped = [];
   for (const item of findings) {
@@ -1655,6 +1736,13 @@ export function verifyTransport({
     bloqueia,
     revisar,
     info,
+    routing: routing
+      ? {
+          destination: routing.destination ?? null,
+          status: routing.status ?? null,
+          blocked_reason: routing.blocked_reason ?? routing.blockedReason ?? null,
+        }
+      : null,
   };
 }
 

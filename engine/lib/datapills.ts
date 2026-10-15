@@ -364,10 +364,19 @@ function convertCatalogFormula(src: string): string | null {
   const daysAgo = s.match(/^(\d+)\.days\.ago$/);
   if (daysAgo) return `subtract_days(now(); ${daysAgo[1]})`;
 
+  const yearsAgo = s.match(/^(\d+)\.years\.ago$/);
+  if (yearsAgo) return `subtract_days(now(); ${Number(yearsAgo[1]) * 365})`;
+
   const nowFmt = s.match(/^now\.strftime\((['"])([^'"\\]+)\1\)$/);
   if (nowFmt) {
     const tokens = strftimeToApTokens(nowFmt[2]!);
     if (tokens) return `format_date(now(); ${tokens})`;
+  }
+
+  const todayFmt = s.match(/^today(?:\(\))?\s*\.strftime\((['"])([^'"\\]+)\1\)$/);
+  if (todayFmt) {
+    const tokens = strftimeToApTokens(todayFmt[2]!);
+    if (tokens) return `format_date(today(); ${tokens})`;
   }
 
   const nowShift = s.match(/^\(now\s*-\s*(\d+)\.days\)\.strftime\((['"])([^'"\\]+)\2\)$/);
@@ -630,19 +639,65 @@ function strftimeToApTokens(format: string): string | null {
   return out.length ? out : null;
 }
 
-/** `.gsub(a, b).gsub(c, d)` sobre uma pill -> replace/remove aninhados. */
+/**
+ * `.gsub(a, b).gsub(c, d)` sobre uma pill -> replace/remove aninhados.
+ * Argumentos aceitos: literal seguro, pill, `pill.to_s` e `today.strftime`.
+ * Qualquer outro argumento deixa a cadeia inteira para o compilador.
+ */
 function parseGsubChain(s: string): string | null {
-  const head = s.match(/^(\{\{[^{}]+\}\})((?:\.gsub\("[^"\\]*",\s*"[^"\\]*"\))+)$/);
+  const head = s.match(/^(\{\{[^{}]+\}\})/);
   if (!head) return null;
   let expr = head[1]!;
-  for (const call of head[2]!.matchAll(/\.gsub\("([^"\\]*)",\s*"([^"\\]*)"\)/g)) {
-    const find = call[1]!;
-    const to = call[2]!;
-    if (!isSafeFormulaArg(find)) return null;
-    if (to.length && !isSafeFormulaArg(to)) return null;
-    expr = to.length ? `replace(${expr}; "${find}"; "${to}")` : `remove(${expr}; "${find}")`;
+  let i = head[1]!.length;
+  let calls = 0;
+  while (s.startsWith('.gsub(', i)) {
+    i += '.gsub('.length;
+    const find = parseGsubArg(s, i);
+    if (!find) return null;
+    i = skipGsubSpace(s, find.end);
+    if (s[i] !== ',') return null;
+    i = skipGsubSpace(s, i + 1);
+    const to = parseGsubArg(s, i);
+    if (!to) return null;
+    i = skipGsubSpace(s, to.end);
+    if (s[i] !== ')') return null;
+    i += 1;
+    expr = to.empty ? `remove(${expr}; ${find.expr})` : `replace(${expr}; ${find.expr}; ${to.expr})`;
+    calls += 1;
   }
+  if (!calls || skipGsubSpace(s, i) !== s.length) return null;
   return expr;
+}
+
+function skipGsubSpace(s: string, i: number): number {
+  while (s[i] === ' ' || s[i] === '\t') i += 1;
+  return i;
+}
+
+/** Argumento de `.gsub` com equivalente direto no catalogo AP. */
+function parseGsubArg(s: string, start: number): { expr: string; end: number; empty: boolean } | null {
+  const i = skipGsubSpace(s, start);
+  const pill = s.slice(i).match(/^(\{\{[^{}]+\}\})(\.to_s)?/);
+  if (pill) return { expr: pill[1]!, end: i + pill[0]!.length, empty: false };
+  const today = s.slice(i).match(/^today(?:\(\))?\s*\.strftime\((['"])([^'"\\]+)\1\)/);
+  if (today) {
+    const tokens = strftimeToApTokens(today[2]!);
+    if (!tokens) return null;
+    return { expr: `format_date(today(); ${tokens})`, end: i + today[0]!.length, empty: false };
+  }
+  const quote = s[i];
+  if (quote !== '"' && quote !== "'") return null;
+  let value = '';
+  let j = i + 1;
+  while (j < s.length && s[j] !== quote) {
+    if (s[j] === '\\') return null;
+    value += s[j];
+    j += 1;
+  }
+  if (s[j] !== quote) return null;
+  if (value.length === 0) return { expr: '""', end: j + 1, empty: true };
+  if (!isSafeFormulaArg(value)) return null;
+  return { expr: `"${value}"`, end: j + 1, empty: false };
 }
 
 /**
@@ -724,6 +779,8 @@ export type PillOptions = {
   omitDangling?: boolean;
   /** Nome iPaaS → origem Workato. Propriedade de conta e de projeto. */
   projectVariables?: Map<string, string>;
+  /** Campos do catch sem equivalente no iPaaS. O valor vira literal vazio. */
+  catchFieldGaps?: Set<string>;
 };
 
 /** Marcador interno. `convertPills` tira do texto antes de devolver. */
@@ -737,6 +794,19 @@ export const CATCH_ERROR_TOKEN = '{{__catch_error__}}';
 
 /** O erro do iPaaS não tem `type`. Some antes de gravar o campo. */
 const CATCH_TYPE_TOKEN = '\u0000catch-type\u0000';
+
+const CATCH_GAP_KEYS = new Set(['retry_count', 'uuid', 'step']);
+
+/** `message` aponta para o step que falhou. O resto não existe no iPaaS. */
+function renderCatchField(key: string, options: PillOptions | undefined): string | null {
+  if (key === 'message' || key === '') return CATCH_ERROR_TOKEN;
+  if (key === 'type') return CATCH_TYPE_TOKEN;
+  if (CATCH_GAP_KEYS.has(key)) {
+    options?.catchFieldGaps?.add(key);
+    return '';
+  }
+  return null;
+}
 
 function tidyCatch(text: string): string {
   if (!text.includes(CATCH_TYPE_TOKEN) && !text.includes(CATCH_ERROR_TOKEN)) return text;
@@ -1056,8 +1126,8 @@ function renderDataPill(
   // em ['error']['message'] (irmao de output). O `type` nao existe no iPaaS.
   if (dp.provider === 'catch' && path.every((element) => typeof element !== 'object')) {
     const key = path.filter((element) => typeof element === 'string').join('.');
-    if (key === 'message' || key === '') return CATCH_ERROR_TOKEN;
-    if (key === 'type') return CATCH_TYPE_TOKEN;
+    const caught = renderCatchField(key, options);
+    if (caught !== null) return caught;
   }
 
   if (line && options?.invalidAs?.has(line)) return '{{TODO_ref}}';
@@ -1352,6 +1422,10 @@ function convertWholeFlatDataPill(
 function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions): string {
   const parts = String(ref).split('.');
   if (parts.length < 2 || parts.some((part) => part === '')) return '{{TODO_pill}}';
+  if (parts[0] === 'catch') {
+    const caught = renderCatchField(parts.slice(2).join('.'), options);
+    if (caught !== null) return caught;
+  }
   const as = parts[1];
   const path = parts.slice(2).join('.');
   if (as && options?.invalidAs?.has(as)) return '{{TODO_ref}}';

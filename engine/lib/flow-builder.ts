@@ -13,8 +13,8 @@ import type {
   WorkatoCondition,
   WorkatoConditionsInput,
 } from './types.ts';
-import { collapseOpKey, lookupMap } from './collapse.ts';
-import { InvalidCompositionInputError, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
+import { collapseOpKey, lookupMap, withInheritedPropMap } from './collapse.ts';
+import { InvalidCompositionInputError, isBlockingDiagnostic, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
@@ -151,6 +151,14 @@ interface Ctx {
   projectVariables: Map<string, string>;
   /** Ids de data table Workato que já ganharam sticky note neste flow. */
   notedDataTableIds: Set<string>;
+  /** Metadados dos passos TODO (opKey Workato), para notas de revisão. */
+  todoStepMeta: Map<string, { opKey: string; displayName: string }>;
+  /** `as` de create_list elidido por retargetSizedListForeach. */
+  elidedSizedCreateLists: Set<string>;
+  /** Uma nota por flow: organizationId do Pipefy só alimenta o dropdown. */
+  pipefyOrgNoted?: boolean;
+  /** Campos de catch sem equivalente (`retry_count`, `uuid`). */
+  catchFieldGaps: Set<string>;
 }
 
 interface ComposedFormula {
@@ -161,7 +169,7 @@ interface ComposedFormula {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS' | 'TRIGGER' | 'UNMAPPED';
   content: string;
   anchorStepName?: string;
 }
@@ -234,6 +242,7 @@ function pills(input: string, ctx: Ctx, resolve = loopItemResolver(ctx)): string
     skippedAs: ctx.skippedAs,
     invalidAs: ctx.ambiguousAs,
     projectVariables: ctx.projectVariables,
+    catchFieldGaps: ctx.catchFieldGaps,
   });
 }
 
@@ -437,7 +446,28 @@ function waivedMissing(
   if (target.piece === PIPEFY_PIECE && target.name === 'getCardsByTitle') {
     out = out.filter((name) => name !== 'startFormFields');
   }
+  // organizationId só refresca o dropdown de pipes. onEnable/run usam pipeId;
+  // moveCard usa cardId e phaseId. A exceção é inviteUserToOrganization.
+  if (target.piece === PIPEFY_PIECE && target.name !== 'inviteUserToOrganization') {
+    out = out.filter((name) => name !== 'organizationId');
+    if (target.name === 'moveCard' && !blankProp(input.cardId) && !blankProp(input.phaseId)) {
+      out = out.filter((name) => name !== 'pipeId');
+    }
+    if (target.name === 'getCardsByPhase' && !blankProp(input.phaseId)) {
+      out = out.filter((name) => name !== 'pipeId');
+    }
+  }
   return out;
+}
+
+const PIPEFY_ORG_NOTE =
+  'Selecionar a organização no dropdown do iPaaS. A piece só usa organizationId para listar pipes.';
+
+function noteWaivedPipefyOrg(ctx: Ctx, target: MapTarget, input: Record<string, any>, anchor: string): void {
+  if (target.piece !== PIPEFY_PIECE || target.name === 'inviteUserToOrganization') return;
+  if (!blankProp(input.organizationId) || ctx.pipefyOrgNoted) return;
+  ctx.pipefyOrgNoted = true;
+  pushReviewNote(ctx, 'PROP', PIPEFY_ORG_NOTE, '', anchor);
 }
 
 function normalizeTargetValue(value: any, propType?: string, src?: string): any {
@@ -834,10 +864,11 @@ const CONTROL_FLOW_KEYWORDS = new Set([
 
 function buildSkipped(step: ParsedStep, ctx: Ctx): any | null {
   if (CONTROL_FLOW_KEYWORDS.has(step.keyword)) {
-    ctx.todos.push(
+    const message =
       `DESATIVADO (${step.comment || step.keyword}): bloco \`${step.keyword}\` estava ` +
-        'desligado na receita e nao foi migrado.',
-    );
+      'desligado na receita e nao foi migrado.';
+    ctx.todos.push(message);
+    pushReviewNote(ctx, 'REPEAT', message);
   }
   return null;
 }
@@ -1357,6 +1388,15 @@ export const REVIEW_MAPPER_LABEL = 'AVISO: mapper sem data';
 export const REVIEW_SHEETS_LABEL = 'REVISAR: coluna do find_rows';
 export const REVIEW_DOCS_LABEL = 'REVISAR: update_doc';
 export const REVIEW_PROP_LABEL = 'REVISAR: prop ausente';
+export const REVIEW_TRIGGER_LABEL = 'REVISAR: gatilho';
+export const REVIEW_UNMAPPED_LABEL = 'REVISAR: operação sem mapa';
+export const UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET = 'foi substituído por catch_webhook';
+export const ELIDED_SIZED_CREATE_LIST_SNIPPET = 'create_list elidido: o foreach itera o array de origem';
+const WEBHOOK_PIECE = '@activepieces/piece-webhook';
+export const NEW_UPDATED_CARD_NOTE =
+  'O gatilho Workato é new/updated card. O iPaaS não tem um gatilho que junte card criado e card atualizado. Este fluxo usa cardFieldUpdated, que dispara quando um campo muda. Conferir se a receita também precisava reagir a card criado.';
+export const PUBSUB_WEBHOOK_NOTE =
+  'O gatilho Workato é Pub/Sub (subscribe_to_topic) e virou catch_webhook. Atualize no sistema que publicava no tópico o endpoint novo deste webhook.';
 export const REVIEW_HTTP_LABEL = 'REVISAR: HTTP sem url';
 /** Frase estável da sticky note: o motor não entrega o arquivo de linhas. */
 export const LOOKUP_IMPORT_NOT_GENERATED =
@@ -1538,13 +1578,27 @@ function pushReviewNote(
     | 'PROP'
     | 'DOCS'
     | 'SHEETS'
-    | 'HTTP',
+    | 'HTTP'
+    | 'TRIGGER'
+    | 'UNMAPPED',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'HTTP' ? REVIEW_HTTP_LABEL : kind === 'PROP' ? REVIEW_PROP_LABEL : kind === 'DOCS' ? REVIEW_DOCS_LABEL : kind === 'SHEETS' ? REVIEW_SHEETS_LABEL : kind === 'MAPPER'
+    kind === 'UNMAPPED'
+      ? REVIEW_UNMAPPED_LABEL
+      : kind === 'TRIGGER'
+      ? REVIEW_TRIGGER_LABEL
+      : kind === 'HTTP'
+        ? REVIEW_HTTP_LABEL
+        : kind === 'PROP'
+          ? REVIEW_PROP_LABEL
+          : kind === 'DOCS'
+            ? REVIEW_DOCS_LABEL
+            : kind === 'SHEETS'
+              ? REVIEW_SHEETS_LABEL
+              : kind === 'MAPPER'
       ? REVIEW_MAPPER_LABEL
       : kind === 'GRAPHQL'
       ? REVIEW_GRAPHQL_LABEL
@@ -1584,7 +1638,19 @@ function pushReviewNote(
                             ? REVIEW_TEMPLATE_LABEL
                             : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'HTTP' ? 'review_http' : kind === 'PROP' ? 'review_prop' : kind === 'DOCS' ? 'review_docs' : kind === 'SHEETS' ? 'review_sheets' : kind === 'MAPPER'
+    kind === 'UNMAPPED'
+      ? 'review_unmapped'
+      : kind === 'TRIGGER'
+        ? 'review_trigger'
+        : kind === 'HTTP'
+          ? 'review_http'
+          : kind === 'PROP'
+            ? 'review_prop'
+            : kind === 'DOCS'
+              ? 'review_docs'
+              : kind === 'SHEETS'
+                ? 'review_sheets'
+                : kind === 'MAPPER'
       ? 'review_mapper'
       : kind === 'GRAPHQL'
       ? 'review_graphql'
@@ -1697,7 +1763,14 @@ function placeCanvasNotes(trigger: any, pending: PendingCanvasNote[]): any[] {
   });
 }
 
-function todoPieceStep(name: string, displayName: string, input: Record<string, any>, ctx: Ctx): any {
+function todoPieceStep(
+  name: string,
+  displayName: string,
+  input: Record<string, any>,
+  ctx: Ctx,
+  opKey = '',
+): any {
+  if (opKey) ctx.todoStepMeta.set(name, { opKey, displayName });
   const converted = resolveFormulas(deepConvert(input, ctx), ctx, name, input);
   return {
     name,
@@ -2809,6 +2882,27 @@ function copyProp(input: Record<string, any>, dest: string, ...sources: string[]
 }
 
 /** Renomeia props Workato para o nome obrigatório da piece quando o valor já está no input. */
+/** create_record do Pipedrive vira a action do objeto (organization, person, deal). */
+function retargetPipedriveCreate(
+  entry: MapEntry | undefined,
+  opKey: string,
+  source: Record<string, any>,
+): MapEntry | undefined {
+  if (!entry?.target || collapseOpKey(opKey) !== 'pipedrive/create_record') return entry;
+  const object = String(source.object ?? '').trim().toLowerCase();
+  const name =
+    object === 'organization' ? 'create-organization'
+    : object === 'person' ? 'create-person'
+    : object === 'deal' ? 'create-deal'
+    : '';
+  if (!name) return { ...entry, target: null };
+  return {
+    ...entry,
+    target: { piece: '@activepieces/piece-pipedrive', name, kind: 'action' },
+    propMap: { ...(entry.propMap ?? {}), name: 'name', title: 'title' },
+  };
+}
+
 function fillKnownProps(
   target: MapTarget,
   input: Record<string, any>,
@@ -2849,6 +2943,23 @@ function fillKnownProps(
   if (target.piece === '@activepieces/piece-date-helper' && target.name === 'get_current_date') {
     if (blankProp(input.timeZone)) input.timeZone = 'America/Sao_Paulo';
     if (blankProp(input.timeFormat)) input.timeFormat = 'yyyy-MM-dd HH:mm:ss';
+  }
+
+  if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'google_calendar_get_events') {
+    const raw = sourceInput.calendar_name;
+    if (blankProp(input.calendar_id) && typeof raw === 'string' && raw.trim() && !/\s/.test(raw)) {
+      input.calendar_id = deepConvert(raw, ctx);
+    }
+  }
+
+  if (target.piece === '@activepieces/piece-snowflake' && target.name === 'insert-row') {
+    const table = typeof sourceInput.table === 'string' ? sourceInput.table.trim() : '';
+    const parts = table.split('.');
+    if (parts.length === 3 && parts.every((part) => part.length > 0 && !/\s/.test(part))) {
+      if (blankProp(input.database)) input.database = parts[0];
+      if (blankProp(input.schema)) input.schema = parts[1];
+      if (blankProp(input.table)) input.table = parts[2];
+    }
   }
 
   if (target.piece === '@activepieces/piece-google-calendar' && target.name === 'create_google_calendar_event') {
@@ -3041,6 +3152,26 @@ function fillKnownProps(
     }
   }
 
+  if (target.piece === '@activepieces/piece-airtable' && target.name === 'airtable_create_record') {
+    const fields: Record<string, any> =
+      input.fields && typeof input.fields === 'object' && !Array.isArray(input.fields)
+        ? { ...input.fields }
+        : {};
+    for (const [key, value] of Object.entries(sourceInput)) {
+      if (!/^fld[A-Za-z0-9]{14}$/.test(key) || value === undefined || value === '=skip') continue;
+      fields[key] = deepConvert(value, ctx);
+      delete input[key];
+    }
+    if (Object.keys(fields).length) input.fields = fields;
+  }
+
+  if (target.piece === PIPEFY_PIECE && target.name === 'createCard') {
+    if (Array.isArray(input.startFormFields)) {
+      const fields = fieldRowsToObject(input.startFormFields);
+      if (fields) input.startFormFields = fields;
+    }
+  }
+
   if (target.piece === PIPEFY_PIECE && target.name === 'createRecord') {
     copyProp(input, 'organizationId', 'organization_id');
     if (!blankProp(input.organizationId)) delete input.organization_id;
@@ -3068,6 +3199,8 @@ function fillKnownProps(
   if (target.name === 'zipFiles') {
     copyProp(input, 'files', 'file_list');
     if (!blankProp(input.files)) delete input.file_list;
+    // compress_file da Workato nao traz nome de saida; zipFiles exige outputFileName.
+    if (blankProp(input.outputFileName)) input.outputFileName = 'archive.zip';
   }
 
   fillTablesProps(target, input);
@@ -3165,6 +3298,21 @@ function fillKnownProps(
     copySource(input, sourceInput, ctx, 'phaseId', 'phase_id');
     copySource(input, sourceInput, ctx, 'pipeId', 'pipe_id');
     copySource(input, sourceInput, ctx, 'organizationId', 'organization_id');
+  }
+  if (target.piece === PIPEFY_PIECE && target.name === 'getCardsByPhase') {
+    copySource(input, sourceInput, ctx, 'phaseId', 'phase_id');
+    copySource(input, sourceInput, ctx, 'pipeId', 'pipe_id');
+    copySource(input, sourceInput, ctx, 'organizationId', 'organization_id');
+    if (!blankProp(input.phaseId)) delete input.phase_id;
+    if (!blankProp(input.pipeId)) delete input.pipe_id;
+    if (!blankProp(input.organizationId)) delete input.organization_id;
+  }
+  if (target.piece === PIPEFY_PIECE && target.name === 'deleteCard') {
+    copySource(input, sourceInput, ctx, 'cardId', 'Card_ID', 'card_id');
+    if (!blankProp(input.cardId)) {
+      delete input.Card_ID;
+      delete input.card_id;
+    }
   }
   if (target.piece === '@activepieces/piece-microsoft-sharepoint' && target.name === 'microsoft_sharepoint_upload_file') {
     copySource(input, sourceInput, ctx, 'fileName', 'file_name');
@@ -3787,8 +3935,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (variable) return variable;
 
   const opKey = step.opKey ?? `${step.provider}/${step.name}`;
-  let entry = lookupMap(ctx.merged, opKey);
+  let entry = withInheritedPropMap(ctx.merged, opKey, lookupMap(ctx.merged, opKey));
   let sourceInput = resolveZeroPhaseInput(step.input ?? {}, step.phasePickLabel, ctx.phasesByPipe);
+  entry = retargetPipedriveCreate(entry, opKey, sourceInput);
   if (entry?.target && collapseOpKey(opKey) === 'clock/wait_until_time') {
     const resolved = resolveWaitUntilTime(sourceInput, ctx.merged);
     entry = resolved.entry;
@@ -3880,13 +4029,13 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       ctx,
       email ? 'EMAIL' : 'SMS',
       email
-        ? 'Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.'
-        : 'SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.',
+        ? `Passo \`${name}\`. Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.`
+        : `Passo \`${name}\`. SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.`,
       '',
       name,
     );
     const input = resolveFormulas(convInput(sourceInput, undefined, ctx), ctx, name, sourceInput);
-    return todoPieceStep(name, display, input, ctx);
+    return todoPieceStep(name, display, input, ctx, channelOp);
   }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
@@ -3976,7 +4125,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       return buildChain(step.children, ctx) ?? null;
     }
     ctx.todos.push(`NAO MAPEADA (${name}): "${opKey}" -> definir mapa (add-map).`);
-    return todoPieceStep(name, display, sourceInput, ctx);
+    return todoPieceStep(name, display, sourceInput, ctx, collapseOpKey(opKey));
   }
 
   let t = entry.target;
@@ -4126,6 +4275,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
   const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
+  noteWaivedPipefyOrg(ctx, t, input, name);
   if (missing.length) {
     ctx.todos.push(`PROPS (${name}): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
     ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: name, count: missing.length });
@@ -4301,9 +4451,9 @@ function convertCondition(
   const wrapTextCase = (value: string, source: string) =>
     (caseMethod ? wrapApCase(value, caseMethod, isRubyExpression(source)) : value);
   if (!mapped) {
-    ctx.todos.push(
-      `OPERANDO (${operand || 'vazio'}): sem equivalente no AP; virou igualdade — revisar.`,
-    );
+    const message = `OPERANDO (${operand || 'vazio'}): sem equivalente no AP; virou igualdade — revisar.`;
+    ctx.todos.push(message);
+    pushReviewNote(ctx, 'FORMULA', message);
     return cellGroups(
       {
         operator: 'TEXT_EXACTLY_MATCHES',
@@ -4317,9 +4467,9 @@ function convertCondition(
     );
   }
   if (mapped.approximated) {
-    ctx.todos.push(
-      `OPERANDO (${operand}): traduzido como ${mapped.operator} — revisar o caso nil.`,
-    );
+    const message = `OPERANDO (${operand}): traduzido como ${mapped.operator} — revisar o caso nil.`;
+    ctx.todos.push(message);
+    pushReviewNote(ctx, 'FORMULA', message);
   }
   if (mapped.unary) {
     return cellGroups({ operator: mapped.operator, firstValue }, false);
@@ -5016,7 +5166,9 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
     return buildStatusPoll(step, ctx, name, exit, seconds);
   }
   if (exit && conditionsOf(asConditionsInput(exit.input)).length) {
-    ctx.todos.push('REVIEW (' + name + '): conferir teto artificial da adaptacao condicional.');
+    const reviewCap = 'REVIEW (' + name + '): conferir teto artificial da adaptacao condicional.';
+    ctx.todos.push(reviewCap);
+    pushReviewNote(ctx, 'REPEAT', reviewCap, '', name);
     ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
     return buildConditionalRepeat(step, ctx, name, exit);
   }
@@ -5581,7 +5733,7 @@ function gateOnTriggerFilter(root: ParsedStep, nextAction: any | undefined, ctx:
 function buildTrigger(root: ParsedStep, ctx: Ctx): any {
   noteWorkatoDataTable(ctx, root, 'trigger');
   const opKey = root.opKey ?? `${root.provider}/${root.name}`;
-  const entry = lookupMap(ctx.merged, opKey);
+  const entry = withInheritedPropMap(ctx.merged, opKey, lookupMap(ctx.merged, opKey));
   if (String(root.provider ?? '').includes('recipe_function') && root.name === 'execute') {
     ctx.subflowResultLabels = resultLabelsFromSchema(root.input?.result_schema_json);
   }
@@ -5600,6 +5752,12 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     }
     input = fillKnownProps(t, input, root.input ?? {}, ctx);
     if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
+    if (collapseOpKey(opKey) === 'pipefy/new_updated_card' && t.name === 'cardFieldUpdated') {
+      pushReviewNote(ctx, 'TRIGGER', NEW_UPDATED_CARD_NOTE, '', 'trigger');
+    }
+    if (collapseOpKey(opKey) === 'workato_pub_sub/subscribe_to_topic' && t.name === 'catch_webhook') {
+      pushReviewNote(ctx, 'TRIGGER', PUBSUB_WEBHOOK_NOTE, '', 'trigger');
+    }
     if (opKey === 'clock/scheduled_event' && t.name === 'cron_expression') {
       const cron = workatoScheduleToCron(root.input);
       if (cron) input.cronExpression = pills(cron, ctx);
@@ -5626,6 +5784,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     // after it would create a reference to a value unavailable at configuration.
     input = resolveFormulas(input, ctx, 'trigger', root.input, false);
     const missing = waivedMissing(t, input, root.input ?? {}, missingRequiredProps(ctx, t, input));
+    noteWaivedPipefyOrg(ctx, t, input, 'trigger');
     if (missing.length) {
       ctx.todos.push(`PROPS (trigger): preencher obrigatorias ausentes: ${missing.join(', ')}.`);
       ctx.diagnostics.push({ category: 'MISSING_PROPERTY', reason: 'MISSING_REQUIRED_PROPERTY', action: 'CHECK_DOCUMENTATION', stepName: 'trigger', count: missing.length });
@@ -5648,18 +5807,32 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     };
   }
   ctx.todos.push(`TRIGGER nao mapeado: "${opKey}" -> definir mapa.`);
+  ctx.diagnostics.push({
+    category: 'UNSUPPORTED_OPERATION',
+    reason: 'UNMAPPED_OPERATION',
+    action: 'CHECK_DOCUMENTATION',
+    stepName: 'trigger',
+  });
+  ctx.piecesUsed.add(WEBHOOK_PIECE);
+  pushReviewNote(
+    ctx,
+    'TRIGGER',
+    `Gatilho Workato \`${collapseOpKey(opKey)}\` não tem equivalente; ${UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET}. Configure o sistema de origem para chamar este endpoint ou escolha o gatilho correto.`,
+    '',
+    'trigger',
+  );
   return {
     name: 'trigger',
-    valid: false,
+    valid: true,
     displayName: root.name || 'Gatilho',
     nextAction,
     type: 'PIECE_TRIGGER',
     settings: {
       propertySettings: {},
-      pieceName: TODO_PIECE,
-      pieceVersion: '~latest',
-      triggerName: TODO_PIECE,
-      input: deepConvert(root.input ?? {}, ctx),
+      pieceName: WEBHOOK_PIECE,
+      pieceVersion: pieceVersion(ctx, WEBHOOK_PIECE),
+      triggerName: 'catch_webhook',
+      input: {},
     },
     lastUpdatedDate: NOW,
   };
@@ -5690,14 +5863,71 @@ function collectAmbiguousAliases(root: ParsedStep): Set<string> {
 /** Audit every generated consumer, including trigger, CODE and nested branches.
  * Only generated names and counts enter this diagnostic, never source payloads.
  */
+/** Compiled formulas, trigger filters and compiled routers stay visible without failing the flow.
+ * A broken condition still marks the generated step `valid: false`, which blocks separately.
+ */
+function isNonBlockingReviewTodo(todo: string): boolean {
+  if (todo.startsWith('FORMULA (')) return true;
+  if (todo.startsWith('LISTA (') && todo.includes('Conferir se era para iterar.')) return true;
+  if (todo.startsWith('TRIGGER FILTER (')) return true;
+  if (todo.startsWith('DESATIVADO (')) return true;
+  if (todo.startsWith('OPERANDO (')) return true;
+  if (todo.startsWith('LOOKUP (')) return true;
+  if (todo.startsWith('REVIEW (') && todo.includes('teto artificial da adaptacao condicional')) return true;
+  if (
+    todo.startsWith('ROUTER (') &&
+    (todo.includes('"elsif" viraram ramos do router') || todo.includes('todos os ramos terminam em "stop"'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Steps with valid:false block the flow. Review-only diagnostics do not. */
+function treeHasInvalidStep(step: any): boolean {
+  if (!step) return false;
+  if (step.valid === false) return true;
+  const branches = step.continueOnFailureBranches;
+  return treeHasInvalidStep(step.nextAction)
+    || treeHasInvalidStep(step.firstLoopAction)
+    || (step.children ?? []).some((child: any) => treeHasInvalidStep(child))
+    || treeHasInvalidStep(step.onFailureAction)
+    || treeHasInvalidStep(branches?.onSuccess)
+    || treeHasInvalidStep(branches?.onFailure);
+}
+
+function stepHasTodoReviewNote(ctx: Ctx, stepName: string): boolean {
+  const kinds = new Set<PendingCanvasNote['kind']>(['UNMAPPED', 'EMAIL', 'SMS', 'REPEAT']);
+  return ctx.canvasNotes.some((note) => note.anchorStepName === stepName && kinds.has(note.kind));
+}
+
 function auditConversion(step: any, ctx: Ctx): void {
   if (!step) return;
   if (ctx.diagnostics.some((item) => item.stepName === step.name && item.category === 'CODE_TRANSLATION_REQUIRED')) {
     step.valid = false;
   }
-  if (step.settings?.pieceName === TODO_PIECE && !ctx.diagnostics.some((item) => item.stepName === step.name && item.category === 'UNSUPPORTED_OPERATION')) {
+  if (step.settings?.pieceName === TODO_PIECE) {
     const controlFlow = step.settings?.actionName === REPEAT_ACTION;
-    ctx.diagnostics.push({ category: 'UNSUPPORTED_OPERATION', reason: controlFlow ? 'CONTROL_FLOW_UNSUPPORTED' : 'UNMAPPED_OPERATION', action: controlFlow ? 'PRODUCT_DECISION' : 'CHECK_DOCUMENTATION', stepName: step.name });
+    if (!ctx.diagnostics.some((item) => item.stepName === step.name && item.category === 'UNSUPPORTED_OPERATION')) {
+      ctx.diagnostics.push({
+        category: 'UNSUPPORTED_OPERATION',
+        reason: controlFlow ? 'CONTROL_FLOW_UNSUPPORTED' : 'UNMAPPED_OPERATION',
+        action: controlFlow ? 'PRODUCT_DECISION' : 'CHECK_DOCUMENTATION',
+        stepName: step.name,
+      });
+    }
+    if (!controlFlow && !stepHasTodoReviewNote(ctx, step.name)) {
+      const meta = ctx.todoStepMeta.get(step.name);
+      const opKey = meta?.opKey || 'desconhecido';
+      const display = meta?.displayName || step.displayName || step.name;
+      pushReviewNote(
+        ctx,
+        'UNMAPPED',
+        `Passo \`${step.name}\` (\`${display}\`). Operação Workato \`${opKey}\` não tem piece equivalente no iPaaS. O passo ficou como TODO; reimplementar manualmente.`,
+        '',
+        step.name,
+      );
+    }
   }
   const unresolved: string[] = [];
   collectTodoMarkers(step.settings?.input, '', unresolved);
@@ -5726,8 +5956,166 @@ function auditConversion(step: any, ctx: Ctx): void {
     ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'INCOMPLETE_STEP', action: 'MANUAL_REVIEW', stepName: step.name });
   }
   auditConversion(step.nextAction, ctx);
+  auditConversion(step.firstLoopAction, ctx);
   for (const child of step.children ?? []) auditConversion(child, ctx);
   auditConversion(step.onFailureAction, ctx);
+  auditConversion(step.continueOnFailureBranches?.onSuccess, ctx);
+  auditConversion(step.continueOnFailureBranches?.onFailure, ctx);
+}
+
+function dpPayload(fragment: string): any | null {
+  try {
+    const value = JSON.parse(fragment.replace(/\\'/g, "'"));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `size` que é só `<array>.length`. Lista sem itens, usada como índice. */
+function sizedArrayLength(input: Record<string, any>): { raw: string; dp: any } | null {
+  const keys = Object.keys(input).filter((key) => {
+    const value = input[key];
+    return value != null && value !== '' && value !== '=skip';
+  });
+  if (keys.length !== 1 || keys[0] !== 'size') return null;
+  const raw = String(input.size).trim().replace(/^=\s*/, '');
+  const match = raw.match(/^(?:#\{)?_dp\('((?:\\'|[^'])*)'\)\}?\.length$/);
+  if (!match) return null;
+  const dp = dpPayload(match[1]!);
+  if (!dp || !Array.isArray(dp.path)) return null;
+  return { raw: match[1]!, dp };
+}
+
+function sameDataPill(left: any, right: any): boolean {
+  return !!left && !!right
+    && left.pill_type === right.pill_type
+    && left.provider === right.provider
+    && String(left.line ?? '') === String(right.line ?? '')
+    && JSON.stringify(left.path ?? null) === JSON.stringify(right.path ?? null);
+}
+
+function foreachSourceListLine(source: string | undefined): string | null {
+  if (!source) return null;
+  const match = source.match(/_dp\('((?:\\'|[^'])*)'\)/);
+  if (!match) return null;
+  const dp = dpPayload(match[1]!);
+  if (!dp || !Array.isArray(dp.path) || dp.path[0] !== 'list') return null;
+  return dp.line == null ? null : String(dp.line);
+}
+
+const LIST_INDEX_SUBSCRIPT = /_dp\('((?:\\'|[^'])*)'\)\[_dp\('((?:\\'|[^'])*)'\)\]/g;
+
+function rewriteIndexSizedStrings(
+  step: ParsedStep,
+  foreachAs: string,
+  arrayDp: any,
+  itemPill: string,
+  apply: boolean,
+): { hits: number; foreign: boolean } {
+  let hits = 0;
+  let foreign = false;
+  const visit = (value: string, set: (next: string) => void) => {
+    const indexes = [...value.matchAll(/_dp\('((?:\\'|[^'])*)'\)/g)];
+    for (const found of indexes) {
+      const dp = dpPayload(found[1]!);
+      if (dp?.pill_type === 'foreach_meta' && dp.key === 'index' && String(dp.line) === foreachAs) {
+        const at = found.index ?? 0;
+        const before = value.slice(0, at);
+        if (!/_dp\('(?:\\'|[^'])*'\)\[$/.test(before)) foreign = true;
+      }
+    }
+    LIST_INDEX_SUBSCRIPT.lastIndex = 0;
+    const next = value.replace(LIST_INDEX_SUBSCRIPT, (whole, arrayRaw: string, indexRaw: string) => {
+      const index = dpPayload(indexRaw);
+      if (!(index?.pill_type === 'foreach_meta' && index.key === 'index' && String(index.line) === foreachAs)) {
+        return whole;
+      }
+      if (!sameDataPill(dpPayload(arrayRaw), arrayDp)) {
+        foreign = true;
+        return whole;
+      }
+      hits += 1;
+      return apply ? itemPill : whole;
+    });
+    if (apply && next !== value) set(next.replace(/^=\s*(#\{_dp\()/, '$1'));
+  };
+  const walkValue = (holder: any) => {
+    if (typeof holder === 'string') return;
+    if (Array.isArray(holder)) {
+      holder.forEach((item, index) => {
+        if (typeof item === 'string') visit(item, (next) => { holder[index] = next; });
+        else walkValue(item);
+      });
+      return;
+    }
+    if (!holder || typeof holder !== 'object') return;
+    for (const key of Object.keys(holder)) {
+      const value = holder[key];
+      if (typeof value === 'string') visit(value, (next) => { holder[key] = next; });
+      else walkValue(value);
+    }
+  };
+  for (const child of step.children) {
+    walkValue(child.input);
+    walkValue(child.filter);
+    const nested = rewriteIndexSizedStrings(child, foreachAs, arrayDp, itemPill, apply);
+    hits += nested.hits;
+    foreign = foreign || nested.foreign;
+  }
+  return { hits, foreign };
+}
+
+function stepReferencesLine(step: ParsedStep, line: string, skip: ParsedStep): boolean {
+  if (step !== skip) {
+    const blob = JSON.stringify({ input: step.input, source: step.source, filter: step.filter });
+    if (blob.includes(`"line":"${line}"`) || blob.includes(`\\"line\\":\\"${line}\\"`)) return true;
+  }
+  return step.children.some((child) => stepReferencesLine(child, line, skip));
+}
+
+/**
+ * `create_list` só com `size = array.length` gera lista vazia. O foreach usa o
+ * índice para ler `array[index]`. O loop passa a iterar o array e o índice vira o item.
+ * Tamanho literal continua lista vazia: não há elementos para recuperar.
+ */
+function retargetSizedListForeach(root: ParsedStep): Set<string> {
+  const elided = new Set<string>();
+  const lists: Array<{ line: string; raw: string; dp: any; step: ParsedStep }> = [];
+  const walk = (step: ParsedStep) => {
+    const op = step.opKey ? collapseOpKey(step.opKey) : '';
+    if (op === 'workato_list/create_list' && step.as && !step.skip) {
+      const sized = sizedArrayLength(step.input ?? {});
+      if (sized) lists.push({ line: step.as, raw: sized.raw, dp: sized.dp, step });
+    }
+    step.children.forEach(walk);
+  };
+  walk(root);
+  for (const list of lists) {
+    const foreaches: ParsedStep[] = [];
+    const find = (step: ParsedStep) => {
+      if (step.keyword === 'foreach' && foreachSourceListLine(step.source) === list.line) foreaches.push(step);
+      step.children.forEach(find);
+    };
+    find(root);
+    if (foreaches.length !== 1 || !foreaches[0]!.as) continue;
+    const foreach = foreaches[0]!;
+    const itemPill = `#{_dp('${JSON.stringify({
+      pill_type: 'output',
+      provider: 'foreach',
+      line: foreach.as,
+      path: [],
+    })}')}`;
+    const planned = rewriteIndexSizedStrings(foreach, foreach.as!, list.dp, itemPill, false);
+    if (!planned.hits || planned.foreign) continue;
+    rewriteIndexSizedStrings(foreach, foreach.as!, list.dp, itemPill, true);
+    foreach.source = `#{_dp('${list.raw}')}`;
+    if (!stepReferencesLine(root, list.line, list.step)) {
+      list.step.skip = true;
+      elided.add(list.line);
+    }
+  }
+  return elided;
 }
 
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
@@ -5757,7 +6145,20 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     connectionsByProvider: recipe.connectionsByProvider ?? {},
     projectVariables: new Map(),
     notedDataTableIds: new Set(),
+    todoStepMeta: new Map(),
+    elidedSizedCreateLists: new Set(),
+    catchFieldGaps: new Set(),
   };
+  ctx.elidedSizedCreateLists = retargetSizedListForeach(recipe.root);
+  for (const as of ctx.elidedSizedCreateLists) {
+    pushReviewNote(
+      ctx,
+      'VARS',
+      `${ELIDED_SIZED_CREATE_LIST_SNIPPET} (as \`${as}\`).`,
+      '',
+      undefined,
+    );
+  }
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
   assignNames(recipe.root, ctx, true);
   if (ctx.ambiguousAs.size) {
@@ -5768,6 +6169,15 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
   notePendingJobContext(ctx, lastStepName(trigger));
   noteProjectVariables(ctx, lastStepName(trigger));
   auditConversion(trigger, ctx);
+  if (ctx.catchFieldGaps.size) {
+    pushReviewNote(
+      ctx,
+      'CATCH',
+      `Campos do catch sem equivalente no iPaaS (${[...ctx.catchFieldGaps].join(', ')}). O valor ficou vazio.`,
+      '',
+      lastStepName(trigger),
+    );
+  }
   if (ctx.todos.length && !ctx.diagnostics.length) {
     ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', count: ctx.todos.length });
   }
@@ -5787,7 +6197,9 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
       {
         displayName: recipe.name,
         trigger,
-        valid: ctx.todos.length === 0,
+        valid: !ctx.todos.some((todo) => !isNonBlockingReviewTodo(todo))
+          && !ctx.diagnostics.some(isBlockingDiagnostic)
+          && !treeHasInvalidStep(trigger),
         schemaVersion: '20',
         notes: placeCanvasNotes(trigger, ctx.canvasNotes),
       },

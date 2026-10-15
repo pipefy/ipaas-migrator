@@ -8,6 +8,8 @@ const RULES: [RegExp, string][] = [
   [/new_connector_4_connector_186728_1620754526/i, 'whatsapp'],
   [/new_connector_4_connector_186728_1623952876/i, 'pdf'],
   [/new_connector_4_connector_186728_1617038418/i, 'custom_jobs'],
+  [/new_connector_4_connector_186728_1623445777/i, 'qrcode'],
+  [/docusign_secondary/i, 'docusign'],
   [/new_connector_21_connector_186728/i, 'omie'],
   [/new_connector_22_connector_186728/i, 'lead'],
   [/^slack/i, 'slack'],
@@ -69,6 +71,33 @@ export class AmbiguousMigrationMapError extends Error {
     super('AP-MIGRATION-AMBIGUOUS-MAP');
     this.name = 'AmbiguousMigrationMapError';
   }
+}
+
+type InheritedMapEntry = {
+  target?: { piece: string; name: string; kind: string } | null;
+  propMap?: Record<string, string>;
+};
+
+/** Entrada exata sem propMap herda o da chave canônica quando o alvo é o mesmo. */
+export function withInheritedPropMap<T extends InheritedMapEntry>(
+  merged: Record<string, T>,
+  opKey: string,
+  entry: T | undefined,
+): T | undefined {
+  if (!entry?.target || (entry.propMap && Object.keys(entry.propMap).length > 0)) return entry;
+  const collapsed = collapseOpKey(opKey);
+  if (collapsed === opKey) return entry;
+  const canonical = merged[collapsed];
+  const target = canonical?.target;
+  if (!canonical?.propMap || !target) return entry;
+  if (
+    target.piece !== entry.target.piece ||
+    target.name !== entry.target.name ||
+    target.kind !== entry.target.kind
+  ) {
+    return entry;
+  }
+  return { ...entry, propMap: canonical.propMap };
 }
 
 export function lookupMap<T>(merged: Record<string, T>, opKey: string): T | undefined {

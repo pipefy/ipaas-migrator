@@ -44,10 +44,18 @@ export function diagnosticsForError(error: unknown): MigrationDiagnostic[] {
   return [];
 }
 
+export function diagnosticSeverity(diagnostic: MigrationDiagnostic): 'ERROR' | 'REVIEW' {
+  return diagnostic.severity ?? (diagnostic.reason === 'FORMULA_REVIEW' || diagnostic.reason === 'REVIEW_PENDING' ? 'REVIEW' : 'ERROR');
+}
+
+export function isBlockingDiagnostic(diagnostic: MigrationDiagnostic): boolean {
+  return diagnosticSeverity(diagnostic) === 'ERROR';
+}
+
 export function uniqueDiagnostics(diagnostics: MigrationDiagnostic[]): MigrationDiagnostic[] {
   const normalized = diagnostics.map<MigrationDiagnostic>((diagnostic) => ({
     ...diagnostic,
-    severity: diagnostic.severity ?? (diagnostic.reason === 'FORMULA_REVIEW' || diagnostic.reason === 'REVIEW_PENDING' ? 'REVIEW' : 'ERROR'),
+    severity: diagnosticSeverity(diagnostic),
   }));
   return [...new Map(normalized.map((diagnostic) => [JSON.stringify(diagnostic), diagnostic])).values()];
 }

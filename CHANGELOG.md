@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.0 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.1 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.1 — 15 out 2026
+
+Mesmo motor da release oficial **1.12.19**: gatilho sem mapa vira webhook com nota, conversão com só revisão deixa de marcar o flow inválido, e a verificação de transporte lê o roteamento do lote.
+
+- Gatilho sem equivalente: `catch_webhook` e nota no canvas; Pub/Sub e `new_updated_card` explicam a troca.
+- Passo TODO sem mapa precisa de sticky; transporte acusa placeholder e TODO sem nota.
+- `create_list` elidido quando o foreach iterava por índice no array de origem.
+- Mais mapas e props (Pipedrive, Pipefy, Snowflake, Xero, Mongo, SQS, QR code, entre outros).
+- `migrador-workato-cliente-navegador-0.7.1.tgz`
 
 ## 0.7.0 — 13 out 2026
 

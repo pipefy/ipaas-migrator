@@ -220,7 +220,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const incomplete = todos.length > 0 || flow.flows.some((entry: any) => entry.valid !== true);
+  const hasBlockingDiagnostic = diagnostics.some((item) => item.severity === 'ERROR');
+  const incomplete = hasBlockingDiagnostic || flow.flows.some((entry: any) => entry.valid !== true);
   emit(flow, diagram, {
     status: incomplete ? 'ERROR' : 'OK',
     destination: incomplete ? 'manual_revision' : 'ipaas_ready',

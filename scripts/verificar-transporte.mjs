@@ -131,7 +131,22 @@ const operations = existsSync(mapPath) ? (readJson(mapPath).operations ?? {}) : 
 const source = live ? 'live' : 'anexo';
 const flow = live ?? anexo;
 const draftStatus = liveMeta.draftStatus ?? flow?.status ?? null;
-const report = verifyTransport({ recipe, flow, operations, source, draftStatus });
+let routing = null;
+const routingCandidates = [
+  outDir ? resolve(outDir, 'routing.json') : null,
+  resolve(dirname(recipePath), 'routing.json'),
+  resolve(dirname(flowPath), 'routing.json'),
+].filter(Boolean);
+for (const routingPath of routingCandidates) {
+  if (!existsSync(routingPath)) continue;
+  try {
+    routing = readJson(routingPath);
+    break;
+  } catch {
+    /* ignora */
+  }
+}
+const report = verifyTransport({ recipe, flow, operations, source, draftStatus, routing });
 report.live = { ok: liveMeta.ok === true, reason: liveMeta.reason ?? null, http: liveMeta.http ?? null };
 report.comment = formatComment(report, pipeId || report.recipeId || 'hospedeiro');
 report.chat = formatChat(report, pipeId || report.recipeId || 'hospedeiro');

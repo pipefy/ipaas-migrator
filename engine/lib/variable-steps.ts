@@ -4,7 +4,7 @@
 // Lista fica um array de strings JSON no `add_to_list`. A pill de leitura
 // aponta para o `get`.
 import type { ParsedStep } from './types.ts';
-import { SOURCE_KEY, itemSuffix, type VarDecl, type VarOp } from './variables.ts';
+import { SOURCE_KEY, isLegacyNameValueDeclare, itemSuffix, type VarDecl, type VarOp } from './variables.ts';
 
 export const STORE_PIECE = '@activepieces/piece-store';
 
@@ -156,7 +156,12 @@ export function writtenFields(step: ParsedStep, op: VarOp): Record<string, unkno
     }
     return out;
   }
-  if (op === 'declare') return (step.input?.variables?.data ?? {}) as Record<string, unknown>;
+  if (op === 'declare') {
+    if (isLegacyNameValueDeclare(step)) {
+      return { value: (step.input as Record<string, unknown>).value };
+    }
+    return (step.input?.variables?.data ?? {}) as Record<string, unknown>;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries((step.input ?? {}) as Record<string, unknown>)) {
     if (k === 'name' || k === 'input_mode' || v === '=skip') continue;

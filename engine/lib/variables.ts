@@ -113,18 +113,30 @@ function declKind(step: ParsedStep): VarKind {
   return step.name === 'declare_list' ? 'list' : 'scalar';
 }
 
+/** Declare escalar legado: `input` com `type`, `name` (label) e `value` em vez de `variables.schema`. */
+export function isLegacyNameValueDeclare(step: ParsedStep): boolean {
+  const input = step.input;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+  if ((input as Record<string, unknown>).variables) return false;
+  return typeof (input as Record<string, unknown>).name === 'string' && 'value' in input;
+}
+
 function declFields(step: ParsedStep): string[] {
   if (declKind(step) === 'list') {
     const fromSchema = schemaFields(step.input?.list_item_schema_json);
     if (fromSchema.length) return fromSchema;
     return Object.keys(step.input?.list_items ?? {}).filter((k) => k !== SOURCE_KEY);
   }
+  if (isLegacyNameValueDeclare(step)) return ['value'];
   const fromSchema = schemaFields(step.input?.variables?.schema);
   if (fromSchema.length) return fromSchema;
   return Object.keys(step.input?.variables?.data ?? {});
 }
 
 function declLabel(step: ParsedStep, kind: VarKind): string {
+  if (kind === 'scalar' && isLegacyNameValueDeclare(step)) {
+    return String(step.comment || step.input?.name || step.as || 'variavel');
+  }
   const explicit = kind === 'list' ? step.input?.name : undefined;
   return String(step.comment || explicit || step.as || 'variavel');
 }
