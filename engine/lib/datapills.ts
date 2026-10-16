@@ -762,7 +762,7 @@ export function analyzeFormula(s: string): FormulaHit | null {
 export type LoopItemResolver = (collection: string) => string | undefined;
 
 /** Contagem de pills `job_context` já traduzidas nesta receita. */
-export type JobContextHits = { name: number; id: number; link: number; created: number };
+export type JobContextHits = { name: number; id: number; link: number; created: number; run: number };
 
 export type PillOptions = {
   recipeName?: string;
@@ -795,7 +795,7 @@ export const CATCH_ERROR_TOKEN = '{{__catch_error__}}';
 /** O erro do iPaaS não tem `type`. Some antes de gravar o campo. */
 const CATCH_TYPE_TOKEN = '\u0000catch-type\u0000';
 
-const CATCH_GAP_KEYS = new Set(['retry_count', 'uuid', 'step']);
+const CATCH_GAP_KEYS = new Set(['retry_count', 'uuid', 'step', 'line_number', 'action']);
 
 /** `message` aponta para o step que falhou. O resto não existe no iPaaS. */
 function renderCatchField(key: string, options: PillOptions | undefined): string | null {
@@ -842,6 +842,11 @@ function renderJobContext(key: string | undefined, options: PillOptions | undefi
   if (key === 'job_created_at') {
     if (hits) hits.created += 1;
     return "{{job_now['now']}}";
+  }
+  // Workato `job_id` é o id da execução. O piece flow-helper `getRunId` devolve `{ id }`.
+  if (key === 'job_id') {
+    if (hits) hits.run += 1;
+    return "{{job_run['id']}}";
   }
   return null;
 }
@@ -1109,7 +1114,9 @@ function renderDataPill(
     const kind = dp.pill_type === 'account_property' ? 'conta' : 'projeto';
     return renderPropertyVariable(kind, dp.property_name, options);
   }
-  if (!Array.isArray(dp.path) && !(dp.pill_type === 'foreach_meta' && dp.key === 'index')) {
+  const foreachMetaKey =
+    dp.pill_type === 'foreach_meta' && typeof dp.key === 'string' && dp.key.length > 0;
+  if (!Array.isArray(dp.path) && !foreachMetaKey) {
     return '{{TODO_pill}}';
   }
   if (path.some((element) => typeof element !== 'string' &&
@@ -1146,11 +1153,13 @@ function renderDataPill(
     return '{{TODO_ref}}';
   }
 
-  // Mesmo indice que `_('data.foreach.<as>.index')`: o `as` do foreach aponta
-  // para `loop_N.item`, e o indice mora no loop.
-  if (dp.pill_type === 'foreach_meta' && dp.key === 'index') {
+  // Metadados do foreach (`index`, `is_first`, `is_last`) moram no loop, nao no item.
+  if (foreachMetaKey) {
     const loop = mappedName.replace(/\.item$/, '');
-    return renderApTemplate(loop, ['index']);
+    if (dp.key === 'index' || dp.key === 'is_first' || dp.key === 'is_last') {
+      return renderApTemplate(loop, [dp.key]);
+    }
+    return '{{TODO_pill}}';
   }
 
   let base = mappedName;
@@ -1433,9 +1442,10 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
   const binding = as ? asToName.get(as) : undefined;
   const mapped = stepBindingName(binding);
   if (!mapped) return options?.omitDangling ? '' : '{{TODO_ref}}';
-  if (parts[0] === 'foreach' && /^index\b/.test(path)) {
+  if (parts[0] === 'foreach' && /^(index|is_first|is_last)\b/.test(path)) {
     const loop = mapped.replace(/\.item$/, '');
-    return `{{${loop}.${path}}}`;
+    const key = path.split('.')[0]!;
+    return renderApTemplate(loop, [key]);
   }
   if (path === 'cards_count') {
     const counted = cardsCountFormula(binding, mapped);

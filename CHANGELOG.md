@@ -6,12 +6,21 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.1 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.2 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.2 — 16 out 2026
+
+Mesmo motor da release oficial **1.12.20**: Python de comissão, paginação de table records, cabeçalho em xlsx, status de contratação e `job_id` viram código; o try com monitor vazio segue depois do bloco.
+
+- Relatório de comissão, paginação OAuth de `table_records`, detecção de cabeçalho em planilha e hire date F/P saem do stub.
+- `job_id` do contexto do job usa `getRunId` no começo do flow.
+- `is_first` / `is_last` do foreach e `.count` em intervalo de datas ou inteiros.
+- `migrador-workato-cliente-navegador-0.7.2.tgz`
 
 ## 0.7.1 — 15 out 2026
 

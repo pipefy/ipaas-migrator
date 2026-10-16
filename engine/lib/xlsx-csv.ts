@@ -2,12 +2,8 @@
 // O sandbox do iPaaS não define Buffer, atob, btoa, TextDecoder nem node:zlib.
 // `xlsxToCsvCode` fica só para o script reconhecer flow antigo que ainda importa `xlsx`.
 
-function xlsxRuntime(sheetName: string): string {
-  const sheet = JSON.stringify(sheetName);
-  return `// py_eval/invoke_custom_py_code
-const sheetName = ${sheet};
-
-function bits(bytes) {
+function xlsxPureHelpersSource(): string {
+  return `function bits(bytes) {
   let i = 0;
   let buf = 0;
   let n = 0;
@@ -234,7 +230,15 @@ function rowsOf(xml, strings) {
 function csvCell(value) {
   const textValue = value == null ? '' : String(value);
   return /[",\\n]/.test(textValue) ? '"' + textValue.split('"').join('""') + '"' : textValue;
+}`;
 }
+
+function xlsxRuntime(sheetName: string): string {
+  const sheet = JSON.stringify(sheetName);
+  return `// py_eval/invoke_custom_py_code
+const sheetName = ${sheet};
+
+${xlsxPureHelpersSource()}
 
 export const code = async (inputs) => {
   const raw = String(inputs.csv || '');
@@ -248,6 +252,70 @@ export const code = async (inputs) => {
     .map((row) => Array.from({ length: width }, (_, index) => csvCell(row[index])).join(','))
     .join('\\n');
   return { wd_data: csv };
+};
+`;
+}
+
+export function isExcelHeaderDetectCsvPython(python: string): boolean {
+  return (
+    /read_excel/.test(python) &&
+    /header\s*=\s*None/.test(python) &&
+    /header_row_index/.test(python) &&
+    /to_csv/.test(python)
+  );
+}
+
+export function excelHeaderDetectCsvCode(): string {
+  return `// py_eval/invoke_custom_py_code
+const sheetName = "";
+
+${xlsxPureHelpersSource()}
+
+function inputBytes(raw) {
+  if (raw instanceof Uint8Array) return raw;
+  if (raw && typeof raw === "object" && raw.type === "Buffer" && Array.isArray(raw.data)) return new Uint8Array(raw.data);
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed && /^[A-Za-z0-9+/=\\s]+$/.test(trimmed) && trimmed.length % 4 === 0) return base64ToBytes(trimmed);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i) & 255;
+    return out;
+  }
+  throw new Error("xlsx_file");
+}
+
+export const code = async (inputs) => {
+  const bytes = inputBytes(inputs.xlsx_file);
+  const files = unzip(bytes);
+  const path = sheetPath(files);
+  const xml = text(files[path] || new Uint8Array());
+  const table = rowsOf(xml, shared(files));
+  const emailPattern = /[^a-zA-Z0-9@.]/g;
+  let headerRowIndex = null;
+  for (let idx = 0; idx < table.length; idx++) {
+    const row = table[idx] || [];
+    const nonEmpty = row.filter((cell) => cell != null && String(cell).trim() !== "").length;
+    const strings = row.filter((cell) => typeof cell === "string" && cell.trim() !== "").length;
+    if (nonEmpty >= 2 && strings >= 2) {
+      headerRowIndex = idx;
+      break;
+    }
+  }
+  if (headerRowIndex == null) throw new Error("Nenhuma linha válida encontrada para usar como cabeçalho.");
+  const headers = (table[headerRowIndex] || []).map((cell) => (cell == null ? "" : String(cell)));
+  const width = Math.max(headers.length, ...table.slice(headerRowIndex + 1).map((row) => (row || []).length));
+  const normalizedHeaders = Array.from({ length: width }, (_, index) => headers[index] ?? "");
+  const lines = [normalizedHeaders.map((header) => csvCell(header)).join(",")];
+  for (let r = headerRowIndex + 1; r < table.length; r++) {
+    const row = table[r] || [];
+    const values = normalizedHeaders.map((header, index) => {
+      let value = row[index] == null ? "" : String(row[index]);
+      if (header.toLowerCase().includes("email")) value = value.replace(emailPattern, "");
+      return csvCell(value);
+    });
+    lines.push(values.join(","));
+  }
+  return { csv: lines.join("\\n") };
 };
 `;
 }

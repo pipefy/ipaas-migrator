@@ -18,7 +18,15 @@ import { InvalidCompositionInputError, isBlockingDiagnostic, uniqueDiagnostics, 
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
-import { isXlsxToCsvPython, xlsxSheetName, xlsxToCsvPureCode } from './xlsx-csv.ts';
+import { commissionPythonCode } from './commission-report.ts';
+import {
+  excelHeaderDetectCsvCode,
+  isExcelHeaderDetectCsvPython,
+  isXlsxToCsvPython,
+  xlsxSheetName,
+  xlsxToCsvPureCode,
+} from './xlsx-csv.ts';
+import { isTableRecordsPagePython, tableRecordsPageCode } from './table-records-page.ts';
 import { resolveZeroPhaseInput } from './phase-id.ts';
 import { PIPEFY_PIECE_VERSION, pipefyPropertySettings, replaceGraphqlQuery, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
 import type { UpdateListFieldAdd } from './pipefy-piece.ts';
@@ -776,9 +784,14 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     }
 
     // O que vem depois do try só entra no sucesso. nextAction rodaria também na falha.
+    // Monitor vazio não tem passo que falhe: o stop fica no ramo de falha e a
+    // continuação segue no nextAction.
     if (child.keyword === 'try' && hasActiveCatch(child)) {
       const rest = buildChain(children.slice(i + 1), ctx);
-      if (rest) attachRestToSuccessTails(built, rest, ctx);
+      if (rest) {
+        if (emptyStopMonitors.has(built)) built.nextAction = rest;
+        else attachRestToSuccessTails(built, rest, ctx);
+      }
       break;
     }
   }
@@ -1484,7 +1497,7 @@ const SLACK_PIECE = '@activepieces/piece-slack';
 const SLACK_SEND_ACTIONS = new Set(['send_channel_message', 'send_direct_message']);
 
 function emptyHits(): JobContextHits {
-  return { name: 0, id: 0, link: 0, created: 0 };
+  return { name: 0, id: 0, link: 0, created: 0, run: 0 };
 }
 
 function jobContextParagraph(hits: JobContextHits, noted: JobContextHits): string {
@@ -2304,6 +2317,108 @@ function buildPythonSecondsSleep(name: string, display: string, step: ParsedStep
   return codeStep(name, display, input, pythonSecondsSleepCode(), !hasTodoMarker(input));
 }
 
+/**
+ * Python que compara hire date com agora em America/Sao_Paulo e devolve status F/P.
+ * Outro corpo fica no stub.
+ */
+function isHireStatusPython(python: string): boolean {
+  return (
+    compactCustomCode(python) ===
+    'from datetime import datetime, timezone import pytz def main(input): brazil_tz = pytz.timezone("America/Sao_Paulo") last_hire_date_str = input["lastHireDate"] code = input["fullTimeOrPartTimeCode"] last_hire_date = datetime.fromisoformat(last_hire_date_str) if last_hire_date.tzinfo is None: last_hire_date = last_hire_date.replace(tzinfo=timezone.utc) last_hire_date_br = last_hire_date.astimezone(brazil_tz) now_utc = datetime.now(timezone.utc) now_br = now_utc.astimezone(brazil_tz) days_diff = (now_br - last_hire_date_br).days if code == "F": if days_diff >= 29: result = "Full Time" else: result = "New hire - Not renewal eligible" elif code == "P": if days_diff >= 29: result = "Part Time" else: result = "New hire - Not renewal eligible" else: result = "Invalid code" return { "status": result, "lastHireDate_brazil_tz": last_hire_date_br.isoformat(), "currentDate_brazil_tz": now_br.isoformat(), "days_difference": days_diff }'
+  );
+}
+
+function hireStatusCode(): string {
+  return [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const last_hire_date_str = inputs.lastHireDate;',
+    '  const employmentCode = inputs.fullTimeOrPartTimeCode;',
+    '  const hireMs = parseHireInstant(last_hire_date_str);',
+    '  const nowMs = Date.now();',
+    '  const days_diff = Math.floor((nowMs - hireMs) / 86400000);',
+    '  let status;',
+    '  if (employmentCode === "F") {',
+    '    status = days_diff >= 29 ? "Full Time" : "New hire - Not renewal eligible";',
+    '  } else if (employmentCode === "P") {',
+    '    status = days_diff >= 29 ? "Part Time" : "New hire - Not renewal eligible";',
+    '  } else {',
+    '    status = "Invalid code";',
+    '  }',
+    '  return {',
+    '    status,',
+    '    lastHireDate_brazil_tz: formatBrazilIso(hireMs),',
+    '    currentDate_brazil_tz: formatBrazilIso(nowMs),',
+    '    days_difference: days_diff,',
+    '  };',
+    '',
+    '  function parseHireInstant(value) {',
+    '    const match = String(value == null ? "" : value).trim().match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,6}))?)?)?(Z|[+-]\\d{2}:?\\d{2})?$/);',
+    '    if (!match) throw new Error("lastHireDate");',
+    '    const frac = match[7] == null ? 0 : Number(String(match[7]).padEnd(3, "0").slice(0, 3));',
+    '    let ms = Date.UTC(',
+    '      Number(match[1]),',
+    '      Number(match[2]) - 1,',
+    '      Number(match[3]),',
+    '      match[4] == null ? 0 : Number(match[4]),',
+    '      match[5] == null ? 0 : Number(match[5]),',
+    '      match[6] == null ? 0 : Number(match[6]),',
+    '      frac,',
+    '    );',
+    '    const zone = match[8];',
+    '    if (zone && zone !== "Z") {',
+    '      const sign = zone.startsWith("-") ? -1 : 1;',
+    '      const digits = zone.slice(1).replace(":", "");',
+    '      const offsetMin = sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4) || "0"));',
+    '      ms -= offsetMin * 60000;',
+    '    }',
+    '    return ms;',
+    '  }',
+    '',
+    '  function formatBrazilIso(ms) {',
+    '    const timeZone = "America/Sao_Paulo";',
+    '    const formatted = new Intl.DateTimeFormat("en-US", {',
+    '      timeZone,',
+    '      year: "numeric",',
+    '      month: "2-digit",',
+    '      day: "2-digit",',
+    '      hour: "2-digit",',
+    '      minute: "2-digit",',
+    '      second: "2-digit",',
+    '      hourCycle: "h23",',
+    '      fractionalSecondDigits: 3,',
+    '    }).formatToParts(new Date(ms));',
+    '    const parts = Object.fromEntries(formatted.map((part) => [part.type, part.value]));',
+    '    let hour = Number(parts.hour);',
+    '    if (hour === 24) hour = 0;',
+    '    const wall = Date.UTC(',
+    '      Number(parts.year),',
+    '      Number(parts.month) - 1,',
+    '      Number(parts.day),',
+    '      hour,',
+    '      Number(parts.minute),',
+    '      Number(parts.second),',
+    '      Number(parts.fractionalSecond || 0),',
+    '    );',
+    '    const offsetMin = Math.round((wall - ms) / 60000);',
+    '    const sign = offsetMin >= 0 ? "+" : "-";',
+    '    const abs = Math.abs(offsetMin);',
+    '    const pad = (n, width) => String(n).padStart(width, "0");',
+    '    const offset = `${sign}${pad(Math.floor(abs / 60), 2)}:${pad(abs % 60, 2)}`;',
+    '    const fraction = Number(parts.fractionalSecond || 0);',
+    '    const fractionText = fraction ? `.${pad(fraction, 3)}000` : "";',
+    '    return `${parts.year}-${parts.month}-${parts.day}T${pad(hour, 2)}:${parts.minute}:${parts.second}${fractionText}${offset}`;',
+    '  }',
+    '};',
+  ].join('\n');
+}
+
+function buildHireStatusPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, hireStatusCode(), !hasTodoMarker(input));
+}
+
 /** Python que só importa `time` e dorme um literal. Outro corpo fica no stub. */
 function pythonSleepMs(python: string): number | null {
   const lines = python
@@ -2775,6 +2890,12 @@ function buildXlsxPython(name: string, display: string, step: ParsedStep, ctx: C
   const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
   const sheet = xlsxSheetName(String(step.input?.code ?? ''));
   return codeStep(name, display, input, xlsxToCsvPureCode(sheet), !hasTodoMarker(input));
+}
+
+function buildExcelHeaderDetectCsvPython(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  return codeStep(name, display, input, excelHeaderDetectCsvCode(), !hasTodoMarker(input));
 }
 
 function buildOpenCardsSearch(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
@@ -3437,6 +3558,36 @@ function jobNowStep(next: any | undefined): any {
   return step;
 }
 
+/** Um `getRunId` no começo do flow. As pills `job_id` apontam para `{{job_run['id']}}`. */
+function jobRunStep(next: any | undefined, ctx: Ctx): any {
+  const input = {};
+  ctx.piecesUsed.add(FLOW_HELPER_PIECE);
+  const step = {
+    name: 'job_run',
+    skip: false,
+    type: 'PIECE',
+    valid: true,
+    settings: {
+      input,
+      pieceName: FLOW_HELPER_PIECE,
+      actionName: 'getRunId',
+      pieceVersion: pieceVersion(ctx, FLOW_HELPER_PIECE),
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: 'ID do job',
+    lastUpdatedDate: NOW,
+  };
+  (step as any).nextAction = next;
+  return step;
+}
+
+function prependJobContext(nextAction: any, ctx: Ctx): any {
+  if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
+  if (ctx.jobContextHits.run) nextAction = jobRunStep(nextAction, ctx);
+  return nextAction;
+}
+
 /** Domingo 1970-01-04 mais o dia da semana do trigger (0 = domingo). */
 function biweeklyAnchor(daysOfWeek: unknown): string {
   const raw = String(daysOfWeek ?? '0').split(/[,\s]+/)[0] ?? '0';
@@ -3985,6 +4136,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   ) {
     return buildAccumulateList(name, display, step, ctx);
   }
+  if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isExcelHeaderDetectCsvPython(String(step.input?.code ?? ''))) {
+    return buildExcelHeaderDetectCsvPython(name, display, step, ctx);
+  }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isXlsxToCsvPython(String(step.input?.code ?? ''))) {
     return buildXlsxPython(name, display, step, ctx);
   }
@@ -4008,6 +4162,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const sleepMs = pythonSleepMs(python);
     if (sleepMs != null) return buildPythonSleep(name, display, step, ctx, sleepMs);
     if (isPythonSecondsSleep(python)) return buildPythonSecondsSleep(name, display, step, ctx);
+    if (isHireStatusPython(python)) return buildHireStatusPython(name, display, step, ctx);
   }
   if (opKey.endsWith('/get_cards_by_field') && includeDoneIsFalse(sourceInput)) {
     return buildOpenCardsSearch(name, display, sourceInput, ctx);
@@ -4099,6 +4254,13 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     }
     if (isPython && isReviewerDiffPython(lifted.source)) {
       return codeStep(name, display, lifted.input, reviewerDiffPythonCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython && isTableRecordsPagePython(lifted.source)) {
+      return codeStep(name, display, lifted.input, tableRecordsPageCode(), !hasTodoMarker(lifted.input));
+    }
+    if (isPython) {
+      const commission = commissionPythonCode(lifted.source);
+      if (commission) return codeStep(name, display, lifted.input, commission, !hasTodoMarker(lifted.input));
     }
     if (isJs) {
       const wrapped = wrapJsEvalMain(lifted.source);
@@ -4197,7 +4359,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     );
   }
   const tableFilters = columnFilters(input.parameters ?? sourceInput.parameters);
-  if (collapseOpKey(opKey) === 'lookup_table/get_entry' && tableFilters) {
+  const lookupByColumns =
+    collapseOpKey(opKey) === 'lookup_table/get_entry' || collapseOpKey(opKey) === 'lookup_table/search_entries';
+  if (lookupByColumns && tableFilters) {
     t = { piece: TABLES_PIECE, name: 'tables-find-records', kind: 'action' };
     ctx.piecesUsed.add(TABLES_PIECE);
     input.table_id = input.table_id ?? deepConvert(sourceInput.lookup_table_id, ctx);
@@ -5179,6 +5343,7 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
 const CATCH_ROUTER_LABEL = 'Catch do monitor';
 
 const claimedByCatch = new WeakSet<object>();
+const emptyStopMonitors = new WeakSet<object>();
 
 /**
  * Passos falíveis deste try. Um monitor de dentro já reivindicou os seus:
@@ -5313,6 +5478,26 @@ function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
       `STOP: a continuação depois do try também se aplica a ${tails.length - 1} caminho(s) de sucesso — duplicar manualmente.`,
     );
   }
+}
+
+/**
+ * Try sem passos e catch que só dá stop. Não há step protegido para falhar.
+ * O monitor é um CODE que segue, com stopFlow no ramo de falha. A continuação
+ * fica no nextAction: este passo não falha, então o ramo de falha não corre.
+ */
+function stopOnlyEmptyMonitor(ctx: Ctx): any {
+  const step = codeStep(
+    nextName('catch'),
+    'Monitor sem passos',
+    {},
+    'export const code = async () => {\n  return {};\n};',
+    true,
+  );
+  step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+  step.continueOnFailureBranches = { onFailure: stopFlowStep(ctx) };
+  claimedByCatch.add(step);
+  emptyStopMonitors.add(step);
+  return step;
 }
 
 function stopFlowStep(ctx: Ctx): any {
@@ -5622,6 +5807,7 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   );
 
   if (isStopOnlyCatch(activeHandlers)) {
+    if (!first) return stopOnlyEmptyMonitor(ctx);
     return rewireStopOnFailure(first, ctx) ?? null;
   }
 
@@ -5751,7 +5937,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
       input = shapeCallableFlow(root.input ?? {});
     }
     input = fillKnownProps(t, input, root.input ?? {}, ctx);
-    if (ctx.jobContextHits.created) nextAction = jobNowStep(nextAction);
+    nextAction = prependJobContext(nextAction, ctx);
     if (collapseOpKey(opKey) === 'pipefy/new_updated_card' && t.name === 'cardFieldUpdated') {
       pushReviewNote(ctx, 'TRIGGER', NEW_UPDATED_CARD_NOTE, '', 'trigger');
     }
@@ -5821,6 +6007,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     '',
     'trigger',
   );
+  nextAction = prependJobContext(nextAction, ctx);
   return {
     name: 'trigger',
     valid: true,
@@ -5873,6 +6060,7 @@ function isNonBlockingReviewTodo(todo: string): boolean {
   if (todo.startsWith('DESATIVADO (')) return true;
   if (todo.startsWith('OPERANDO (')) return true;
   if (todo.startsWith('LOOKUP (')) return true;
+  if (todo.startsWith('SUBFLOW (')) return true;
   if (todo.startsWith('REVIEW (') && todo.includes('teto artificial da adaptacao condicional')) return true;
   if (
     todo.startsWith('ROUTER (') &&

@@ -352,6 +352,26 @@ const HELPERS: Record<string, string> = {
   }
   return new Date(Date.UTC(year, month - 1, day, hh, mm, ss)).toISOString();
 };`,
+  rangeCount: `const rangeCount = (left, right, exclusive) => {
+  const utcDay = (v) => {
+    if (typeof v !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}/.test(v)) return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  };
+  const start = utcDay(left);
+  const end = utcDay(right);
+  if (start != null && end != null) {
+    const days = Math.round((end - start) / 86400000);
+    if (days < 0) return 0;
+    return exclusive ? days : days + 1;
+  }
+  if (typeof left === 'number' && typeof right === 'number' && Number.isInteger(left) && Number.isInteger(right)) {
+    if (left > right) return 0;
+    return exclusive ? right - left : right - left + 1;
+  }
+  return null;
+};`,
   scan: `const scan = (v, re) => {
   const text = toS(v);
   const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
@@ -1623,7 +1643,19 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   'nil?': (t) => `(${t} === null || ${t} === undefined)`,
   length: (t, s) => (useHelper(s, 'len'), `len(${t})`),
   size: (t, s) => (useHelper(s, 'len'), `len(${t})`),
-  count: (t, s) => (useHelper(s, 'len'), `len(${t})`),
+  count: (t, s) => {
+    const range = rangeMarker(t);
+    if (range && textHint(range.left, s) !== 'float' && textHint(range.right, s) !== 'float') {
+      useHelper(s, 'rangeCount');
+      return rememberTextHint(
+        `rangeCount(${range.left}, ${range.right}, ${range.exclusive})`,
+        'int',
+        s,
+      );
+    }
+    useHelper(s, 'len');
+    return `len(${t})`;
+  },
   first: (t, s) => (useHelper(s, 'at'), `at(${t}, 0)`),
   second: (t, s) => (useHelper(s, 'at'), `at(${t}, 1)`),
   last: (t, s) => (useHelper(s, 'list'), `list(${t}).slice(-1)[0]`),
@@ -2608,6 +2640,77 @@ function parseOr(s: State): string | null {
     useHelper(s, 'rubyOr');
     left = inheritJsonComparison(`rubyOr(${left}, () => (${right}))`, [left, right], s);
   }
+}
+
+function unwrapParens(expr: string): string {
+  let bare = expr.trim();
+  for (;;) {
+    if (!bare.startsWith('(') || !bare.endsWith(')')) return bare;
+    let depth = 0;
+    let quote: string | null = null;
+    for (let i = 0; i < bare.length; i++) {
+      const ch = bare[i]!;
+      if (quote) {
+        if (ch === '\\') {
+          i++;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch;
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0 && i !== bare.length - 1) return bare;
+        if (depth < 0) return bare;
+      }
+    }
+    if (depth !== 0) return bare;
+    bare = bare.slice(1, -1).trim();
+  }
+}
+
+function splitTopLevel(inner: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (quote) {
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) {
+      parts.push(inner.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(inner.slice(start).trim());
+  return parts;
+}
+
+/** `(left...right)` ainda marcado, inclusive com parenteses em volta. */
+function rangeMarker(expr: string): { left: string; right: string; exclusive: boolean } | null {
+  const bare = unwrapParens(expr);
+  if (!bare.startsWith('__range(') || !bare.endsWith(')')) return null;
+  const parts = splitTopLevel(bare.slice('__range('.length, -1));
+  if (parts.length !== 3 || (parts[2] !== 'true' && parts[2] !== 'false')) return null;
+  return { left: parts[0]!, right: parts[1]!, exclusive: parts[2] === 'true' };
 }
 
 function parseRange(s: State): string | null {
