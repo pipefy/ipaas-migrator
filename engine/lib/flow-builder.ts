@@ -75,6 +75,7 @@ import { scheduleCronTodo, workatoScheduleToCron } from './schedule-cron.ts';
 import {
   firstPill,
   indexVariables,
+  itemSuffix,
   parseVarName,
   readsOf,
   scalarFieldReads,
@@ -189,9 +190,12 @@ const PIPEFY_PIECE = '@activepieces/piece-pipefy';
 const SUBFLOW_PIECE = '@activepieces/piece-subflows';
 const PIPEFY_PAYLOAD_ROOT = 'data';
 const PIPEFY_GET_CARD_PAYLOAD_ROOT = 'data.card';
+const PIPEFY_GET_RECORD_PAYLOAD_ROOT = 'data.record';
 
 function pipefyOutputRoot(targetName: string | undefined): string {
-  return targetName === 'getCardById' ? PIPEFY_GET_CARD_PAYLOAD_ROOT : PIPEFY_PAYLOAD_ROOT;
+  if (targetName === 'getCardById') return PIPEFY_GET_CARD_PAYLOAD_ROOT;
+  if (targetName === 'getRecordById') return PIPEFY_GET_RECORD_PAYLOAD_ROOT;
+  return PIPEFY_PAYLOAD_ROOT;
 }
 
 function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep): void {
@@ -2259,7 +2263,43 @@ function accumulateItem(raw: unknown): unknown {
  * Lists by Workato `create_list` vira Code com array em `items`.
  * Storage `[]` quebra o Loop on items. `size` sozinho (forma real das receitas) devolve `[]`.
  */
+/**
+ * `size` = `pill.split(sep).length` não é uma lista vazia: os itens são o split.
+ * Tamanho literal, ou `.length` de um array, continua no caminho de cima.
+ */
+function splitLengthSource(input: Record<string, any>): { pill: string; separator: string } | null {
+  const keys = Object.keys(input).filter((key) => {
+    const value = input[key];
+    return value != null && value !== '' && value !== '=skip';
+  });
+  if (keys.length !== 1 || keys[0] !== 'size') return null;
+  const raw = String(input.size).trim().replace(/^=\s*/, '');
+  const match = raw.match(/^(?:#\{)?(_dp\('(?:\\'|[^'])*'\))\}?\.split\(\s*(["'])([\s\S]*?)\2\s*\)\.length$/);
+  if (!match) return null;
+  const payload = match[1]!.replace(/^_dp\('/, '').replace(/'\)$/, '');
+  if (!dpPayload(payload)) return null;
+  return { pill: match[1]!, separator: match[3]! };
+}
+
+const SPLIT_LIST_CODE = [
+  'export const code = async (inputs) => {',
+  "  const items = String(inputs.source ?? '').split(String(inputs.separator ?? ''));",
+  '  return { items };',
+  '};',
+].join('\n');
+
 function buildCreateList(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const split = splitLengthSource(step.input ?? {});
+  if (split) {
+    const source = resolveFormulas(deepConvert(`#{${split.pill}}`, ctx), ctx, name);
+    return codeStep(
+      name,
+      display,
+      { source, separator: split.separator },
+      SPLIT_LIST_CODE,
+      !hasTodoMarker({ source }),
+    );
+  }
   const payload = createListPayload(step.input ?? {});
   if (payload === undefined) return codeStep(name, display, {}, CREATE_LIST_CODE, true);
   const items = resolveFormulas(deepConvert(payload, ctx), ctx, name);
@@ -2287,6 +2327,59 @@ function buildAccumulateList(name: string, display: string, step: ParsedStep, ct
     '};',
   ].join('\n');
   return codeStep(name, display, { item }, code, !hasTodoMarker({ item }));
+}
+
+const ACCUMULATE_LIST_CODE = [
+  'export const code = async (inputs) => {',
+  '  const raw = inputs.previous;',
+  '  const anterior = Array.isArray(raw) ? raw : raw && Array.isArray(raw.list_items) ? raw.list_items : [];',
+  '  const item = inputs.item;',
+  '  const novos = Array.isArray(item) ? item : item == null || item === "" ? [] : [item];',
+  '  return { list_items: [...anterior, ...novos] };',
+  '};',
+].join('\n');
+
+/**
+ * `accumulate_list_items` fora de um foreach que lê a própria lista.
+ * Cada execução lê a lista no Storage (escopo RUN), acrescenta o item e devolve
+ * `list_items` — o mesmo formato da pill Workato. O passo seguinte enxerga o
+ * acumulado da última volta.
+ */
+function buildAccumulateListAppend(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const listName = String(step.input?.name ?? '').trim() || 'list';
+  const key = `workato_list:${listName}`;
+  const item = resolveFormulas(deepConvert(accumulateItem(step.input?.list_item), ctx), ctx, name);
+  const valid = !hasTodoMarker({ item });
+  const getName = nextName('var_get');
+  const get = storeActionStep(
+    getName,
+    'get',
+    { key, store_scope: STORE_SCOPE },
+    `Ler lista "${listName}"`,
+    true,
+    step.skip === true,
+    ctx,
+  );
+  const code = codeStep(
+    name,
+    display,
+    { previous: `{{${storeGetRef(getName)}}}`, item },
+    ACCUMULATE_LIST_CODE,
+    valid,
+  );
+  code.skip = step.skip === true;
+  const put = storeActionStep(
+    nextName('var_put'),
+    'put',
+    { key, value: `{{${name}['list_items']}}`, store_scope: STORE_SCOPE },
+    `Gravar lista "${listName}"`,
+    valid,
+    step.skip === true,
+    ctx,
+  );
+  get.nextAction = code;
+  code.nextAction = put;
+  return get;
 }
 
 /**
@@ -3024,6 +3117,43 @@ function retargetPipedriveCreate(
   };
 }
 
+/**
+ * `file_list` com `____source` e campos `current_item` é um map, não o primeiro item.
+ * Cada campo precisa ser só o sufixo do item; mistura com literal fica no caminho antigo.
+ */
+function zipListBatch(fileList: unknown): { source: unknown; rows: { key: string; path: string[] }[] } | null {
+  if (!fileList || typeof fileList !== 'object' || Array.isArray(fileList)) return null;
+  const record = fileList as Record<string, unknown>;
+  const source = record[SOURCE_KEY];
+  if (typeof source !== 'string' || !source.includes('_dp(')) return null;
+  const rows: { key: string; path: string[] }[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (key === SOURCE_KEY) continue;
+    const path = itemSuffix(value);
+    if (!path) return null;
+    rows.push({ key, path });
+  }
+  if (!rows.length) return null;
+  return { source, rows };
+}
+
+function zipBatchCode(rows: { key: string; path: string[] }[]): string {
+  const fields = rows.map((row) => {
+    const access = row.path.map((part) => `[${JSON.stringify(part)}]`).join('?.');
+    return `      ${JSON.stringify(row.key)}: item?.${access},`;
+  });
+  return [
+    'export const code = async (inputs) => {',
+    '  const fonte = Array.isArray(inputs.source) ? inputs.source : [];',
+    '  return {',
+    '    files: fonte.map((item) => ({',
+    ...fields,
+    '    })),',
+    '  };',
+    '};',
+  ].join('\n');
+}
+
 function fillKnownProps(
   target: MapTarget,
   input: Record<string, any>,
@@ -3320,6 +3450,14 @@ function fillKnownProps(
   if (target.name === 'zipFiles') {
     copyProp(input, 'files', 'file_list');
     if (!blankProp(input.files)) delete input.file_list;
+    const batch = zipListBatch(sourceInput.file_list);
+    if (batch) {
+      const codeName = nextName('zip_files');
+      const source = resolveFormulas(deepConvert(batch.source, ctx), ctx, codeName);
+      const mapped = codeStep(codeName, 'Arquivos do zip', { source }, zipBatchCode(batch.rows), !hasTodoMarker({ source }));
+      ctx.pendingCode.push(mapped);
+      input.files = `{{${codeName}['files']}}`;
+    }
     // compress_file da Workato nao traz nome de saida; zipFiles exige outputFileName.
     if (blankProp(input.outputFileName)) input.outputFileName = 'archive.zip';
   }
@@ -4135,6 +4273,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     ctx.loopedListLines.has(step.as)
   ) {
     return buildAccumulateList(name, display, step, ctx);
+  }
+  if (collapseOpKey(opKey) === 'workato_list/accumulate_list_items') {
+    return buildAccumulateListAppend(name, display, step, ctx);
   }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code' && isExcelHeaderDetectCsvPython(String(step.input?.code ?? ''))) {
     return buildExcelHeaderDetectCsvPython(name, display, step, ctx);

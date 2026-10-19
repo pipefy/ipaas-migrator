@@ -865,7 +865,8 @@ function tidyJobContext(text: string): string {
 
 /**
  * Nome do step AP para o `as` Workato. Objeto quando o payload da piece mora
- * dentro de um envelope (Pipefy: `data`, e `data.card` no getCardById);
+ * dentro de um envelope (Pipefy: `data`, `data.card` no getCardById,
+ * `data.record` no getRecordById);
  * string simples nos demais casos.
  *
  * Nao usar `output` aqui: isso e o envelope do step no schema AP 21+
@@ -933,7 +934,7 @@ function redirectScalarField<T extends string | number>(
   return { base: step, segments: segments.slice(1) };
 }
 
-/** Segmentos do envelope da piece. Evita `data.card.card` se o path Workato ja comeca com `card`. */
+/** Segmentos do envelope da piece. Evita `data.card.card` e `data.record.record` se o path Workato ja comeca com esse envelope. */
 export function outputRootSegments(
   binding: StepBinding | undefined,
   pathHead?: string,
@@ -941,7 +942,7 @@ export function outputRootSegments(
   const root = stepOutputRoot(binding);
   if (!root) return [];
   const segs = root.split('.').filter(Boolean);
-  if (pathHead === 'card' && segs.at(-1) === 'card') return segs.slice(0, -1);
+  if ((pathHead === 'card' || pathHead === 'record') && segs.at(-1) === pathHead) return segs.slice(0, -1);
   return segs;
 }
 
