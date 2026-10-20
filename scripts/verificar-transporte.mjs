@@ -84,7 +84,8 @@ async function fetchLive(id) {
     process.env.IPAAS_PASSWORD ||
     '';
   if (!email || !password) return { ok: false, reason: 'missing_credentials' };
-  const host = process.env.IPAAS_URL || 'https://ipaas.pipefy.com';
+  const host = process.env.IPAAS_URL || '';
+  if (!host) return { ok: false, reason: 'missing_host' };
   const signIn = await fetch(`${host}/api/v1/authentication/sign-in`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

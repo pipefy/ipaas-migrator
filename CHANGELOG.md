@@ -6,18 +6,25 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.6 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.7 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
 
+## 0.7.7 — 20 out 2026
+
+O pacote deixa de citar o host interno do iPaaS.
+
+- `config.json`, o mapa e a base de peças saem sem esse endereço.
+- O transporte ao vivo só chama o host que estiver em `IPAAS_URL`.
+- `migrador-workato-cliente-navegador-0.7.7.tgz`
+
 ## 0.7.6 — 20 out 2026
 
-O exemplo de ambiente pede o login de `https://ipaas.pipefy.com`. A tradução de código usa a pasta que quem chamou passou.
+A tradução de código usa a pasta que quem chamou passou.
 
-- `IPAAS_URL` vem preenchida com `https://ipaas.pipefy.com`. E-mail e senha ficam em branco.
 - A skill de traduzir código lê `flow.json` e `recipe.json` nessa pasta.
 - `migrador-workato-cliente-navegador-0.7.6.tgz`
 
