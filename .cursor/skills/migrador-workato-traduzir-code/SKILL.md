@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Traduzir code
 
-Entrada: o `flow.json` e o `recipe.json` que o transpile acabou de escrever. No migrador interno, a pasta é `/tmp/transpilar/<card>/`. No kit cliente, é `output/<id>/`. Os comandos abaixo usam esse caminho.
+Entrada: o `flow.json` e o `recipe.json` que o transpile acabou de escrever. Quem chamou passou uma pasta (`output/<lote>/<id>/` na migração standalone, `output/<id>/` no kit cliente, ou `/tmp/transpilar/<card>/`): os comandos abaixo usam essa pasta no lugar de `/tmp/transpilar/<card>/`.
 
 O motor é determinístico e **não** traduz: `buildCodeStub` deixa `AP-MIGRATION-TODO` e `return inputs`. Esta skill escreve o JavaScript desses steps. Sem stub, não faz nada.
 
