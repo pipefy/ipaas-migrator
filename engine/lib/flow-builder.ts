@@ -1409,6 +1409,12 @@ export const REVIEW_PROP_LABEL = 'REVISAR: prop ausente';
 export const REVIEW_TRIGGER_LABEL = 'REVISAR: gatilho';
 export const REVIEW_UNMAPPED_LABEL = 'REVISAR: operação sem mapa';
 export const UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET = 'foi substituído por catch_webhook';
+export const UNMAPPED_HTTP_NOTE =
+  'Este conector não tem equivalente. O passo virou uma chamada HTTP. Confira o endereço e o método.';
+export const UNMAPPED_CODE_NOTE =
+  'Este conector não tem equivalente. Os dados de entrada ficaram neste passo para você completar.';
+export const CHANNEL_HOLD_NOTE =
+  'Não há envio equivalente. Os campos ficaram neste passo para você escolher o provedor.';
 export const ELIDED_SIZED_CREATE_LIST_SNIPPET = 'create_list elidido: o foreach itera o array de origem';
 export const RECIPE_OPS_NOTE =
   'Este gatilho acompanha execução de receitas. Não há equivalente. Se ele monitora erro, refaça as receitas acompanhadas com tratamento de erro. Se ele liga ou desliga uma receita, use um agendamento e uma condição.';
@@ -2095,6 +2101,147 @@ function buildPipesignGetDocument(
 function httpUrlString(url: unknown): string {
   if (url && typeof url === 'object' && 'url' in url) return String((url as { url?: unknown }).url ?? '').trim();
   return String(url ?? '').trim();
+}
+
+const ABSOLUTE_HTTP = /^https?:\/\/\S+$/i;
+
+/** Endereço literal da receita. Pill e texto com marcador não viram URL. */
+function literalHttpUrl(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value == null) return null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text || text.includes('{{') || text.includes('TODO_')) return null;
+    return ABSOLUTE_HTTP.test(text) ? text : null;
+  }
+  if (typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ['url', 'endpoint', 'uri']) {
+    if (key in record) {
+      const hit = literalHttpUrl(record[key], depth + 1);
+      if (hit) return hit;
+    }
+  }
+  const request = record.request;
+  if (request && typeof request === 'object' && 'url' in request) {
+    return literalHttpUrl((request as { url?: unknown }).url, depth + 1);
+  }
+  return null;
+}
+
+function httpVerb(source: Record<string, any>): string {
+  const request = source.request;
+  const raw = String(
+    source.method ?? source.verb ?? (request && typeof request === 'object' ? request.method : '') ?? 'POST',
+  ).toUpperCase();
+  return ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(raw) ? raw : 'POST';
+}
+
+const UNMAPPED_HOLD_CODE = `export const code = async (inputs) => {
+  return {
+    pending: true,
+    reason: 'Este conector não tem equivalente. Os dados de entrada ficaram aqui para você completar.',
+    inputs,
+  };
+};
+`;
+
+const CHANNEL_HOLD_CODE = `export const code = async (inputs) => {
+  return {
+    sent: false,
+    reason: 'Não há envio equivalente. Escolha o provedor e use estes campos.',
+    ...inputs,
+  };
+};
+`;
+
+/** Conector sem mapa que já traz um endereço absoluto vira send_request. */
+function buildUnmappedHttp(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+  url: string,
+): any {
+  ctx.piecesUsed.add(HTTP_PIECE);
+  const request = sourceInput.request;
+  const body =
+    sourceInput.body ??
+    (request && typeof request === 'object' ? request.body : undefined) ??
+    sourceInput;
+  const input: Record<string, any> = {
+    method: httpVerb(sourceInput),
+    url,
+    headers: sourceInput.headers ?? {},
+    queryParams: {},
+    body_type: 'json',
+    body: resolveFormulas(deepConvert(body, ctx), ctx, name),
+    timeout: 30,
+    followRedirects: true,
+    response_is_binary: false,
+  };
+  envelopeDynamicProps(input, ctx, HTTP_SEND_TARGET);
+  const missing = missingRequiredProps(ctx, HTTP_SEND_TARGET, input);
+  ctx.todos.push(`HTTP (${name}): conector sem mapa virou chamada HTTP. Conferir endereço e método.`);
+  ctx.diagnostics.push({
+    category: 'MANUAL_REVIEW',
+    reason: 'REVIEW_PENDING',
+    action: 'MANUAL_REVIEW',
+    severity: 'REVIEW',
+    stepName: name,
+  });
+  pushReviewNote(ctx, 'UNMAPPED', UNMAPPED_HTTP_NOTE, '', name);
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: missing.length === 0 && !hasTodoMarker(input),
+    settings: {
+      input,
+      pieceName: HTTP_PIECE,
+      actionName: 'send_request',
+      pieceVersion: pieceVersion(ctx, HTTP_PIECE),
+      propertySettings: settingsFor(HTTP_PIECE, 'send_request', input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+  };
+}
+
+/** Conector sem mapa e sem endereço: o passo guarda a entrada e continua incompleto. */
+function buildUnmappedCode(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  ctx: Ctx,
+): any {
+  const input = resolveFormulas(deepConvert(sourceInput, ctx), ctx, name, sourceInput);
+  ctx.diagnostics.push({
+    category: 'UNSUPPORTED_OPERATION',
+    reason: 'UNMAPPED_OPERATION',
+    action: 'CHECK_DOCUMENTATION',
+    stepName: name,
+  });
+  pushReviewNote(ctx, 'UNMAPPED', UNMAPPED_CODE_NOTE, '', name);
+  return codeStep(name, display, input, UNMAPPED_HOLD_CODE, false);
+}
+
+/** textToPdf exige `text`. Se a receita já trouxe o conteúdo em outro campo, usa esse texto. */
+function fillPdfText(target: MapTarget, input: Record<string, any>, sourceInput: Record<string, any>): void {
+  if (!target.piece.endsWith('/piece-pdf') || target.name !== 'textToPdf') return;
+  if (String(input.text ?? '').trim()) return;
+  for (const key of ['html', 'content', 'body', 'html_content', 'document_text']) {
+    const current = input[key];
+    if (typeof current === 'string' && current.trim()) {
+      input.text = current;
+      return;
+    }
+    const source = sourceInput[key];
+    if (typeof source === 'string' && source.trim()) {
+      input.text = source;
+      return;
+    }
+  }
 }
 
 /**
@@ -4487,17 +4634,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
         : `SMS (${name}): SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta.`,
     );
     ctx.diagnostics.push({ category: 'UNSUPPORTED_OPERATION', reason: 'UNSUPPORTED_CHANNEL', action: 'MANUAL_REVIEW', stepName: name });
-    pushReviewNote(
-      ctx,
-      email ? 'EMAIL' : 'SMS',
-      email
-        ? `Passo \`${name}\`. Email by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.`
-        : `Passo \`${name}\`. SMS by Workato sem compatibilidade neste migrador. Envio nao convertido; receita incompleta. Suporte alternativo exige escolha explicita do provedor e configuracao.`,
-      '',
-      name,
-    );
+    pushReviewNote(ctx, email ? 'EMAIL' : 'SMS', CHANNEL_HOLD_NOTE, '', name);
     const input = resolveFormulas(convInput(sourceInput, undefined, ctx), ctx, name, sourceInput);
-    return todoPieceStep(name, display, input, ctx, channelOp);
+    return codeStep(name, display, input, CHANNEL_HOLD_CODE, false);
   }
 
   // manual (Ruby) / builtin (code|loop|...) -> step CODE
@@ -4593,8 +4732,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     if (collapseOpKey(opKey) === 'word/get_document_content') {
       return buildChain(step.children, ctx) ?? null;
     }
-    ctx.todos.push(`NAO MAPEADA (${name}): "${opKey}" -> definir mapa (add-map).`);
-    return todoPieceStep(name, display, sourceInput, ctx, collapseOpKey(opKey));
+    ctx.todos.push(`NAO MAPEADA (${name}): "${collapseOpKey(opKey)}" -> definir mapa (add-map).`);
+    const url = literalHttpUrl(sourceInput);
+    if (url) return buildUnmappedHttp(name, display, sourceInput, ctx, url);
+    return buildUnmappedCode(name, display, sourceInput, ctx);
   }
 
   let t = entry.target;
@@ -4745,6 +4886,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     delete input.compression_format;
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
+  fillPdfText(t, input, sourceInput);
   const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
   noteWaivedPipefyOrg(ctx, t, input, name);
   if (missing.length) {
