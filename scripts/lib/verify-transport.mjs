@@ -946,11 +946,12 @@ const TODO_REVIEW_LABELS = [
 
 function matchesElidedSizedCreateList(action, notes) {
   if (collapseOpKey(action.opKey) !== 'workato_list/create_list' || !action.as) return false;
-  return notes.some(
-    (note) =>
-      String(note.content ?? '').includes(ELIDED_SIZED_CREATE_LIST_SNIPPET) &&
-      String(note.content ?? '').includes(action.as),
-  );
+  return notes.some((note) => {
+    const content = String(note.content ?? '');
+    const id = String(note.id ?? '');
+    if (!content.includes(ELIDED_SIZED_CREATE_LIST_SNIPPET)) return false;
+    return id.includes(action.as) || content.includes(action.as);
+  });
 }
 
 function hasCanvasNoteForTodoStep(notes, step) {

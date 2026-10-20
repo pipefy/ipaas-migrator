@@ -166,7 +166,11 @@ export function indexVariables(root: ParsedStep): VarIndex {
         label: declLabel(step, kind),
         fields: declFields(step),
         strategy: 'store',
-        storeKey: kind === 'list' ? `wv_${step.as}` : '',
+        storeKey: kind === 'list'
+          ? `wv_${step.as}`
+          : isLegacyNameValueDeclare(step)
+            ? String(step.input?.name ?? '').trim()
+            : '',
       });
       if (!step.skip) writes.push({ declareAs: step.as, step, op, contained });
     } else if (op) {

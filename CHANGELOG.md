@@ -6,12 +6,23 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.3 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.4 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.4 — 20 out 2026
+
+Mesmo motor da release oficial **1.12.22**: callable recipe vira gatilho de subflow, collection vira código, `requests.post` vira fetch, declare legado grava pela chave do nome, e a nota do cliente deixa de mostrar e-mail e operação.
+
+- Gatilho de callable recipe usa `callableFlow`; o schema do request vira sampleData.
+- Collection não vira tabela. `SELECT MAX ... NOT LIKE` vira código; outro SQL fica incompleto.
+- Python de POST com headers literais vira `fetch`.
+- Declare legado grava no Storage com a chave do `name`.
+- Nota do cliente sem e-mail, id interno, caminho ou nome de operação.
+- `migrador-workato-cliente-navegador-0.7.4.tgz`
 
 ## 0.7.3 — 19 out 2026
 

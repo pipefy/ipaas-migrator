@@ -1099,7 +1099,10 @@ function renderDataPill(
     return '{{TODO_pill}}';
   }
   if (!dp || typeof dp !== 'object' || Array.isArray(dp)) return '{{TODO_pill}}';
-  const path: any[] = Array.isArray(dp.path) ? dp.path : [];
+  let path: any[] = Array.isArray(dp.path) ? dp.path : [];
+  if (dp.provider === 'workato_service' && path[0] === 'request') {
+    path = ['data', ...path.slice(1)];
+  }
   if (dp.pill_type === 'job_context') {
     if (!Array.isArray(dp.path)) return '{{TODO_pill}}';
     const key = path.find((element) => typeof element === 'string') as string | undefined;
@@ -1437,7 +1440,10 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
     if (caught !== null) return caught;
   }
   const as = parts[1];
-  const path = parts.slice(2).join('.');
+  let path = parts.slice(2).join('.');
+  if (parts[0] === 'workato_service' && path.split('.')[0] === 'request') {
+    path = ['data', ...path.split('.').slice(1)].join('.');
+  }
   if (as && options?.invalidAs?.has(as)) return '{{TODO_ref}}';
   if (as && options?.skippedAs?.has(as)) return options?.omitDangling ? '' : '{{TODO_ref}}';
   const binding = as ? asToName.get(as) : undefined;

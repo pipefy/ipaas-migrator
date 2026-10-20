@@ -112,7 +112,9 @@ export function resultLabelsFromSchema(raw: unknown): Map<string, string> {
 export function shapeCallableFlow(input: Record<string, any>): Record<string, any> {
   return {
     mode: 'simple',
-    exampleData: { sampleData: sampleDataFromSchema(input.parameters_schema_json) },
+    exampleData: {
+      sampleData: sampleDataFromSchema(input.parameters_schema_json ?? input.request_schema_json),
+    },
   };
 }
 

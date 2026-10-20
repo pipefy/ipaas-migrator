@@ -64,10 +64,22 @@ export function phraseFor(kind, lang) {
   return table[kind] ?? table.other;
 }
 
+/** Tira e-mail, id interno, caminho e nome de operação do texto que o cliente vê. */
+export function publicDetail(detail) {
+  return String(detail ?? '')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '')
+    .replace(/\b[0-9a-f]{8,}\b/gi, '')
+    .replace(/\b[a-z0-9_]+\/[a-z0-9_]+\b/gi, '')
+    .replace(/ontologias?\b/gi, '')
+    .replace(/(?:^|\s)\/\S+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function noteContent(finding, lang) {
   const table = phrasesFor(lang);
   const what = phraseFor(finding.kind, lang);
-  const where = String(finding.detail ?? '')
+  const where = publicDetail(finding.detail)
     .replace(/AP-MIGRATION-TODO/g, '')
     .replace(/TODO_[A-Za-z]+/g, '')
     .replace(/active\s*pieces/gi, '')

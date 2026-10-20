@@ -952,7 +952,8 @@ function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, StepBinding> |
     if (!fields?.size) continue;
     const scalarFields = new Map<string, string>();
     for (const field of fields) {
-      scalarFields.set(field, storeGetRef(injectStoreGet(scalarStorageKey(field), field, ctx)));
+      const key = decl.storeKey || scalarStorageKey(field);
+      scalarFields.set(field, storeGetRef(injectStoreGet(key, decl.label || field, ctx)));
     }
     overlay.set(as, { name: scalarFields.values().next().value!, scalarFields });
   }
@@ -1409,6 +1410,10 @@ export const REVIEW_TRIGGER_LABEL = 'REVISAR: gatilho';
 export const REVIEW_UNMAPPED_LABEL = 'REVISAR: operação sem mapa';
 export const UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET = 'foi substituído por catch_webhook';
 export const ELIDED_SIZED_CREATE_LIST_SNIPPET = 'create_list elidido: o foreach itera o array de origem';
+export const RECIPE_OPS_NOTE =
+  'Este gatilho acompanha execução de receitas. Não há equivalente. Se ele monitora erro, refaça as receitas acompanhadas com tratamento de erro. Se ele liga ou desliga uma receita, use um agendamento e uma condição.';
+export const COLLECTION_QUERY_NOTE =
+  'A consulta da collection não foi convertida. O passo ficou incompleto.';
 const WEBHOOK_PIECE = '@activepieces/piece-webhook';
 export const NEW_UPDATED_CARD_NOTE =
   'O gatilho Workato é new/updated card. O iPaaS não tem um gatilho que junte card criado e card atualizado. Este fluxo usa cardFieldUpdated, que dispara quando um campo muda. Conferir se a receita também precisava reagir a card criado.';
@@ -1902,7 +1907,7 @@ function buildScalarStore(
     const put = storeActionStep(
       index === 0 ? name : nextName('var_put'),
       'put',
-      { key: scalarStorageKey(field), value, store_scope: STORE_SCOPE },
+      { key: decl.storeKey || scalarStorageKey(field), value, store_scope: STORE_SCOPE },
       entries.length === 1 ? display : `Gravar variavel "${field}"`,
       valid,
       skip,
@@ -2821,6 +2826,159 @@ function buildNodeIdsPython(name: string, display: string, step: ParsedStep, ctx
 /** Só espaço some. `#ddd` dentro de string HTML não é comentário. */
 function collapsePythonSpace(python: string): string {
   return python.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * `requests.post(...).json()` com url, corpo e headers literais.
+ * Qualquer outro Python continua no stub.
+ */
+function pythonRequestsPost(python: string): { urlKey: string; bodyKey: string; headers: Record<string, string> } | null {
+  const text = collapsePythonSpace(python);
+  const match = text.match(
+    /^import requests(?:\s+([A-Za-z_]\w*)\s*=\s*(\{.*?\}))?\s+def main\(input\):\s+(?:[A-Za-z_]\w*\s*=\s*)?requests\.post\(\s*input\[\s*["']([A-Za-z_]\w*)["']\s*\]\s*,\s*json\s*=\s*input\[\s*["']([A-Za-z_]\w*)["']\s*\]\s*,\s*headers\s*=\s*([A-Za-z_]\w*|\{.*?\})\s*,?\s*\)\.json\(\)\s+return\s+[A-Za-z_]\w*\s*$/,
+  );
+  if (!match) return null;
+  const headerName = match[1];
+  const headerLiteral = match[2];
+  const headersRaw = match[5]!;
+  let headersJson = headersRaw;
+  if (headersRaw.startsWith('{')) headersJson = headersRaw;
+  else if (headerName && headersRaw === headerName && headerLiteral) headersJson = headerLiteral;
+  else return null;
+  let headers: Record<string, string>;
+  try {
+    const parsed = JSON.parse(headersJson.replace(/,\s*([}\]])/g, '$1'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    headers = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') return null;
+      headers[key] = value;
+    }
+  } catch {
+    return null;
+  }
+  return { urlKey: match[3]!, bodyKey: match[4]!, headers };
+}
+
+function buildPythonRequestsPost(
+  name: string,
+  display: string,
+  step: ParsedStep,
+  ctx: Ctx,
+  post: { urlKey: string; bodyKey: string; headers: Record<string, string> },
+): any {
+  const raw = (step.input?.code_input?.data ?? {}) as Record<string, any>;
+  const input = resolveFormulas(convInput(raw, undefined, ctx), ctx, name);
+  const code = [
+    '// py_eval/invoke_custom_py_code',
+    'export const code = async (inputs) => {',
+    '  const res = await fetch(inputs.url, {',
+    "    method: 'POST',",
+    `    headers: ${JSON.stringify(post.headers)},`,
+    '    body: JSON.stringify(inputs.body ?? {}),',
+    '  });',
+    '  const text = await res.text();',
+    '  try {',
+    '    return JSON.parse(text);',
+    '  } catch {',
+    '    return { status: res.status, body: text };',
+    '  }',
+    '};',
+  ].join('\n');
+  const mapped: Record<string, any> = {};
+  if (post.urlKey in input) mapped.url = input[post.urlKey];
+  if (post.bodyKey in input) mapped.body = input[post.bodyKey];
+  return codeStep(name, display, mapped, code, !hasTodoMarker(mapped));
+}
+
+const SMART_LIST_CODE = [
+  'export const code = async (inputs) => {',
+  '  const raw = inputs.list_source;',
+  "  const items = Array.isArray(raw) ? raw : raw == null || raw === '' ? [] : [raw];",
+  '  return { items, list_name: inputs.list_name, rows: items };',
+  '};',
+].join('\n');
+
+const SMART_QUERY_CODE = [
+  'export const code = async (inputs) => {',
+  '  const rows = Array.isArray(inputs.rows) ? inputs.rows : [];',
+  '  const pattern = String(inputs.pattern ?? "").toLowerCase();',
+  '  const kept = rows.filter((row) => !String(row?.[inputs.where_field] ?? "").toLowerCase().includes(pattern));',
+  '  let max = null;',
+  '  for (const row of kept) {',
+  '    const value = row?.[inputs.select_field];',
+  "    if (value == null || value === '') continue;",
+  '    if (max == null || String(value) > String(max)) max = value;',
+  '  }',
+  '  return { max, rows: max == null ? [] : [{ columns: max }] };',
+  '};',
+].join('\n');
+
+function dpColumn(fragment: string): string | null {
+  const match = fragment.match(/_dp\('((?:\\'|[^'])*)'\)/);
+  if (!match) return /^[A-Za-z_][\w]*$/.test(fragment.trim()) ? fragment.trim() : null;
+  try {
+    const dp = JSON.parse(match[1]!.replace(/\\'/g, "'"));
+    const path = Array.isArray(dp.path) ? dp.path.filter((part: unknown) => typeof part === 'string') : [];
+    const at = path.indexOf('columns');
+    const name = at >= 0 ? path[at + 1] : path.at(-1);
+    return typeof name === 'string' && name ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+function compileSmartListQuery(sql: string): { select: string; whereField: string; pattern: string; fromLine: string } | null {
+  const match = sql.trim().match(
+    /^SELECT\s+MAX\(\s*([\s\S]+?)\s*\)\s+FROM\s+([\s\S]+?)\s+WHERE\s+([\s\S]+?)\s+NOT\s+LIKE\s+'%?([^'%]+)%?'\s*$/i,
+  );
+  if (!match) return null;
+  const select = dpColumn(match[1]!);
+  const whereField = dpColumn(match[3]!);
+  const from = match[2]!.match(/_dp\('((?:\\'|[^'])*)'\)/);
+  if (!select || !whereField || !from) return null;
+  try {
+    const dp = JSON.parse(from[1]!.replace(/\\'/g, "'"));
+    if (!dp.line) return null;
+    return { select, whereField, pattern: match[4]!, fromLine: String(dp.line) };
+  } catch {
+    return null;
+  }
+}
+
+function buildSmartListCreate(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const source = step.input ?? {};
+  const input = resolveFormulas(
+    convInput({ list_source: source.list_source, list_name: source.list_name }, undefined, ctx),
+    ctx,
+    name,
+  );
+  return codeStep(name, display, input, SMART_LIST_CODE, !hasTodoMarker(input));
+}
+
+function buildSmartListQuery(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
+  const sql = String(step.input?.sql ?? '');
+  const compiled = compileSmartListQuery(sql);
+  const fromName = compiled ? stepBindingName(ctx.asToName.get(compiled.fromLine)) : undefined;
+  if (!compiled || !fromName) {
+    ctx.todos.push(`COLLECTION (${name}): consulta sem conversao.`);
+    ctx.diagnostics.push({
+      category: 'CODE_TRANSLATION_REQUIRED',
+      reason: 'UNTRANSLATED_CODE',
+      action: 'SKIP_LLM',
+      stepName: name,
+      severity: 'ERROR',
+    });
+    pushReviewNote(ctx, 'UNMAPPED', COLLECTION_QUERY_NOTE, '', name);
+    return codeStep(name, display, {}, 'export const code = async () => ({ rows: [] });', false);
+  }
+  const input = {
+    rows: `{{${fromName}['items']}}`,
+    select_field: compiled.select,
+    where_field: compiled.whereField,
+    pattern: compiled.pattern,
+  };
+  return codeStep(name, display, input, SMART_QUERY_CODE, true);
 }
 
 /**
@@ -4267,6 +4425,12 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'workato_list/create_list') {
     return buildCreateList(name, display, step, ctx);
   }
+  if (collapseOpKey(opKey) === 'workato_smart_list/create_list') {
+    return buildSmartListCreate(name, display, step, ctx);
+  }
+  if (collapseOpKey(opKey) === 'workato_smart_list/query_list') {
+    return buildSmartListQuery(name, display, step, ctx);
+  }
   if (
     collapseOpKey(opKey) === 'workato_list/accumulate_list_items' &&
     step.as &&
@@ -4297,6 +4461,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   }
   if (collapseOpKey(opKey) === 'py_eval/invoke_custom_py_code') {
     const python = String(step.input?.code ?? '');
+    const httpPost = pythonRequestsPost(python);
+    if (httpPost) return buildPythonRequestsPost(name, display, step, ctx, httpPost);
     if (pythonRandomNineDigits(python)) {
       return codeStep(name, display, {}, pythonRandomNineDigitsCode(), true);
     }
@@ -5899,7 +6065,7 @@ function nilScalarDeclare(step: ParsedStep, ctx: Ctx): any | null {
     const put = storeActionStep(
       index === 0 ? name : nextName('var_put'),
       'put',
-      { key: scalarStorageKey(field), value: '', store_scope: STORE_SCOPE },
+      { key: decl.storeKey || scalarStorageKey(field), value: '', store_scope: STORE_SCOPE },
       decl.fields.length === 1 ? display : `Gravar variavel "${field}"`,
       true,
       false,
@@ -6140,18 +6306,21 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     action: 'CHECK_DOCUMENTATION',
     stepName: 'trigger',
   });
+  const recipeOps = collapseOpKey(opKey).startsWith('workato_app/');
   ctx.piecesUsed.add(WEBHOOK_PIECE);
   pushReviewNote(
     ctx,
     'TRIGGER',
-    `Gatilho Workato \`${collapseOpKey(opKey)}\` não tem equivalente; ${UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET}. Configure o sistema de origem para chamar este endpoint ou escolha o gatilho correto.`,
+    recipeOps
+      ? RECIPE_OPS_NOTE
+      : `Gatilho Workato \`${collapseOpKey(opKey)}\` não tem equivalente; ${UNMAPPED_TRIGGER_PLACEHOLDER_SNIPPET}. Configure o sistema de origem para chamar este endpoint ou escolha o gatilho correto.`,
     '',
     'trigger',
   );
   nextAction = prependJobContext(nextAction, ctx);
   return {
     name: 'trigger',
-    valid: true,
+    valid: !recipeOps,
     displayName: root.name || 'Gatilho',
     nextAction,
     type: 'PIECE_TRIGGER',
@@ -6480,13 +6649,9 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
   };
   ctx.elidedSizedCreateLists = retargetSizedListForeach(recipe.root);
   for (const as of ctx.elidedSizedCreateLists) {
-    pushReviewNote(
-      ctx,
-      'VARS',
-      `${ELIDED_SIZED_CREATE_LIST_SNIPPET} (as \`${as}\`).`,
-      '',
-      undefined,
-    );
+    pushReviewNote(ctx, 'VARS', `${ELIDED_SIZED_CREATE_LIST_SNIPPET}.`, '', undefined);
+    const note = ctx.canvasNotes[ctx.canvasNotes.length - 1];
+    if (note) note.id = `review_variables_elided_${as}`;
   }
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
   assignNames(recipe.root, ctx, true);

@@ -4100,16 +4100,17 @@
       "notes": "chamar outro flow/webhook"
     },
     "workato_service/receive_request": {
-      "target": {"piece":"@activepieces/piece-webhook","name":"catch_webhook","kind":"trigger"},
-      "fixedProps": {"authType":"none"},
+      "target": {"piece":"@activepieces/piece-subflows","name":"callableFlow","kind":"trigger"},
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "Callable recipe: gatilho piece-subflows mode simple. request_schema_json vira sampleData."
     },
     "workato_smart_list/create_list": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-create-records","kind":"action"},
+      "target": null,
+      "builtin": "code",
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox. de Smart List"
+      "notes": "Collection vira Code com a lista de origem. Nao vira tabela."
     },
     "workato_smart_list/create_list_from_csv": {
       "target": {"piece":"@activepieces/piece-csv","name":"convert_csv_to_json","kind":"action"},
@@ -4118,10 +4119,11 @@
       "notes": "+ piece-tables"
     },
     "workato_smart_list/query_list": {
-      "target": {"piece":"@activepieces/piece-tables","name":"tables-find-records","kind":"action"},
+      "target": null,
+      "builtin": "code",
       "difficulty": "medium",
       "manual": false,
-      "notes": "aprox. de Smart List"
+      "notes": "SELECT MAX ... NOT LIKE vira Code. Outro SQL fica incompleto, sem tabela."
     },
     "workato_template/create_document": {
       "target": {
