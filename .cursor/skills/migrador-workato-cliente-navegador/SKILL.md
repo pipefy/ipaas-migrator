@@ -1,6 +1,6 @@
 ---
 name: migrador-workato-cliente-navegador
-description: Tutor 0.5 do kit cliente com navegador (kit vigente). Instala e só anuncia pronto após smoke. Traduz, diagnostica pipes/fases, importa no Chrome do agente depois do ok, oferece MCP Pipefy após o login. Aceita Conexão: <id>. Use when the user invokes /migrador-workato-cliente-navegador, /migrador-workato-cliente, or says "migrar receita", "instale o migrador", "install the migrator", "migrador cliente", "quero migrar", "migrar receita com navegador", "instale o migrador com navegador", "importa essa receita", or cola "Conexão: <id>".
+description: "Tutor 0.5 do kit cliente com navegador (kit vigente). Instala e só anuncia pronto após smoke. Traduz, diagnostica pipes/fases, importa no Chrome do agente depois do ok, oferece MCP Pipefy após o login. Aceita Conexão: <id>. Use when the user invokes /migrador-workato-cliente-navegador, /migrador-workato-cliente, or says \"migrar receita\", \"instale o migrador\", \"install the migrator\", \"migrador cliente\", \"quero migrar\", \"migrar receita com navegador\", \"instale o migrador com navegador\", \"importa essa receita\", or cola \"Conexão: <id>\"."
 disable-model-invocation: true
 ---
 
