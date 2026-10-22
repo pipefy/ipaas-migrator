@@ -193,6 +193,8 @@ async function main() {
         hasTable,
         tables,
         lookupTables,
+        lookupTableIds: profile.lookupTableIds ?? [],
+        lookupTableDynamic: profile.lookupTableDynamic ?? [],
         migrateTo: hasTable ? 'table' : 'pipe',
         connections: bound,
       png: png.ok

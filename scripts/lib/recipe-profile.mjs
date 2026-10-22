@@ -98,6 +98,11 @@ function connectionRef(account) {
   return String(account.name ?? account.zip_name ?? 'conexao sem identificador').trim();
 }
 
+export function literalLookupId(raw) {
+  const text = raw == null ? '' : String(raw).trim();
+  return /^\d+$/.test(text) ? text : null;
+}
+
 function walk(node, visit) {
   if (Array.isArray(node)) {
     for (const n of node) walk(n, visit);
@@ -142,6 +147,8 @@ export function parseRecipeProfile(json) {
   const hiddenPipes = new Set();
   const tables = new Set();
   const lookupTables = new Set();
+  const lookupTableIds = new Set();
+  const lookupTableDynamic = new Set();
   let trigger = null;
   let triggerPipe = null;
   let customApiCalls = 0;
@@ -151,7 +158,13 @@ export function parseRecipeProfile(json) {
 
   walk(code, (n) => {
     const provider = n.provider ? String(n.provider) : null;
-    if (provider === 'lookup_table') lookupTables.add(String(n.name ?? 'lookup_table'));
+    if (provider === 'lookup_table') {
+      lookupTables.add(String(n.name ?? 'lookup_table'));
+      const raw = n.input?.lookup_table_id;
+      const id = literalLookupId(raw);
+      if (id) lookupTableIds.add(id);
+      else lookupTableDynamic.add(raw == null || String(raw).trim() === '' ? '(ausente)' : String(raw).trim());
+    }
     if (n.keyword === 'trigger' && provider && !trigger) {
       trigger = `${provider}/${n.name ?? ''}`;
       if (n.input?.pipe_id != null) triggerPipe = String(n.input.pipe_id);
@@ -206,6 +219,8 @@ export function parseRecipeProfile(json) {
     customApiMutates,
     tables: [...tables],
     lookupTables: [...lookupTables],
+    lookupTableIds: [...lookupTableIds],
+    lookupTableDynamic: [...lookupTableDynamic],
     touched,
   };
 }
