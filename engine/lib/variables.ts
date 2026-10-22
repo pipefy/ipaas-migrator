@@ -1,12 +1,14 @@
 // Variaveis Workato: indexa declare/update/list.
 //
 // No Workato a variavel vive no job e e MUTAVEL. No Activepieces o output de
-// um step nao muda depois que ele roda, entao toda variavel vai para o
-// piece-store com escopo RUN (isola a execucao).
+// um step nao muda depois que ele roda. O piece-store (escopo RUN) so entra
+// quando o valor acumula nas voltas de um loop ou sai de um ramo e e lido em
+// outro. Escalar escrito e lido no mesmo caminho e `linear`: a leitura e a
+// datapill da saida do step que escreveu por ultimo.
 //
-// Escalar: um `put` por campo. A chave e o nome do campo (Numero_grupo_ADC) e
-// o valor e o escalar. Lista entra por add_to_list como array de strings JSON
-// numa chave `wv_<as>`.
+// Escalar no Storage: um `put` por campo. A chave e o nome do campo
+// (Numero_grupo_ADC) e o valor e o escalar. Lista entra por add_to_list como
+// array de strings JSON numa chave `wv_<as>`.
 import type { ParsedStep } from './types.ts';
 
 export type VarStrategy = 'static' | 'linear' | 'store';
@@ -38,6 +40,8 @@ export interface VarWrite {
 export interface VarIndex {
   decls: Map<string, VarDecl>;
   writes: VarWrite[];
+  /** Passos dentro de foreach/repeat: rodam uma vez por volta. */
+  inLoop: Set<ParsedStep>;
 }
 
 /**
@@ -152,9 +156,70 @@ export function updateFields(step: ParsedStep): Record<string, unknown> {
   return out;
 }
 
+/** O passo grava algum valor? Declare sem `data` e update so com `=skip` nao. */
+export function writesValue(step: ParsedStep): boolean {
+  const op = variableOp(step);
+  if (op === 'update') return Object.keys(updateFields(step)).length > 0;
+  if (op !== 'declare' || step.name !== 'declare_variable') return op !== undefined;
+  if (isLegacyNameValueDeclare(step)) return (step.input as Record<string, unknown>).value != null;
+  const data = step.input?.variables?.data;
+  if (!data || typeof data !== 'object') return false;
+  return Object.values(data as Record<string, unknown>).some((value) => value != null);
+}
+
+/** `declare_list` sem item inicial nem colecao de origem. */
+export function isEmptyListDeclare(step: ParsedStep): boolean {
+  if (step.provider !== VAR_PROVIDER || step.name !== 'declare_list') return false;
+  const items = step.input?.list_items;
+  return !items || typeof items !== 'object' || Object.keys(items).length === 0;
+}
+
+const LOOPS = new Set(['foreach', 'repeat', 'while_condition']);
+const BRANCHES = new Set(['elsif', 'elseif', 'else']);
+
+interface Place {
+  parent: ParsedStep | null;
+  index: number;
+}
+
+/**
+ * Escalar `linear`: todas as escritas no mesmo bloco, fora de catch, e toda
+ * leitura depois da primeira escrita com valor, no mesmo bloco ou dentro de
+ * um passo seguinte dele (nunca em outro ramo do mesmo `if`). Assim o valor
+ * nao acumula entre voltas nem cruza ramo; a pill aponta para o step.
+ */
+function isLinearScalar(
+  decl: VarDecl,
+  writes: VarWrite[],
+  reads: ParsedStep[],
+  places: Map<ParsedStep, Place>,
+  inCatch: Set<ParsedStep>,
+): boolean {
+  if (decl.kind !== 'scalar' || decl.storeKey) return false;
+  const own = writes.filter((write) => write.declareAs === decl.as);
+  if (!own.length || own.some((write) => inCatch.has(write.step))) return false;
+  const parent = places.get(own[0]!.step)?.parent;
+  if (!parent || own.some((write) => places.get(write.step)?.parent !== parent)) return false;
+  const valued = own.filter((write) => writesValue(write.step));
+  if (!valued.length) return false;
+  const first = Math.min(...valued.map((write) => places.get(write.step)!.index));
+
+  return reads.every((read) => {
+    let top: ParsedStep | null = read;
+    while (top && places.get(top)?.parent !== parent) top = places.get(top)?.parent ?? null;
+    if (!top) return false;
+    if (parent.keyword === 'if' && BRANCHES.has(top.keyword)) return false;
+    return places.get(top)!.index > first;
+  });
+}
+
 export function indexVariables(root: ParsedStep): VarIndex {
   const decls = new Map<string, VarDecl>();
   const writes: VarWrite[] = [];
+  const places = new Map<ParsedStep, Place>([[root, { parent: null, index: 0 }]]);
+  const inCatch = new Set<ParsedStep>();
+  const inLoop = new Set<ParsedStep>();
+  const readers = new Map<string, ParsedStep[]>();
 
   const walk = (step: ParsedStep, contained: boolean): void => {
     const op = variableOp(step);
@@ -178,12 +243,24 @@ export function indexVariables(root: ParsedStep): VarIndex {
       // Passo desativado nao executa: nao muda o estado da variavel.
       if (ref && !step.skip) writes.push({ declareAs: ref.declareAs, step, op, contained });
     }
+    if (!step.skip) {
+      for (const as of readsOf(step)) readers.set(as, [...(readers.get(as) ?? []), step]);
+    }
     const inner = contained || CONTAINERS.has(step.keyword);
-    step.children.forEach((child) => walk(child, inner));
+    step.children.forEach((child, index) => {
+      places.set(child, { parent: step, index });
+      if (step.keyword === 'catch' || inCatch.has(step)) inCatch.add(child);
+      if (LOOPS.has(step.keyword) || inLoop.has(step)) inLoop.add(child);
+      walk(child, inner);
+    });
   };
   walk(root, false);
 
-  return { decls, writes };
+  for (const decl of decls.values()) {
+    if (isLinearScalar(decl, writes, readers.get(decl.as) ?? [], places, inCatch)) decl.strategy = 'linear';
+  }
+
+  return { decls, writes, inLoop };
 }
 
 function walkStrings(node: unknown, visit: (s: string) => void): void {
@@ -314,6 +391,7 @@ function visitVariableRefs(
   const { name: _ignored, ...rest } = (step.input ?? {}) as Record<string, unknown>;
   walkStrings(rest, visit);
   if (step.source) visit(step.source);
+  for (const pair of step.indexPairs ?? []) visit(pair.pill);
   walkStrings(step.filter, visit);
 }
 

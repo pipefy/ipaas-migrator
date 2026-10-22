@@ -3,6 +3,7 @@
 import { NO_AUTH_PIECES } from './bind-connections.mjs';
 import { PIPEFY_PIECE_VERSION } from '../../engine/lib/pipefy-piece.ts';
 import { SUBFLOW_PIECE_VERSION } from '../../engine/lib/subflow.ts';
+import { indexVariables, isEmptyListDeclare } from '../../engine/lib/variables.ts';
 
 const CONNECTOR_SUFFIX = /_connector_\d+(?:_\d+)?$/;
 
@@ -331,6 +332,7 @@ export function collectWorkatoTree(recipe) {
         keyword,
         skip: false,
         as: node.as ?? null,
+        source: typeof node.source === 'string' ? node.source : null,
         hasCatchBody: Boolean(catchChildren.length) && !catchStopOnly,
         catchStopOnly,
         stopWithError: false,
@@ -536,7 +538,8 @@ function httpUrlOf(input) {
 }
 
 /**
- * Get file from URL (Workato file_connector/read_file) vira HTTP GET binario.
+ * Get file from URL (Workato file_connector/read_file) vira HTTP GET binario,
+ * salvo quando alimenta upload_attachment (o anexo recebe a URL, sem GET).
  * Sem `url` o editor fica vazio — o mesmo gap que Files Helper read_file
  * (file/readOptions) deixava no canvas.
  */
@@ -872,6 +875,36 @@ function matchesLookupFind(step, action) {
   return pieceNameOf(step) === '@activepieces/piece-tables' && opNameOf(step) === 'tables-find-records';
 }
 
+function workatoReferencesLine(action, line) {
+  const blob = JSON.stringify(action?.input ?? {});
+  return blob.includes(`"line":"${line}"`) || blob.includes(`\\"line\\":\\"${line}\\"`);
+}
+
+/**
+ * read_file que alimenta upload_attachment não vira HTTP GET: o `attachment` recebe a URL.
+ * Casa com o uploadAttachment do flow sem consumir step.
+ */
+function readFileAbsorbedByUpload(action, workatoActions, steps) {
+  if (collapseOpKey(action.opKey) !== 'file_connector/read_file' || !action.as) return false;
+  const fed = workatoActions.some(
+    (other) => other !== action && /\/upload_attachment$/.test(String(other.opKey ?? '')) && workatoReferencesLine(other, action.as),
+  );
+  if (!fed) return false;
+  return steps.some((step) => {
+    if (pieceNameOf(step) !== '@activepieces/piece-pipefy' || opNameOf(step) !== 'uploadAttachment') return false;
+    const attachment = String(step.settings?.input?.attachment ?? '').trim();
+    return attachment !== '' && !/\['body'\]/.test(attachment);
+  });
+}
+
+/** create_csv_lines com `____source` vira Code que devolve `{ csv, fileName, dataUri }`. */
+function matchesCsvLinesCode(step, action) {
+  if (collapseOpKey(action.opKey) !== 'csv_parser/create_csv_lines') return false;
+  if (step?.type !== 'CODE') return false;
+  const code = sourceCodeOf(step);
+  return code.includes('dataUri') && code.includes('data:text/csv;base64,');
+}
+
 function matchesCode(step, opKey) {
   if (step.type !== 'CODE') return false;
   return sourceCodeOf(step).includes(opKey);
@@ -899,9 +932,37 @@ function listWriteIsNotJsonStrings(step) {
 
 function materializedVariable(step) {
   if (step.type !== 'CODE' || variableCodeLooksEmpty(step)) return null;
-  const header = sourceCodeOf(step).match(VAR_HEADER);
+  const code = sourceCodeOf(step);
+  const header = code.match(VAR_HEADER);
   if (!header) return null;
-  return { kind: header[1], op: header[2] };
+  const label = code.match(/Variavel Workato "([^"\n]*)"/)?.[1] ?? '';
+  return { kind: header[1], op: header[2], label };
+}
+
+/**
+ * Rótulos das variáveis escalares escritas e lidas no mesmo caminho (APR-0016).
+ * O motor emite essas como saída de Code; Storage fica para acumular em loop
+ * ou cruzar ramo.
+ */
+function linearVariableLabels(recipe) {
+  const toStep = (node) => ({
+    keyword: node?.keyword ?? 'action',
+    provider: node?.provider,
+    name: node?.name,
+    as: node?.as,
+    comment: node?.comment,
+    skip: node?.skip === true,
+    input: node?.input ?? {},
+    filter: node?.filter && typeof node.filter === 'object' ? node.filter : undefined,
+    source: typeof node?.source === 'string' ? node.source : undefined,
+    children: Array.isArray(node?.block) ? node.block.map(toStep) : [],
+  });
+  try {
+    const { decls } = indexVariables(toStep(recipeCode(recipe)));
+    return new Set([...decls.values()].filter((decl) => decl.strategy === 'linear').map((decl) => decl.label));
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -952,6 +1013,40 @@ function matchesElidedSizedCreateList(action, notes) {
     if (!content.includes(ELIDED_SIZED_CREATE_LIST_SNIPPET)) return false;
     return id.includes(action.as) || content.includes(action.as);
   });
+}
+
+function workatoPillPayload(fragment) {
+  try {
+    const value = JSON.parse(String(fragment).replace(/\\'/g, "'"));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `size` que é só `<array>.length`: a lista sai vazia e só dimensiona o foreach. */
+function sizedCreateListSize(input) {
+  const keys = Object.keys(input ?? {}).filter((key) => !blankWorkatoValue(input[key]));
+  if (keys.length !== 1 || keys[0] !== 'size') return false;
+  const raw = String(input.size).trim().replace(/^=\s*/, '');
+  return /^(?:#\{)?_dp\('(?:\\'|[^'])*'\)\}?\.length$/.test(raw);
+}
+
+/**
+ * O motor elide o `create_list` dimensionado sem nota (APR-0020): o foreach que
+ * itera essa lista passa a iterar o array de origem.
+ */
+function matchesElidedSizedCreateListLoop(action, controls, steps) {
+  if (collapseOpKey(action.opKey) !== 'workato_list/create_list' || !action.as) return false;
+  if (!sizedCreateListSize(action.input)) return false;
+  const loops = controls.filter((control) => {
+    if (control.keyword !== 'foreach' || control.skip || !control.source) return false;
+    const found = String(control.source).match(/_dp\('((?:\\'|[^'])*)'\)/);
+    const dp = found ? workatoPillPayload(found[1]) : null;
+    return Boolean(dp) && Array.isArray(dp.path) && dp.path[0] === 'list' && String(dp.line) === action.as;
+  });
+  if (loops.length !== 1) return false;
+  return steps.some((step) => step?.type === 'LOOP_ON_ITEMS');
 }
 
 function hasCanvasNoteForTodoStep(notes, step) {
@@ -1011,7 +1106,8 @@ function matchesStoredVariable(step, action) {
     return scalarPut;
   }
   if (name === 'clear_list') return emptyListPut || actionName === 'remove_value';
-  if (name === 'declare_list') return emptyListPut || actionName === 'add_to_list';
+  // Declare vazio não tem step; dentro de loop o motor zera com `remove_value`.
+  if (name === 'declare_list') return actionName === 'add_to_list' || actionName === 'remove_value';
   if (name === 'insert_to_list' || name === 'insert_to_list_batch') return actionName === 'add_to_list';
   return false;
 }
@@ -1042,7 +1138,7 @@ function matchesFallback(step, action, entry) {
   return true;
 }
 
-export function findMissingActions(workatoActions, steps, operations, notes = []) {
+export function findMissingActions(workatoActions, steps, operations, notes = [], controls = []) {
   const used = new Set();
   const usedNotes = new Set();
   const missing = [];
@@ -1082,7 +1178,11 @@ export function findMissingActions(workatoActions, steps, operations, notes = []
   };
 
   const pending = workatoActions.filter(
-    (action) => action.keyword !== 'trigger' && !scalarDeclareIsEmpty(action) && !updateCardWritesNoField(action),
+    (action) =>
+      action.keyword !== 'trigger' &&
+      !scalarDeclareIsEmpty(action) &&
+      !isEmptyListDeclare(action) &&
+      !updateCardWritesNoField(action),
   );
 
   for (const action of [...pending]) {
@@ -1101,6 +1201,8 @@ export function findMissingActions(workatoActions, steps, operations, notes = []
             String(note.content ?? '').includes(action.as),
         )) ||
       (!asyncWait && openCards && take((step) => matchesOpenCards(step), action)) ||
+      (!asyncWait && readFileAbsorbedByUpload(action, workatoActions, steps)) ||
+      (!asyncWait && take((step) => matchesCsvLinesCode(step, action), action)) ||
       (!asyncWait && !openCards && entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action), action)) ||
       (!asyncWait && (entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
         take((step) => matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action), action)) ||
@@ -1110,7 +1212,8 @@ export function findMissingActions(workatoActions, steps, operations, notes = []
             todoPieceMatches(step, action) || matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action),
           action,
         )) ||
-      (!asyncWait && take((step) => matchesFallback(step, action, entry), action));
+      (!asyncWait && take((step) => matchesFallback(step, action, entry), action)) ||
+      (!asyncWait && matchesElidedSizedCreateListLoop(action, controls, steps));
 
     if (found) {
       const index = pending.indexOf(action);
@@ -1317,7 +1420,11 @@ export function collectRafaGaps(recipe, flow, steps) {
     }
   }
 
-  const codeVars = steps.filter((step) => materializedVariable(step));
+  const linear = linearVariableLabels(recipe);
+  const codeVars = steps.filter((step) => {
+    const variable = materializedVariable(step);
+    return variable && !(variable.kind === 'escalar' && linear.has(variable.label));
+  });
   if (codeVars.length) {
     gaps.push(finding(
       'bloqueia',
@@ -1395,7 +1502,7 @@ export function verifyTransport({
   const emptyRepeats = collectEmptyRepeatSteps(steps);
   const emailGaps = collectEmailGaps(tree.actions, steps);
   const flowNotes = canvasNotes(flow);
-  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations, flowNotes);
+  const { missing: missingActions, used } = findMissingActions(tree.actions, steps, operations, flowNotes, tree.controls);
   const findings = [];
 
   const scheduleSteps = steps.filter((step) => pieceNameOf(step) === '@activepieces/piece-schedule');

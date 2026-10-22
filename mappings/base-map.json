@@ -538,7 +538,7 @@
       },
       "difficulty": "low",
       "manual": false,
-      "notes": "Workato file_connector/read_file baixa por URL. Files Helper read_file so le File ja no flow. base64_encode/is_large ficam no Workato e nao tem prop HTTP."
+      "notes": "Workato file_connector/read_file baixa por URL. Files Helper read_file so le File ja no flow. base64_encode/is_large ficam no Workato e nao tem prop HTTP. Quando alimenta upload_attachment, o motor nao emite o GET: o attachment recebe a URL (uploadAttachment aceita URL ou data URI, nao o corpo binario)."
     },
     "workato_variable/declare_variable": {
       "target": null,
@@ -1013,7 +1013,7 @@
       },
       "difficulty": "medium",
       "manual": false,
-      "notes": "Workato gera linhas a partir de lista; column_labels/force_quotes nao tem prop direta."
+      "notes": "Workato gera linhas a partir de lista; column_labels/force_quotes nao tem prop direta. Com lines.____source o motor emite um Code que devolve { csv, fileName, dataUri } (cabecalho completo, uma linha por item); a pill csv_lines vira ['csv'] e, no anexo, ['dataUri']."
     },
     "open_ai/__adhoc_http_action": {
       "target": {
@@ -1903,7 +1903,8 @@
         "kind": "action"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "files: {file: <lista de URLs>}, usePassword: false, outputFileName, passwordOptions: {}. file_list por item vira um Code que so monta a lista de URLs (file_contents). O upload_attachment recebe o step inteiro ({{step_x}})."
     },
     "file_connector/transform_image": {
       "target": {

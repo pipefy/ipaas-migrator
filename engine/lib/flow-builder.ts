@@ -28,7 +28,15 @@ import {
 } from './xlsx-csv.ts';
 import { isTableRecordsPagePython, tableRecordsPageCode } from './table-records-page.ts';
 import { resolveZeroPhaseInput } from './phase-id.ts';
-import { PIPEFY_PIECE_VERSION, pipefyPropertySettings, replaceGraphqlQuery, updateListFieldFromGraphql, withPipefyCardFields } from './pipefy-piece.ts';
+import {
+  PIPEFY_PIECE_VERSION,
+  PIPEFY_PIPE_ID_MARKER,
+  pipefyPropertySettings,
+  publicExportPipeReport,
+  replaceGraphqlQuery,
+  updateListFieldFromGraphql,
+  withPipefyCardFields,
+} from './pipefy-piece.ts';
 import type { UpdateListFieldAdd } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
@@ -57,6 +65,7 @@ import {
 } from './datapills.ts';
 import {
   compileRubyExpression,
+  rubyFloatText,
   CURRENCY_NOTE,
   DECODE_B64_NOTE,
   EQ_NOTE,
@@ -75,6 +84,7 @@ import { scheduleCronTodo, workatoScheduleToCron } from './schedule-cron.ts';
 import {
   firstPill,
   indexVariables,
+  isEmptyListDeclare,
   itemSuffix,
   parseVarName,
   readsOf,
@@ -85,6 +95,7 @@ import {
   SOURCE_KEY,
   VAR_PROVIDER,
   variableOp,
+  writesValue,
   type VarDecl,
   type VarIndex,
 } from './variables.ts';
@@ -92,11 +103,14 @@ import {
   listBatchCode,
   listBatchFields,
   type ListBatchComputed,
+  listItemCode,
   listItemJson,
   listReadCode,
   storeGetRef,
+  variableCode,
   writtenFields,
   FIELDS_KEY,
+  PREV_KEY,
   SOURCE_INPUT_KEY,
   STORE_PIECE,
   STORE_SCOPE,
@@ -164,6 +178,8 @@ interface Ctx {
   todoStepMeta: Map<string, { opKey: string; displayName: string }>;
   /** `as` de create_list elidido por retargetSizedListForeach. */
   elidedSizedCreateLists: Set<string>;
+  /** read_file que só alimenta upload_attachment: o upload recebe a URL e o passo sai. */
+  absorbedSteps: Set<ParsedStep>;
   /** Uma nota por flow: organizationId do Pipefy só alimenta o dropdown. */
   pipefyOrgNoted?: boolean;
   /** Campos de catch sem equivalente (`retry_count`, `uuid`). */
@@ -178,7 +194,7 @@ interface ComposedFormula {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS' | 'TRIGGER' | 'UNMAPPED';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS' | 'HTTP' | 'TRIGGER' | 'UNMAPPED';
   content: string;
   anchorStepName?: string;
 }
@@ -191,10 +207,18 @@ const SUBFLOW_PIECE = '@activepieces/piece-subflows';
 const PIPEFY_PAYLOAD_ROOT = 'data';
 const PIPEFY_GET_CARD_PAYLOAD_ROOT = 'data.card';
 const PIPEFY_GET_RECORD_PAYLOAD_ROOT = 'data.record';
+const PIPEFY_CREATE_CARD_PAYLOAD_ROOT = 'data.createCard.card';
+const PIPEFY_CREATE_RECORD_PAYLOAD_ROOT = 'data.createTableRecord.record';
+// custom_api_call devolve o envelope HTTP ({ status, headers, body }), sem o
+// `data` das outras ações; a resposta GraphQL fica em `body.data`.
+const PIPEFY_HTTP_RESPONSE_ROOT = 'body.data';
 
 function pipefyOutputRoot(targetName: string | undefined): string {
   if (targetName === 'getCardById') return PIPEFY_GET_CARD_PAYLOAD_ROOT;
   if (targetName === 'getRecordById') return PIPEFY_GET_RECORD_PAYLOAD_ROOT;
+  if (targetName === 'createCard') return PIPEFY_CREATE_CARD_PAYLOAD_ROOT;
+  if (targetName === 'createRecord') return PIPEFY_CREATE_RECORD_PAYLOAD_ROOT;
+  if (targetName === 'custom_api_call') return PIPEFY_HTTP_RESPONSE_ROOT;
   return PIPEFY_PAYLOAD_ROOT;
 }
 
@@ -206,8 +230,20 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
     ctx.asToName.set(as, { name, headAlias: { from: 'list', to: 'items' } });
     return;
   }
+  if (isJsonParseOp(collapsed) && splitDocumentSource(step.input ?? {})) {
+    ctx.asToName.set(as, { name, headAlias: { from: 'document.array', to: 'itens' } });
+    return;
+  }
   if (collapsed === 'workato_list/accumulate_list_items' && ctx.loopedListLines.has(as)) {
     ctx.asToName.set(as, { name, headAlias: { from: 'list_items', to: 'items' } });
+    return;
+  }
+  if (collapsed?.startsWith('graphql/')) {
+    ctx.asToName.set(as, { name, outputRoot: pipefyOutputRoot(PIPEFY_GRAPHQL_TARGET.name) });
+    return;
+  }
+  if (collapsed === 'csv_parser/create_csv_lines' && csvLinesPlan(step.input)) {
+    ctx.asToName.set(as, { name, headAlias: { from: 'csv_lines', to: 'csv' } });
     return;
   }
   const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
@@ -376,14 +412,14 @@ function assignNames(
     // `<as>.index`, e sem registro isso vazaria o hash cru no template.
     step.apName = `repeat_${ctx.counter.n++}`;
     if (step.as) ctx.asToName.set(step.as, step.apName);
-  } else if (step.opKey && (step.keyword === 'action' || step.keyword === 'trigger')) {
+  } else if (step.opKey && (step.keyword === 'action' || step.keyword === 'trigger') && !ctx.absorbedSteps.has(step)) {
     step.apName = `step_${ctx.counter.n++}`;
     bindAs(ctx, step.as, step.apName, step);
   }
 
   if (varState.size) step.varSnapshot = new Map(varState);
   const written = step.skip ? undefined : writtenVariable(step, ctx);
-  if (written?.strategy === 'linear' && step.apName) varState.set(written.as, step.apName);
+  if (written?.strategy === 'linear' && step.apName && writesValue(step)) varState.set(written.as, step.apName);
 
   step.children.forEach((c) => assignNames(c, ctx, false, varState));
 }
@@ -477,6 +513,17 @@ const PIPEFY_ORG_NOTE =
 
 function noteWaivedPipefyOrg(ctx: Ctx, target: MapTarget, input: Record<string, any>, anchor: string): void {
   if (target.piece !== PIPEFY_PIECE || target.name === 'inviteUserToOrganization') return;
+  if (anchor === 'trigger' && !blankProp(input.organizationId)) {
+    // Os passos são montados antes do gatilho: a organização do gatilho já vale para eles.
+    const pending = ctx.noteAnchorPending === undefined ? undefined : ctx.canvasNotes[ctx.noteAnchorPending];
+    ctx.canvasNotes = ctx.canvasNotes.filter((note) => !note.content.includes(PIPEFY_ORG_NOTE));
+    if (pending) {
+      const index = ctx.canvasNotes.indexOf(pending);
+      ctx.noteAnchorPending = index === -1 ? undefined : index;
+    }
+    ctx.pipefyOrgNoted = true;
+    return;
+  }
   if (!blankProp(input.organizationId) || ctx.pipefyOrgNoted) return;
   ctx.pipefyOrgNoted = true;
   pushReviewNote(ctx, 'PROP', PIPEFY_ORG_NOTE, '', anchor);
@@ -942,7 +989,7 @@ function variableOverlay(step: ParsedStep, ctx: Ctx): Map<string, StepBinding> |
 
   for (const as of reads) {
     const decl = ctx.vars.decls.get(as);
-    if (!decl) continue;
+    if (!decl || decl.strategy === 'linear') continue;
     if (decl.kind === 'list') {
       const getName = storeGetRef(injectStoreGet(decl.storeKey, decl.label, ctx));
       overlay.set(as, { name: getName, stripHead: 'list_items' });
@@ -1138,7 +1185,7 @@ function resolveTodoFormulaBody(
   source: any,
   ctx: Ctx,
   compositionPart: boolean,
-): string {
+): unknown {
     let body = rawBody;
     const hoisted = hoistEmbeddedLookups(body, (parsed) => scheduleLookupStep(parsed, ctx, harvest));
     body = hoisted;
@@ -1202,7 +1249,8 @@ function resolveTodoFormulaBody(
       }
       harvest.approximations.push(...compiled.approximations);
       const evaluated = compiled.value;
-      return compositionPart ? String(evaluated) : evaluated;
+      if (!compositionPart) return evaluated;
+      return compiled.float && typeof evaluated === 'number' ? rubyFloatText(evaluated) : String(evaluated);
     }
     if (!harvest.allowCode) {
       harvest.approximations.push(...compiled.approximations);
@@ -1211,7 +1259,10 @@ function resolveTodoFormulaBody(
       return wrapApFormula(compiled.expr);
     }
     const key = `f${harvest.fields.length + 1}`;
-    harvest.fields.push({ key, ruby: body, expr: compiled.expr });
+    const floatInText = compiled.float && compositionPart;
+    const expr = floatInText ? `floatOut(${compiled.expr})` : compiled.expr;
+    harvest.fields.push({ key, ruby: body, expr });
+    if (floatInText) harvest.helpers.add('floatOut').add('floatText');
     for (const helper of compiled.helpers) harvest.helpers.add(helper);
     harvest.approximations.push(...compiled.approximations);
     return `{{${harvest.name()}.${key}}}`;
@@ -1415,7 +1466,6 @@ export const UNMAPPED_CODE_NOTE =
   'Este conector não tem equivalente. Os dados de entrada ficaram neste passo para você completar.';
 export const CHANNEL_HOLD_NOTE =
   'Não há envio equivalente. Os campos ficaram neste passo para você escolher o provedor.';
-export const ELIDED_SIZED_CREATE_LIST_SNIPPET = 'create_list elidido: o foreach itera o array de origem';
 export const RECIPE_OPS_NOTE =
   'Este gatilho acompanha execução de receitas. Não há equivalente. Se ele monitora erro, refaça as receitas acompanhadas com tratamento de erro. Se ele liga ou desliga uma receita, use um agendamento e uma condição.';
 export const COLLECTION_QUERY_NOTE =
@@ -1869,14 +1919,17 @@ function resolvedWrite(
 const OMIT_STEP = Symbol('omit-variable-step');
 
 /**
- * Variavel Workato vira piece-store, escopo RUN.
+ * Variavel Workato vira piece-store, escopo RUN, quando acumula em loop ou
+ * cruza ramo. Escalar `linear` vira um Code que devolve o objeto da variavel;
+ * a leitura e a datapill desse step.
  *
- * Escalar: um `put` por campo com valor. Chave = nome do campo, valor = escalar.
- * Declare vazio nao emite `put`. Update grava so o campo novo, sem juntar o objeto.
+ * Escalar no Storage: um `put` por campo com valor. Chave = nome do campo,
+ * valor = escalar. Declare vazio nao emite `put`. Update grava so o campo novo.
  *
- * Lista: `put` de `[]` no declare vazio e no clear. Insert e `add_to_list`
- * com um array de strings JSON. Lote com `current_item` calcula as strings
- * num Code e o Storage grava o array.
+ * Lista: declare vazio nao emite step (dentro de loop, `remove_value` zera a
+ * lista a cada volta). Clear e `put` de `[]`. Insert e `add_to_list` com um
+ * array de strings JSON; item com datapill passa por um Code com
+ * `JSON.stringify`. Lote com `current_item` calcula as strings num Code.
  */
 function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null | typeof OMIT_STEP {
   const op = variableOp(step);
@@ -1891,8 +1944,32 @@ function buildVariableStep(step: ParsedStep, ctx: Ctx): any | null | typeof OMIT
     step.comment ||
     (decl.kind === 'list' ? `Gravar lista "${decl.label}"` : `Gravar variavel "${decl.label}"`);
 
+  if (decl.kind === 'scalar' && decl.strategy === 'linear') {
+    return buildScalarLinear(step, op, decl, ctx, name, display, skip);
+  }
   if (decl.kind === 'scalar') return buildScalarStore(step, op, decl, ctx, name, display, skip);
   return buildListStore(step, op, decl, ctx, name, display, skip);
+}
+
+function buildScalarLinear(
+  step: ParsedStep,
+  op: NonNullable<ReturnType<typeof variableOp>>,
+  decl: VarDecl,
+  ctx: Ctx,
+  name: string,
+  display: string,
+  skip: boolean,
+): any {
+  const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
+  const entries = Object.entries(fields).filter(([, value]) => value != null);
+  if (!entries.length) return OMIT_STEP;
+  const { code, needsPrev } = variableCode(decl, op, step, true);
+  const input: Record<string, any> = { [FIELDS_KEY]: Object.fromEntries(entries) };
+  const previous = step.varSnapshot?.get(decl.as);
+  if (needsPrev && previous) input[PREV_KEY] = `{{${previous}}}`;
+  const built = codeStep(name, display, input, code, valid);
+  built.skip = skip;
+  return built;
 }
 
 function buildScalarStore(
@@ -1945,19 +2022,33 @@ function buildListStore(
     return buildListBatch(step, op, decl, ctx, name, display, skip, batch);
   }
 
-  if (op === 'clear' || op === 'declare') {
-    const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
-    if (op === 'clear' || !Object.keys(fields).length) {
-      return storeActionStep(
-        name,
-        'put',
-        { key: decl.storeKey, value: '[]', store_scope: STORE_SCOPE },
-        display,
-        valid,
-        skip,
-        ctx,
-      );
-    }
+  const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
+  if (op === 'declare' && (isEmptyListDeclare(step) || !Object.keys(fields).length)) {
+    if (!ctx.vars.inLoop.has(step)) return OMIT_STEP;
+    return storeActionStep(
+      name,
+      'remove_value',
+      { key: decl.storeKey, store_scope: STORE_SCOPE },
+      display,
+      true,
+      skip,
+      ctx,
+    );
+  }
+
+  if (op === 'clear') {
+    return storeActionStep(
+      name,
+      'put',
+      { key: decl.storeKey, value: '[]', store_scope: STORE_SCOPE },
+      display,
+      valid,
+      skip,
+      ctx,
+    );
+  }
+
+  if (!JSON.stringify(fields).includes('{{')) {
     return storeActionStep(
       name,
       'add_to_list',
@@ -1974,13 +2065,15 @@ function buildListStore(
     );
   }
 
-  const { fields, valid } = resolvedWrite(step, op, decl, ctx, name);
-  return storeActionStep(
+  const codeName = nextName('var_item');
+  const code = codeStep(codeName, `Item JSON "${decl.label}"`, { [FIELDS_KEY]: fields }, listItemCode(), valid);
+  code.skip = skip;
+  code.nextAction = storeActionStep(
     name,
     'add_to_list',
     {
       key: decl.storeKey,
-      value: [listItemJson(fields)],
+      value: [`{{${codeName}['linha']}}`],
       ignore_if_exists: false,
       store_scope: STORE_SCOPE,
     },
@@ -1989,6 +2082,7 @@ function buildListStore(
     skip,
     ctx,
   );
+  return code;
 }
 
 function buildListBatch(
@@ -2303,6 +2397,122 @@ function buildParseCsv(
   return codeStep(name, display, input, csvParseCode(plan.columns), true);
 }
 
+type CsvLineColumn = { kind: 'item'; path: string[] } | { kind: 'fixed'; value: unknown } | { kind: 'empty' };
+
+interface CsvLinesPlan {
+  source: string;
+  labels: string[];
+  header: boolean;
+  separator: string;
+  quoteAll: boolean;
+  columns: CsvLineColumn[];
+}
+
+const PURE_DP = /^\s*=?\s*(?:#\{)?\s*_dp\('((?:\\'|[^'])*)'\)\s*\}?\s*$/;
+
+function csvSeparator(raw: unknown): string {
+  const value = String(raw ?? '').trim();
+  const named: Record<string, string> = { comma: ',', semicolon: ';', tab: '\t', pipe: '|', space: ' ' };
+  if (named[value.toLowerCase()]) return named[value.toLowerCase()]!;
+  if (value === '\\t') return '\t';
+  return value || ',';
+}
+
+/**
+ * `lines.____source` repete a linha por item da lista; `var_get[0]` leria só o primeiro.
+ * Coluna com texto e `current_item` misturados não cabe no map: segue no piece-csv.
+ */
+function csvLinesPlan(input: Record<string, any> | undefined): CsvLinesPlan | null {
+  const lines = input?.lines;
+  if (!lines || typeof lines !== 'object' || Array.isArray(lines)) return null;
+  const source = lines[SOURCE_KEY];
+  if (typeof source !== 'string' || !source.includes('_dp(')) return null;
+  const rawLabels = String(input?.column_labels ?? '');
+  const labels = rawLabels === '' ? [] : rawLabels.split(/\r?\n/);
+  const slots: CsvLineColumn[] = [];
+  for (const [key, value] of Object.entries(lines as Record<string, unknown>)) {
+    if (key === SOURCE_KEY) continue;
+    const numbered = key.match(/^column_(\d+)$/);
+    let index = numbered ? Number(numbered[1]) : labels.indexOf(key);
+    if (index < 0) index = Math.max(labels.length, slots.length);
+    if (blankProp(value) || value === '=skip') {
+      slots[index] = { kind: 'empty' };
+      continue;
+    }
+    const path = itemSuffix(value);
+    if (path) {
+      if (typeof value !== 'string' || !PURE_DP.test(value)) return null;
+      slots[index] = { kind: 'item', path };
+      continue;
+    }
+    slots[index] = { kind: 'fixed', value };
+  }
+  const width = Math.max(labels.length, slots.length);
+  const columns = Array.from({ length: width }, (_, i): CsvLineColumn => slots[i] ?? { kind: 'empty' });
+  const flag = (raw: unknown) => raw === true || String(raw ?? '').trim().toLowerCase() === 'true';
+  return {
+    source,
+    labels: Array.from({ length: width }, (_, i) => labels[i] ?? ''),
+    header: labels.length > 0 && flag(input?.create_header_line),
+    separator: csvSeparator(input?.column_separator),
+    quoteAll: flag(input?.force_quotes),
+    columns,
+  };
+}
+
+function csvLinesCode(plan: CsvLinesPlan): string {
+  const cells = plan.columns.map((column, i) => {
+    if (column.kind === 'empty') return "      '',";
+    if (column.kind === 'fixed') return `      inputs[${JSON.stringify(`col_${i}`)}],`;
+    if (!column.path.length) return '      item,';
+    return `      item?.${column.path.map((part) => `[${JSON.stringify(part)}]`).join('?.')},`;
+  });
+  return [
+    'export const code = async (inputs) => {',
+    "  const bruto = typeof inputs.source === 'string' && inputs.source.trim().startsWith('[') ? JSON.parse(inputs.source) : inputs.source;",
+    "  if (!Array.isArray(bruto)) throw new Error('create_csv_lines: a lista de origem não é um array.');",
+    "  const fonte = bruto.map((item) => (typeof item === 'string' && item.trim().startsWith('{') ? JSON.parse(item) : item));",
+    `  const separador = ${JSON.stringify(plan.separator)};`,
+    `  const aspasSempre = ${plan.quoteAll};`,
+    '  const celula = (valor) => {',
+    "    const texto = valor == null ? '' : typeof valor === 'object' ? JSON.stringify(valor) : String(valor);",
+    "    if (!aspasSempre && !/[\"\\r\\n]/.test(texto) && !texto.includes(separador)) return texto;",
+    "    return '\"' + texto.split('\"').join('\"\"') + '\"';",
+    '  };',
+    '  const linha = (valores) => valores.map(celula).join(separador);',
+    '  const linhas = fonte.map((item) => linha([',
+    ...cells,
+    '  ]));',
+    ...(plan.header ? [`  linhas.unshift(linha(${JSON.stringify(plan.labels)}));`] : []),
+    "  const csv = linhas.map((texto) => texto + '\\n').join('');",
+    '  const bytes = unescape(encodeURIComponent(csv));',
+    "  const alfabeto = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';",
+    "  let base64 = '';",
+    '  for (let i = 0; i < bytes.length; i += 3) {',
+    '    const a = bytes.charCodeAt(i);',
+    '    const b = i + 1 < bytes.length ? bytes.charCodeAt(i + 1) : 0;',
+    '    const c = i + 2 < bytes.length ? bytes.charCodeAt(i + 2) : 0;',
+    '    const n = (a << 16) | (b << 8) | c;',
+    '    base64 += alfabeto[(n >>> 18) & 63] + alfabeto[(n >>> 12) & 63];',
+    "    base64 += i + 1 < bytes.length ? alfabeto[(n >>> 6) & 63] : '=';",
+    "    base64 += i + 2 < bytes.length ? alfabeto[n & 63] : '=';",
+    '  }',
+    "  const fileName = 'arquivo.csv';",
+    "  return { csv, fileName, dataUri: 'data:text/csv;base64,' + base64 };",
+    '};',
+  ].join('\n');
+}
+
+/** create_csv_lines com `____source`: o Code devolve `{ csv, fileName, dataUri }` com uma linha por item. */
+function buildCsvLines(name: string, display: string, plan: CsvLinesPlan, ctx: Ctx): any {
+  const raw: Record<string, unknown> = { source: plan.source };
+  plan.columns.forEach((column, i) => {
+    if (column.kind === 'fixed') raw[`col_${i}`] = column.value;
+  });
+  const input = resolveFormulas(deepConvert(raw, ctx), ctx, name, raw);
+  return codeStep(name, display, input, csvLinesCode(plan), !hasTodoMarker(input));
+}
+
 /** Message template do Workato: o corpo fica na conta, fora da receita. */
 function templateInputFields(value: unknown): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -2439,6 +2649,51 @@ const SPLIT_LIST_CODE = [
   '  return { items };',
   '};',
 ].join('\n');
+
+function isJsonParseOp(collapsed: string | undefined): boolean {
+  return collapsed === 'json_parser/parse_json' || collapsed === 'json_parser/parse_json_v2';
+}
+
+/** `document` que é só `<pill>.split("x")`: a entrada já é lista, não texto JSON. */
+function splitDocumentSource(input: Record<string, any>): { pill: string; separator: string } | null {
+  const raw = String(input.document ?? '').trim();
+  if (!raw.startsWith('=')) return null;
+  const match = raw
+    .slice(1)
+    .trim()
+    .match(/^(?:#\{)?(_dp\('(?:\\'|[^'])*'\))\}?\.split\(\s*(["'])([\s\S]*?)\2\s*\)$/);
+  if (!match) return null;
+  const payload = match[1]!.replace(/^_dp\('/, '').replace(/'\)$/, '');
+  if (!dpPayload(payload)) return null;
+  return { pill: match[1]!, separator: match[3]! };
+}
+
+/** Ruby `split`: `" "` corta em qualquer espaço e os vazios do fim saem. */
+const SPLIT_DOCUMENT_CODE = [
+  'export const code = async (inputs) => {',
+  "  const texto = String(inputs.source ?? '');",
+  "  const separador = String(inputs.separator ?? '');",
+  "  const itens = separador === ' ' ? texto.trim().split(/\\s+/) : texto.split(separador);",
+  "  while (itens.length && itens[itens.length - 1] === '') itens.pop();",
+  '  return { itens };',
+  '};',
+].join('\n');
+
+function buildSplitDocument(
+  name: string,
+  display: string,
+  split: { pill: string; separator: string },
+  ctx: Ctx,
+): any {
+  const source = resolveFormulas(deepConvert(`#{${split.pill}}`, ctx), ctx, name);
+  return codeStep(
+    name,
+    display,
+    { source, separator: split.separator },
+    SPLIT_DOCUMENT_CODE,
+    !hasTodoMarker({ source }),
+  );
+}
 
 function buildCreateList(name: string, display: string, step: ParsedStep, ctx: Ctx): any {
   const split = splitLengthSource(step.input ?? {});
@@ -3442,21 +3697,32 @@ function zipListBatch(fileList: unknown): { source: unknown; rows: { key: string
   return { source, rows };
 }
 
-function zipBatchCode(rows: { key: string; path: string[] }[]): string {
-  const fields = rows.map((row) => {
-    const access = row.path.map((part) => `[${JSON.stringify(part)}]`).join('?.');
-    return `      ${JSON.stringify(row.key)}: item?.${access},`;
-  });
+const ZIP_FILES_PROPS = new Set(['files', 'outputFileName', 'usePassword', 'passwordOptions']);
+
+/** O zipFiles baixa cada URL; o Code só tira a URL (`file_contents`) de cada item. */
+function zipBatchCode(path: string[]): string {
+  const access = path.length ? `item?.${path.map((part) => `[${JSON.stringify(part)}]`).join('?.')}` : 'item';
   return [
     'export const code = async (inputs) => {',
-    '  const fonte = Array.isArray(inputs.source) ? inputs.source : [];',
-    '  return {',
-    '    files: fonte.map((item) => ({',
-    ...fields,
-    '    })),',
-    '  };',
+    "  const bruto = typeof inputs.source === 'string' && inputs.source.trim().startsWith('[') ? JSON.parse(inputs.source) : inputs.source;",
+    "  if (!Array.isArray(bruto)) throw new Error('compress_file: a lista de arquivos não é um array.');",
+    "  const fonte = bruto.map((item) => (typeof item === 'string' && item.trim().startsWith('{') ? JSON.parse(item) : item));",
+    `  const urls = fonte.map((item) => ${access}).filter((url) => url != null && url !== '');`,
+    '  return { urls };',
     '};',
   ].join('\n');
+}
+
+/** `file_list` fora do map: objeto ou lista de `{ file_name, file_contents }`. Só o conteúdo (URL) entra no zip. */
+function zipFileUrls(fileList: unknown, ctx: Ctx): unknown {
+  if (fileList == null || fileList === '' || fileList === '=skip') return undefined;
+  const contents = (entry: unknown) =>
+    entry && typeof entry === 'object' && !Array.isArray(entry)
+      ? (entry as Record<string, unknown>).file_contents ?? (entry as Record<string, unknown>).file
+      : entry;
+  if (Array.isArray(fileList)) return fileList.map((entry) => deepConvert(contents(entry), ctx));
+  if (typeof fileList === 'object') return [deepConvert(contents(fileList), ctx)];
+  return deepConvert(fileList, ctx);
 }
 
 function fillKnownProps(
@@ -3753,18 +4019,30 @@ function fillKnownProps(
   }
 
   if (target.name === 'zipFiles') {
-    copyProp(input, 'files', 'file_list');
-    if (!blankProp(input.files)) delete input.file_list;
     const batch = zipListBatch(sourceInput.file_list);
-    if (batch) {
+    const urlRow = batch?.rows.find((row) => row.key === 'file_contents') ?? batch?.rows.find((row) => row.key !== 'file_name');
+    if (batch && urlRow) {
       const codeName = nextName('zip_files');
       const source = resolveFormulas(deepConvert(batch.source, ctx), ctx, codeName);
-      const mapped = codeStep(codeName, 'Arquivos do zip', { source }, zipBatchCode(batch.rows), !hasTodoMarker({ source }));
+      const mapped = codeStep(codeName, 'Arquivos do zip', { source }, zipBatchCode(urlRow.path), !hasTodoMarker({ source }));
       ctx.pendingCode.push(mapped);
-      input.files = `{{${codeName}['files']}}`;
+      input.files = { file: `{{${codeName}['urls']}}` };
+    } else {
+      const raw = blankProp(input.files) ? sourceInput.file_list : undefined;
+      const urls = raw === undefined ? input.files : zipFileUrls(raw, ctx);
+      if (!blankProp(urls)) {
+        const isFileObject = urls && typeof urls === 'object' && !Array.isArray(urls) && 'file' in (urls as object);
+        input.files = isFileObject ? urls : { file: urls };
+      }
     }
+    delete input.file_list;
+    if (blankProp(input.usePassword)) input.usePassword = false;
+    if (blankProp(input.passwordOptions)) input.passwordOptions = {};
     // compress_file da Workato nao traz nome de saida; zipFiles exige outputFileName.
     if (blankProp(input.outputFileName)) input.outputFileName = 'archive.zip';
+    for (const key of Object.keys(input)) {
+      if (!ZIP_FILES_PROPS.has(key)) delete input[key];
+    }
   }
 
   fillTablesProps(target, input);
@@ -4524,6 +4802,7 @@ function updateListFieldPiece(stepName: string, display: string, listAdd: Update
 }
 
 function buildAction(step: ParsedStep, ctx: Ctx): any {
+  if (ctx.absorbedSteps.has(step)) return null;
   const variable = buildVariableStep(step, ctx);
   if (variable === OMIT_STEP) return null;
   if (variable) return variable;
@@ -4560,6 +4839,10 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'csv_parser/parse_csv') {
     return buildParseCsv(name, display, sourceInput, ctx);
   }
+  if (collapseOpKey(opKey) === 'csv_parser/create_csv_lines') {
+    const plan = csvLinesPlan(sourceInput);
+    if (plan) return buildCsvLines(name, display, plan, ctx);
+  }
   if (collapseOpKey(opKey) === 'soap/create_message') {
     return buildSoapCreateMessage(name, display, sourceInput, ctx);
   }
@@ -4572,6 +4855,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   if (collapseOpKey(opKey) === 'workato_list/create_list') {
     return buildCreateList(name, display, step, ctx);
   }
+  const splitDocument = isJsonParseOp(collapseOpKey(opKey)) ? splitDocumentSource(sourceInput) : null;
+  if (splitDocument) return buildSplitDocument(name, display, splitDocument, ctx);
   if (collapseOpKey(opKey) === 'workato_smart_list/create_list') {
     return buildSmartListCreate(name, display, step, ctx);
   }
@@ -4887,6 +5172,22 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   }
   if (slackSendWantsFlowLink(t, sourceInput)) input.mentionOriginFlow = true;
   fillPdfText(t, input, sourceInput);
+  const exportReport = t.piece === PIPEFY_PIECE && t.name === 'custom_api_call'
+    ? publicExportPipeReport(input, sourceInput.path)
+    : null;
+  if (exportReport) {
+    input = exportReport.input;
+    pushReviewNote(
+      ctx,
+      'GRAPHQL',
+      [
+        `Passo \`${name}\`. O exportPipeReport usava a API interna do Pipefy e foi traduzido para a mutation pública.`,
+        `Preencher o pipeId do pipe do relatório ${exportReport.pipeReportId ?? '(id do relatório não encontrado na receita)'} no lugar de \`${PIPEFY_PIPE_ID_MARKER}\`.`,
+      ].join('\n'),
+      'exportPipeReport',
+      name,
+    );
+  }
   const missing = waivedMissing(t, input, sourceInput, missingRequiredProps(ctx, t, input));
   noteWaivedPipefyOrg(ctx, t, input, name);
   if (missing.length) {
@@ -5249,6 +5550,16 @@ function buildLoop(step: ParsedStep, ctx: Ctx): any {
   }
   if (!step.source || items.includes('TODO')) {
     ctx.todos.push(`LOOP (${name}): definir a lista de itens (items).`);
+  }
+  if (step.indexPairs?.length && step.source && !items.includes('TODO')) {
+    const pairs = nextName('pares');
+    const input: Record<string, any> = { [PAIR_ITEM_KEY]: items };
+    for (const list of step.indexPairs) input[list.key] = resolveFormulas(pills(list.pill, ctx), ctx, pairs);
+    const keys = step.indexPairs.map((list) => list.key);
+    ctx.pendingCode.push(
+      codeStep(pairs, 'Pares da lista do loop', input, indexPairsCode(keys), !hasTodoMarker(input)),
+    );
+    items = `{{${pairs}['pares']}}`;
   }
 
   ctx.loopScope.push({ collection: items, item: `${name}.item` });
@@ -6714,6 +7025,65 @@ function stepReferencesLine(step: ParsedStep, line: string, skip: ParsedStep): b
   return step.children.some((child) => stepReferencesLine(child, line, skip));
 }
 
+function withPillPath(value: string, path: unknown[]): string | null {
+  const match = value.match(PURE_DP);
+  const dp = match ? dpPayload(match[1]!) : null;
+  if (!dp) return null;
+  return `#{_dp('${JSON.stringify({ ...dp, path }).replace(/'/g, "\\'")}')}`;
+}
+
+/**
+ * `uploadAttachment` aceita URL ou data URI, não o corpo binário do HTTP GET.
+ * read_file que alimenta o upload: o `attachment` recebe a URL; o GET sai se ninguém mais lê o arquivo.
+ * zipFiles e o Code de CSV já entregam o arquivo: o upload lê o step inteiro / o `dataUri`.
+ */
+function planFileTransport(root: ParsedStep, merged: Record<string, MapEntry>): Set<ParsedStep> {
+  const reads = new Map<string, ParsedStep>();
+  const zips = new Set<string>();
+  const csvs = new Set<string>();
+  const uploads: Array<{ step: ParsedStep; key: string }> = [];
+  const walk = (step: ParsedStep) => {
+    const op = step.opKey ? collapseOpKey(step.opKey) : '';
+    if (!step.skip && step.as) {
+      if (op === 'file_connector/read_file' && typeof step.input?.url === 'string' && step.input.url.trim()) reads.set(step.as, step);
+      if (op === 'file_connector/compress_file') zips.add(step.as);
+      if (op === 'csv_parser/create_csv_lines' && csvLinesPlan(step.input)) csvs.add(step.as);
+    }
+    const entry = step.opKey && !step.skip ? lookupMap(merged, step.opKey) : undefined;
+    if (entry?.target?.piece === PIPEFY_PIECE && entry.target.name === 'uploadAttachment') {
+      const key = Object.entries(entry.propMap ?? {}).find(([, prop]) => prop === 'attachment')?.[0] ?? 'attachment';
+      uploads.push({ step, key });
+    }
+    step.children.forEach(walk);
+  };
+  walk(root);
+
+  const fed = new Set<ParsedStep>();
+  for (const { step, key } of uploads) {
+    const value = step.input?.[key];
+    if (typeof value !== 'string') continue;
+    const match = value.match(PURE_DP);
+    const dp = match ? dpPayload(match[1]!) : null;
+    const line = dp?.line == null ? '' : String(dp.line);
+    const read = reads.get(line);
+    let next: string | null = null;
+    if (read) {
+      next = read.input.url;
+      fed.add(read);
+    } else if (zips.has(line)) {
+      next = withPillPath(value, []);
+    } else if (csvs.has(line)) {
+      next = withPillPath(value, ['dataUri']);
+    }
+    if (next != null) step.input = { ...step.input, [key]: next };
+  }
+  const absorbed = new Set<ParsedStep>();
+  for (const read of fed) {
+    if (!stepReferencesLine(root, read.as!, read)) absorbed.add(read);
+  }
+  return absorbed;
+}
+
 /**
  * `create_list` só com `size = array.length` gera lista vazia. O foreach usa o
  * índice para ler `array[index]`. O loop passa a iterar o array e o índice vira o item.
@@ -6758,6 +7128,170 @@ function retargetSizedListForeach(root: ParsedStep): Set<string> {
   return elided;
 }
 
+const PAIR_ITEM_KEY = 'item';
+
+const GENERIC_LIST_SEGMENTS = new Set(['document', 'array', 'list', 'items', 'list_items', 'itens']);
+
+/** Nome da lista no par: último segmento do path que não é envelope (`document.array`, `list`). */
+function pairKey(dp: any, used: Set<string>, steps: Map<string, ParsedStep>): string {
+  let path: unknown[] = Array.isArray(dp?.path) ? dp.path : [];
+  const owner = dp?.line != null ? steps.get(String(dp.line)) : undefined;
+  const split = owner?.opKey && isJsonParseOp(collapseOpKey(owner.opKey)) ? splitDocumentSource(owner.input ?? {}) : null;
+  if (split) {
+    const source = dpPayload(split.pill.replace(/^_dp\('/, '').replace(/'\)$/, ''));
+    if (Array.isArray(source?.path)) path = source.path;
+  }
+  const segments = path.filter((seg): seg is string => typeof seg === 'string' && !GENERIC_LIST_SEGMENTS.has(seg));
+  let key = String(segments.at(-1) ?? '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'lista';
+  if (/^\d/.test(key)) key = `lista_${key}`;
+  let candidate = key;
+  for (let n = 2; used.has(candidate); n++) candidate = `${key}_${n}`;
+  used.add(candidate);
+  return candidate;
+}
+
+/** Strings de input, filtro e source dos descendentes de `step`. */
+function rewriteDescendantStrings(step: ParsedStep, visit: (value: string) => string): void {
+  const walk = (holder: any) => {
+    if (Array.isArray(holder)) {
+      holder.forEach((item, index) => {
+        if (typeof item === 'string') holder[index] = visit(item);
+        else walk(item);
+      });
+      return;
+    }
+    if (!holder || typeof holder !== 'object') return;
+    for (const key of Object.keys(holder)) {
+      const value = holder[key];
+      if (typeof value === 'string') holder[key] = visit(value);
+      else walk(value);
+    }
+  };
+  for (const child of step.children) {
+    walk(child.input);
+    walk(child.filter);
+    if (typeof child.source === 'string') child.source = visit(child.source);
+    rewriteDescendantStrings(child, visit);
+  }
+}
+
+function isForeachIndex(raw: string, foreachAs: string): boolean {
+  const index = dpPayload(raw);
+  return index?.pill_type === 'foreach_meta' && index.key === 'index' && String(index.line) === foreachAs;
+}
+
+/**
+ * Foreach que lê outra lista por `lista[Index]`. O Index do Workato começa em 0
+ * e o do loop do iPaaS em 1: o loop passa a iterar pares `{ item, <lista>: lista[i] }`
+ * e o corpo lê só o item. `create_list` que só dimensionava o foreach sai.
+ */
+function pairForeignIndexedLists(root: ParsedStep, elided: Set<string>): void {
+  const sizedLists = new Map<string, { raw: string; dp: any; step: ParsedStep }>();
+  const foreaches: ParsedStep[] = [];
+  const steps = new Map<string, ParsedStep>();
+  const walk = (step: ParsedStep) => {
+    const op = step.opKey ? collapseOpKey(step.opKey) : '';
+    if (step.as) steps.set(step.as, step);
+    if (op === 'workato_list/create_list' && step.as && !step.skip) {
+      const sized = sizedArrayLength(step.input ?? {});
+      if (sized) sizedLists.set(step.as, { raw: sized.raw, dp: sized.dp, step });
+    }
+    if (step.keyword === 'foreach' && step.as && step.source && !step.skip) foreaches.push(step);
+    step.children.forEach(walk);
+  };
+  walk(root);
+
+  for (const foreach of foreaches) {
+    const foreachAs = foreach.as!;
+    const sourceMatch = foreach.source!.trim().match(/^(?:#\{)?_dp\('((?:\\'|[^'])*)'\)\}?$/);
+    const sourceDp = sourceMatch ? dpPayload(sourceMatch[1]!) : null;
+    if (!sourceMatch || !sourceDp) continue;
+    const sizedLine = foreachSourceListLine(foreach.source);
+    const sized = sizedLine ? sizedLists.get(sizedLine) : undefined;
+    const baseRaw = sized ? sized.raw : sourceMatch[1]!;
+    const baseDp = sized ? sized.dp : sourceDp;
+
+    const foreign: Array<{ raw: string; dp: any }> = [];
+    rewriteDescendantStrings(foreach, (value) => {
+      for (const found of value.matchAll(LIST_INDEX_SUBSCRIPT)) {
+        if (!isForeachIndex(found[2]!, foreachAs)) continue;
+        const array = dpPayload(found[1]!);
+        if (!array || sameDataPill(array, baseDp) || foreign.some((item) => sameDataPill(item.dp, array))) continue;
+        foreign.push({ raw: found[1]!, dp: array });
+      }
+      return value;
+    });
+    if (!foreign.length) continue;
+
+    const used = new Set([PAIR_ITEM_KEY]);
+    const lists = foreign.map((item) => ({ ...item, key: pairKey(item.dp, used, steps) }));
+    const itemPill = (path: unknown[]) =>
+      `_dp('${JSON.stringify({ pill_type: 'output', provider: 'foreach', line: foreachAs, path })}')`;
+    rewriteDescendantStrings(foreach, (value) => {
+      let next = value.replace(/_dp\('((?:\\'|[^'])*)'\)(?!\[_dp\()/g, (whole, raw: string) => {
+        const dp = dpPayload(raw);
+        if (!dp || !Array.isArray(dp.path)) return whole;
+        if (dp.pill_type === 'output' && dp.provider === 'foreach' && String(dp.line) === foreachAs) {
+          // Lista de texto: a Workato chama o item de `value`; no par ele é o próprio item.
+          const rest = dp.path.length === 1 && dp.path[0] === 'value' ? [] : dp.path;
+          return itemPill([PAIR_ITEM_KEY, ...rest]);
+        }
+        const at = dp.path.findIndex((seg: any) => seg?.path_element_type === 'current_item');
+        if (at >= 0 && sameDataPill({ ...dp, path: dp.path.slice(0, at) }, baseDp)) {
+          return itemPill([PAIR_ITEM_KEY, ...dp.path.slice(at + 1)]);
+        }
+        return whole;
+      });
+      LIST_INDEX_SUBSCRIPT.lastIndex = 0;
+      next = next.replace(LIST_INDEX_SUBSCRIPT, (whole, arrayRaw: string, indexRaw: string) => {
+        if (!isForeachIndex(indexRaw, foreachAs)) return whole;
+        const array = dpPayload(arrayRaw);
+        if (sameDataPill(array, baseDp)) return itemPill([PAIR_ITEM_KEY]);
+        const list = lists.find((item) => sameDataPill(item.dp, array));
+        return list ? itemPill([list.key]) : whole;
+      });
+      if (next === value) return value;
+      return next.replace(/^=\s*(_dp\('(?:\\'|[^'])*'\))\s*$/, '#{$1}');
+    });
+
+    foreach.indexPairs = lists.map((item) => ({ key: item.key, pill: `#{_dp('${item.raw}')}` }));
+    foreach.source = `#{_dp('${baseRaw}')}`;
+    if (sized && sizedLine && !stepReferencesLine(root, sizedLine, sized.step)) {
+      sized.step.skip = true;
+      elided.add(sizedLine);
+    }
+  }
+}
+
+function indexPairsCode(keys: string[]): string {
+  return [
+    '/**',
+    ' * O Index do Workato começa em 0 e o do loop do iPaaS em 1.',
+    ' * Cada item do loop já traz o valor da outra lista na mesma posição.',
+    ' */',
+    'export const code = async (inputs) => {',
+    '  const lista = (valor) => {',
+    '    let itens = valor;',
+    "    if (typeof itens === 'string') {",
+    "      try { itens = JSON.parse(itens); } catch { itens = itens === '' ? [] : [itens]; }",
+    '    }',
+    '    if (!Array.isArray(itens)) return itens == null ? [] : [itens];',
+    '    return itens.map((item) => {',
+    "      if (typeof item !== 'string' || !/^\\s*[[{]/.test(item)) return item;",
+    '      try { return JSON.parse(item); } catch { return item; }',
+    '    });',
+    '  };',
+    `  const base = lista(inputs[${JSON.stringify(PAIR_ITEM_KEY)}]);`,
+    ...keys.map((key, i) => `  const lista${i + 1} = lista(inputs[${JSON.stringify(key)}]);`),
+    '  const pares = base.map((item, i) => ({',
+    `    ${JSON.stringify(PAIR_ITEM_KEY)}: item,`,
+    ...keys.map((key, i) => `    ${JSON.stringify(key)}: lista${i + 1}[i],`),
+    '  }));',
+    '  return { pares };',
+    '};',
+  ].join('\n');
+}
+
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
   nameSeq = 0;
   NOW = new Date().toISOString();
@@ -6787,15 +7321,13 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     notedDataTableIds: new Set(),
     todoStepMeta: new Map(),
     elidedSizedCreateLists: new Set(),
+    absorbedSteps: new Set(),
     catchFieldGaps: new Set(),
   };
   ctx.elidedSizedCreateLists = retargetSizedListForeach(recipe.root);
-  for (const as of ctx.elidedSizedCreateLists) {
-    pushReviewNote(ctx, 'VARS', `${ELIDED_SIZED_CREATE_LIST_SNIPPET}.`, '', undefined);
-    const note = ctx.canvasNotes[ctx.canvasNotes.length - 1];
-    if (note) note.id = `review_variables_elided_${as}`;
-  }
+  pairForeignIndexedLists(recipe.root, ctx.elidedSizedCreateLists);
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
+  ctx.absorbedSteps = planFileTransport(recipe.root, merged);
   assignNames(recipe.root, ctx, true);
   if (ctx.ambiguousAs.size) {
     ctx.todos.push(`SOURCE: ${ctx.ambiguousAs.size} origem(ns) ambigua(s); aliases duplicados exigem revisao.`);

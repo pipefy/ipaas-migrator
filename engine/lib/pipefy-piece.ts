@@ -327,6 +327,82 @@ export function updateListFieldFromGraphql(input: Record<string, any>): UpdateLi
   return { adds, residualQuery };
 }
 
+export const PIPEFY_PIPE_ID_MARKER = '{{TODO_pipeId}}';
+
+export interface PublicExportPipeReport {
+  input: Record<string, any>;
+  pipeReportId: string | null;
+}
+
+function graphqlVariables(input: Record<string, any>): Record<string, unknown> {
+  const body = input?.body;
+  let holder: unknown = body;
+  if (body && typeof body === 'object' && body.data != null) holder = body.data;
+  if (typeof holder === 'string') {
+    try {
+      holder = JSON.parse(holder);
+    } catch {
+      return {};
+    }
+  }
+  const variables = holder && typeof holder === 'object' ? (holder as Record<string, unknown>).variables : undefined;
+  return variables && typeof variables === 'object' && !Array.isArray(variables)
+    ? (variables as Record<string, unknown>)
+    : {};
+}
+
+function pipeReportIdOf(args: string, variables: Record<string, unknown>): string | null {
+  const fromVariable = (name: string): unknown => variables[name.replace(/^\$/, '')];
+  const inputArg = rawKey(args, 'input', []);
+  if (inputArg?.startsWith('$')) {
+    const value = fromVariable(inputArg);
+    const id = value && typeof value === 'object' ? (value as Record<string, unknown>).pipeReportId : undefined;
+    return id == null || id === '' ? null : String(id);
+  }
+  const raw = rawKey(args, 'pipeReportId', ['pipeUuid', 'pipeId', 'sortBy', 'filter', 'columns', 'search']);
+  const literal = raw == null ? null : unwrapGraphqlLiteral(raw);
+  if (!literal) return null;
+  if (!literal.startsWith('$')) return literal;
+  const value = fromVariable(literal);
+  return value == null || value === '' ? null : String(value);
+}
+
+/**
+ * `exportPipeReport` da API interna (`internal_api`) vira a mutation pública.
+ * O pipeId não sai do recipe: fica o marcador e o step continua inválido.
+ */
+export function publicExportPipeReport(
+  input: Record<string, any>,
+  sourcePath: unknown,
+): PublicExportPipeReport | null {
+  if (typeof sourcePath !== 'string' || !/\binternal_api\b/.test(sourcePath)) return null;
+  const source = graphqlQuery(input);
+  if (!source) return null;
+  const query = unescapeGraphql(source);
+  const call = query.match(/\bexportPipeReport\s*\(\s*input\s*:/);
+  if (!call || call.index == null) return null;
+  const paren = query.indexOf('(', call.index);
+  const args = scanBalanced(query, paren);
+  if (!args) return null;
+  let cursor = paren + args.length;
+  while (/\s/.test(query[cursor] ?? '')) cursor++;
+  const selection = query[cursor] === '{' ? scanBalanced(query, cursor) : null;
+  const pipeReportId = pipeReportIdOf(args.slice(1, -1), graphqlVariables(input));
+  const reportId = pipeReportId ?? '{{TODO_pipeReportId}}';
+  const publicQuery = [
+    'mutation {',
+    `  exportPipeReport(input: {pipeId: "${PIPEFY_PIPE_ID_MARKER}", pipeReportId: "${reportId}"}) ${selection ?? '{ pipeReportExport { id } }'}`,
+    '}',
+  ].join('\n');
+  const clone = structuredClone(input);
+  const body = clone.body;
+  if (body && typeof body === 'object' && body.data && typeof body.data === 'object') body.data = { query: publicQuery };
+  else if (body && typeof body === 'object' && typeof body.query === 'string') clone.body = { query: publicQuery };
+  else clone.body = { data: { query: publicQuery } };
+  clone.body_type = 'json';
+  return { input: clone, pipeReportId };
+}
+
 export function replaceGraphqlQuery(input: Record<string, any>, query: string): Record<string, any> {
   const clone = structuredClone(input);
   const body = clone?.body;

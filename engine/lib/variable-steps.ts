@@ -176,6 +176,21 @@ export function listItemJson(fields: Record<string, unknown>): string {
   return `{${parts.join(',')}}`;
 }
 
+/**
+ * Code de um item com datapill. Texto JSON montado no transpile quebra quando
+ * o valor traz aspas ou quebra de linha; `JSON.stringify` escapa em runtime.
+ */
+export function listItemCode(): string {
+  return [
+    '/**',
+    ' * String JSON de um item da lista. O passo seguinte grava no Storage.',
+    ' */',
+    'export const code = async (inputs) => {',
+    `  return { linha: JSON.stringify(inputs.${FIELDS_KEY} ?? {}) };`,
+    '};',
+  ].join('\n');
+}
+
 function jsonLiteral(value: unknown): string {
   if (value == null) return 'null';
   if (typeof value === 'number' || typeof value === 'boolean') return JSON.stringify(value);

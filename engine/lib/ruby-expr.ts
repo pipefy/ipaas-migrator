@@ -85,6 +85,7 @@ const HELPERS: Record<string, string> = {
   return sign + digits[0] + '.' + (digits.slice(1) || '0') +
     'e' + (exponent < 0 ? '-' : '+') + String(Math.abs(exponent)).padStart(2, '0');
 };`,
+  floatOut: `const floatOut = (v) => (typeof v === 'number' ? floatText(v) : v);`,
   toI: `const toI = (v) => parseInt(String(v ?? '').trim(), 10) || 0;`,
   toF: `const toF = (v) => {
   const result = parseFloat(String(v ?? '').trim());
@@ -379,7 +380,13 @@ const HELPERS: Record<string, string> = {
   return [...text.matchAll(r)].map((m) => (m.length > 1 ? m.slice(1) : m[0]));
 };`,
   strip: `const strip = (v) => String(v ?? '').trim();`,
-  split: `const split = (v, sep) => String(v ?? '').split(sep);`,
+  // Ruby: split(" ") e split sem argumento cortam em espaços e ignoram os da borda; os vazios do fim saem.
+  split: `const split = (v, sep) => {
+  const text = String(v ?? '');
+  const parts = sep === ' ' ? (text.trim() === '' ? [] : text.trim().split(/\\s+/)) : text.split(sep);
+  while (parts.length && parts[parts.length - 1] === '') parts.pop();
+  return parts;
+};`,
   splitLiteralLimit: `const splitLiteralLimit = (v, sep, limit) => {
   if (typeof v !== 'string' || typeof limit !== 'number' || !Number.isFinite(limit)) throw new TypeError('invalid split receiver or limit');
   const n = Math.trunc(limit);
@@ -901,6 +908,7 @@ const HELPER_DEPS: Record<string, string[]> = {
   countryAlpha3: ['isoCountries'],
   inspect: ['floatText'],
   toS: ['inspect', 'floatText'],
+  floatOut: ['floatText'],
   formatMap: ['toS'],
   pluck: ['list'],
   where: ['list'],
@@ -935,6 +943,8 @@ export interface CompiledExpr {
   /** literal puro, ja avaliado no transpile. */
   constant?: boolean;
   value?: unknown;
+  /** Resultado Float do Ruby: gravado como texto, sai `1500.0`, não `1500`. */
+  float?: boolean;
 }
 
 /**
@@ -1717,7 +1727,7 @@ const NULLARY: Record<string, (target: string, s: State) => string> = {
   to_country_alpha3: (t, s) => (useHelper(s, 'countryAlpha3'), `countryAlpha3(${t})`),
   scrub: (t, s) => (s.approximations.push('scrub troca o caractere invalido por vazio.'), useHelper(s, 'scrub'), `scrub(${t})`),
   to_csv: (t, s) => (useHelper(s, 'toCsv'), `toCsv(${t})`),
-  split: (t, s) => (useHelper(s, 'split'), `split(${t}, /\\s+/)`),
+  split: (t, s) => (useHelper(s, 'split'), `split(${t}, ' ')`),
 };
 
 /** Metodos com argumentos. */
@@ -2423,7 +2433,7 @@ function parsePostfix(s: State): string | null {
         if (applied === null) return null;
         // Format/projection selectors are consumed; their Symbol identity is
         // not part of the returned values' comparison semantics.
-        const comparisonInputs = (name.value === 'to_s' && args.length === 1) || name.value === 'pluck'
+        const comparisonInputs: string[] = (name.value === 'to_s' && args.length === 1) || name.value === 'pluck'
           ? [target] : [target, ...args.map((arg) => arg.js)];
         target = name.value === 'format_map' || name.value === 'present?' || name.value === 'to_json'
           ? guard(applied) : inheritJsonComparison(guard(applied), comparisonInputs, s);
@@ -2970,6 +2980,7 @@ function compileRubyExpressionInternal(source: string, registry: BindingRegistry
     }
   }
   if (/\b__cal\(/.test(expr) || /\b__range\(/.test(expr)) return null;
+  const float = textHint(expr, state) === 'float';
   if (registry.bindings.size === before && !usesExistingBinding(expr, registry)) {
     if (state.dynamic) {
       return { expr, bindings: registry.bindings, helpers: state.helpers, approximations };
@@ -2984,6 +2995,7 @@ function compileRubyExpressionInternal(source: string, registry: BindingRegistry
         approximations,
         constant: true,
         value,
+        ...(float ? { float } : {}),
       };
     } catch (error) {
       if (error instanceof Error && (error.message === INVALID_HASH_KEY || error.message === INVALID_DIGEST_INPUT || error.message === 'divided by 0' ||
@@ -2998,6 +3010,7 @@ function compileRubyExpressionInternal(source: string, registry: BindingRegistry
     bindings: registry.bindings,
     helpers: state.helpers,
     approximations,
+    ...(float ? { float } : {}),
   };
 }
 
@@ -3010,6 +3023,11 @@ function usesExistingBinding(expr: string, registry: BindingRegistry): boolean {
 }
 
 /** Prelude com os helpers pedidos, em ordem estavel. */
+/** `Float#to_s` do Ruby: `1500.0`, `1.0e-05`. */
+export function rubyFloatText(value: number): string {
+  return new Function('v', `${HELPERS.floatText}\nreturn floatText(v);`)(value) as string;
+}
+
 export function renderHelpers(helpers: Set<string>): string {
   return Object.keys(HELPERS)
     .filter((name) => helpers.has(name))

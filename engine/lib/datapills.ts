@@ -866,7 +866,8 @@ function tidyJobContext(text: string): string {
 /**
  * Nome do step AP para o `as` Workato. Objeto quando o payload da piece mora
  * dentro de um envelope (Pipefy: `data`, `data.card` no getCardById,
- * `data.record` no getRecordById);
+ * `data.record` no getRecordById, `data.createCard.card` no createCard,
+ * `body.data` no custom_api_call);
  * string simples nos demais casos.
  *
  * Nao usar `output` aqui: isso e o envelope do step no schema AP 21+
@@ -879,7 +880,7 @@ export type StepBinding = string | {
   stripHead?: string;
   /** Ação da piece. `getCardsByFieldValue` não tem `cards_count`; a contagem é `count(data.cards)`. */
   actionName?: string;
-  /** Primeiro segmento Workato (`list`) vira a chave do array no output do Code. */
+  /** Cabeça do path Workato (`list`, `document.array`) vira a chave do array no output do Code. */
   headAlias?: { from: string; to: string };
   /**
    * Variavel escalar no Storage: cada campo e um `get` e o valor e o escalar.
@@ -904,10 +905,14 @@ export function stepOutputRoot(binding: StepBinding | undefined): string | undef
 function aliasListHead(binding: StepBinding | undefined, segments: string[]): string[] {
   if (!binding || typeof binding === 'string' || !binding.headAlias) return segments;
   const { from, to } = binding.headAlias;
-  const head = segments[0];
+  const heads = from.split('.');
+  const last = heads.length - 1;
+  if (segments.length <= last || !heads.slice(0, last).every((head, i) => segments[i] === head)) return segments;
+  const head = segments[last];
+  const tail = segments.slice(last + 1);
   if (!head) return segments;
-  if (head === from) return [to, ...segments.slice(1)];
-  if (head.startsWith(`${from}[`)) return [`${to}${head.slice(from.length)}`, ...segments.slice(1)];
+  if (head === heads[last]) return [to, ...tail];
+  if (head.startsWith(`${heads[last]}[`)) return [`${to}${head.slice(heads[last]!.length)}`, ...tail];
   return segments;
 }
 
@@ -934,7 +939,10 @@ function redirectScalarField<T extends string | number>(
   return { base: step, segments: segments.slice(1) };
 }
 
-/** Segmentos do envelope da piece. Evita `data.card.card` e `data.record.record` se o path Workato ja comeca com esse envelope. */
+/**
+ * Segmentos do envelope da piece. Evita `data.card.card`, `data.record.record`
+ * e `body.data.data` se o path Workato ja comeca com esse envelope.
+ */
 export function outputRootSegments(
   binding: StepBinding | undefined,
   pathHead?: string,
@@ -943,6 +951,7 @@ export function outputRootSegments(
   if (!root) return [];
   const segs = root.split('.').filter(Boolean);
   if ((pathHead === 'card' || pathHead === 'record') && segs.at(-1) === pathHead) return segs.slice(0, -1);
+  if (segs[0] === 'body' && (pathHead === 'body' || pathHead === 'data')) return segs.slice(0, segs.indexOf(pathHead));
   return segs;
 }
 
@@ -1011,7 +1020,8 @@ function renderPillTemplate(base: string, segments: PillPathSegment[] = []): str
 function aliasPillListHead(binding: StepBinding | undefined, segments: PillPathSegment[]): PillPathSegment[] {
   if (!binding || typeof binding === 'string' || !binding.headAlias) return segments;
   const { from, to } = binding.headAlias;
-  return segments[0] === from ? [to, ...segments.slice(1)] : segments;
+  const heads = from.split('.');
+  return heads.every((head, i) => segments[i] === head) ? [to, ...segments.slice(heads.length)] : segments;
 }
 
 /** Propriedade de conta ou de projeto (`pdf_generator_api_key`, `d4sign.prd.url`) vira a variavel iPaaS `PDF_GENERATOR_API_KEY`. */

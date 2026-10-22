@@ -71,6 +71,11 @@ export interface ParsedStep {
   filter?: WorkatoConditionsInput;
   /** Workato foreach: pill da lista (ex. phases_history). */
   source?: string;
+  /**
+   * Foreach que lia outra lista por `lista[Index]`: o loop itera pares
+   * `{ item, <key>: lista[i] }` montados num Code. `pill` é a lista pareada.
+   */
+  indexPairs?: Array<{ key: string; pill: string }>;
   comment?: string;
   children: ParsedStep[];
   opKey?: string; // 'provider/name' quando aplicavel
