@@ -882,6 +882,8 @@ export type StepBinding = string | {
   actionName?: string;
   /** Cabeça do path Workato (`list`, `document.array`) vira a chave do array no output do Code. */
   headAlias?: { from: string; to: string };
+  /** Segmento do path Workato (`column_7`) vira a chave real (`ID Beneficiarios`). */
+  segmentAlias?: ReadonlyMap<string, string>;
   /**
    * Variavel escalar no Storage: cada campo e um `get` e o valor e o escalar.
    * A pill Workato ainda traz o campo no path; o primeiro segmento escolhe o get.
@@ -1015,6 +1017,19 @@ export function containsMigrationMarker(value: string, kind?: 'formula' | 'refer
 function renderPillTemplate(base: string, segments: PillPathSegment[] = []): string {
   return `{{${base}${segments.map((segment) => typeof segment === 'number'
     ? `[${segment}]` : `['${escapeApKey(segment)}']`).join('')}}}`;
+}
+
+function segmentAliasOf(binding: StepBinding | undefined): ReadonlyMap<string, string> | undefined {
+  if (!binding || typeof binding === 'string') return undefined;
+  return binding.segmentAlias;
+}
+
+function renamePillSegment(
+  alias: ReadonlyMap<string, string> | undefined,
+  segment: PillPathSegment,
+): PillPathSegment {
+  if (!alias || typeof segment !== 'string') return segment;
+  return alias.get(segment) ?? segment;
 }
 
 function aliasPillListHead(binding: StepBinding | undefined, segments: PillPathSegment[]): PillPathSegment[] {
@@ -1188,6 +1203,7 @@ function renderDataPill(
   const pathHead = path.find((element) => typeof element === 'string') as string | undefined;
   let segments: PillPathSegment[] = outputRootSegments(mapped, pathHead);
   let activeBinding = mapped;
+  const columnAlias = segmentAliasOf(mapped);
   const render = () => {
     const stored = redirectScalarField(activeBinding, base,
       withoutStripHead(activeBinding, aliasPillListHead(activeBinding, segments)));
@@ -1196,7 +1212,7 @@ function renderDataPill(
 
   for (const element of path) {
     if (!element || typeof element !== 'object') {
-      segments.push(element);
+      segments.push(renamePillSegment(columnAlias, element));
       continue;
     }
     if (element.path_element_type === 'size') {
@@ -1469,10 +1485,11 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
     if (counted) return counted;
   }
   const pathHead = path.split('.')[0];
+  const columnAlias = segmentAliasOf(binding);
   const segs = withoutStripHead(binding, aliasListHead(binding, [
     ...outputRootSegments(binding, pathHead),
     ...path.split('.').filter(Boolean),
-  ]));
+  ])).map((segment) => renamePillSegment(columnAlias, segment));
   const stored = redirectScalarField(binding, mapped, segs);
   return renderApTemplate(stored.base, stored.segments);
 }

@@ -10,7 +10,7 @@ export interface CsvParsePlan {
   columns: string[];
 }
 
-function schemaNames(raw: unknown): string[] {
+export function csvSchemaNames(raw: unknown): string[] {
   if (typeof raw !== 'string' || !raw.trim()) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -30,7 +30,7 @@ function flag(value: unknown): boolean {
 export function csvParsePlan(input: Record<string, unknown>): CsvParsePlan {
   const mode = String(input.column_value_by ?? 'index').trim().toLowerCase();
   const byIndex = mode === '' || mode === 'index';
-  const names = schemaNames(input.header_schema);
+  const names = csvSchemaNames(input.header_schema);
   return {
     separator: typeof input.col_sep === 'string' && input.col_sep !== '' ? input.col_sep : ',',
     quote: typeof input.quote_char === 'string' ? input.quote_char : '"',

@@ -1617,7 +1617,7 @@
       },
       "difficulty": "low",
       "manual": false,
-      "notes": "O builder ignora o piece e emite Code JS. piece-csv nao declara header_schema; column_value_by index vira column_N em lines[]."
+      "notes": "Arquivo CSV (URL ou read_file) vira piece-csv read_csv_file 0.5.0: file=URL, delimiter auto, has_header_row quando a 1a linha e pulada. lines vira rows; column_N vira o name do header_schema. Texto ou formula continua em Code JS. convert_csv_to_json nao declara header_schema."
     },
     "custom_jobs/get_job_by_ID": {
       "target": {

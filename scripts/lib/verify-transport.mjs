@@ -897,6 +897,32 @@ function readFileAbsorbedByUpload(action, workatoActions, steps) {
   });
 }
 
+/**
+ * read_file que só alimenta parse_csv sai do canvas: o read_csv_file baixa a URL.
+ * Outro consumidor da mesma linha mantém o HTTP GET.
+ */
+function readFileAbsorbedByParseCsv(action, workatoActions, steps) {
+  if (collapseOpKey(action.opKey) !== 'file_connector/read_file' || !action.as) return false;
+  const fed = workatoActions.some(
+    (other) => collapseOpKey(other.opKey) === 'csv_parser/parse_csv' && workatoReferencesLine(other, action.as),
+  );
+  if (!fed) return false;
+  const shared = workatoActions.some(
+    (other) => other !== action
+      && collapseOpKey(other.opKey) !== 'csv_parser/parse_csv'
+      && workatoReferencesLine(other, action.as),
+  );
+  if (shared) return false;
+  return steps.some(
+    (step) => pieceNameOf(step) === '@activepieces/piece-csv' && opNameOf(step) === 'read_csv_file',
+  );
+}
+
+function matchesReadCsvFile(step, action) {
+  if (collapseOpKey(action.opKey) !== 'csv_parser/parse_csv') return false;
+  return pieceNameOf(step) === '@activepieces/piece-csv' && opNameOf(step) === 'read_csv_file';
+}
+
 /** create_csv_lines com `____source` vira Code que devolve `{ csv, fileName, dataUri }`. */
 function matchesCsvLinesCode(step, action) {
   if (collapseOpKey(action.opKey) !== 'csv_parser/create_csv_lines') return false;
@@ -1202,8 +1228,9 @@ export function findMissingActions(workatoActions, steps, operations, notes = []
         )) ||
       (!asyncWait && openCards && take((step) => matchesOpenCards(step), action)) ||
       (!asyncWait && readFileAbsorbedByUpload(action, workatoActions, steps)) ||
+      (!asyncWait && readFileAbsorbedByParseCsv(action, workatoActions, steps)) ||
       (!asyncWait && take((step) => matchesCsvLinesCode(step, action), action)) ||
-      (!asyncWait && !openCards && entry?.target && take((step) => matchesMapped(step, entry) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action), action)) ||
+      (!asyncWait && !openCards && entry?.target && take((step) => matchesMapped(step, entry) || matchesReadCsvFile(step, action) || matchesPipefyGraphql(step, entry) || matchesLookupFind(step, action), action)) ||
       (!asyncWait && (entry?.manual || entry?.builtin || action.opKey.endsWith('/invoke_custom_ruby_code')) &&
         take((step) => matchesCode(step, action.opKey) || matchesMaterializedVariable(step, action) || matchesStoredVariable(step, action), action)) ||
       (!asyncWait && !entry?.target &&
@@ -1302,6 +1329,7 @@ export function collectRafaGaps(recipe, flow, steps) {
   if (parses.length) {
     for (const step of steps) {
       if (pieceNameOf(step) !== '@activepieces/piece-csv') continue;
+      // read_csv_file é o caminho nativo (APR-0024). convert_csv_to_json não declara header_schema.
       if (opNameOf(step) !== 'convert_csv_to_json') continue;
       gaps.push(finding(
         'bloqueia',

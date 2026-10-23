@@ -17,6 +17,14 @@ import { collapseOpKey, lookupMap, withInheritedPropMap } from './collapse.ts';
 import { InvalidCompositionInputError, isBlockingDiagnostic, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
+import {
+  CSV_PIECE,
+  CSV_PIECE_VERSION,
+  CSV_READ_ACTION,
+  readCsvNativePlan,
+  readFileContentLine,
+  type ReadCsvNativePlan,
+} from './read-csv-file.ts';
 import { wrapJsEvalMain } from './js-eval.ts';
 import { commissionPythonCode } from './commission-report.ts';
 import {
@@ -222,6 +230,15 @@ function pipefyOutputRoot(targetName: string | undefined): string {
   return PIPEFY_PAYLOAD_ROOT;
 }
 
+/** Foreach da lista do CSV nativo: `column_N` no item vira o nome do header. */
+function csvForeachAlias(ctx: Ctx, source: string | undefined): ReadonlyMap<string, string> | undefined {
+  const dp = source ? firstPill(source) : null;
+  if (!dp?.line) return undefined;
+  const binding = ctx.asToName.get(String(dp.line));
+  if (!binding || typeof binding === 'string' || !binding.segmentAlias?.size) return undefined;
+  return binding.segmentAlias;
+}
+
 function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep): void {
   if (!as) return;
   const opKey = step.opKey ?? (step.provider && step.name ? `${step.provider}/${step.name}` : undefined);
@@ -245,6 +262,17 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
   if (collapsed === 'csv_parser/create_csv_lines' && csvLinesPlan(step.input)) {
     ctx.asToName.set(as, { name, headAlias: { from: 'csv_lines', to: 'csv' } });
     return;
+  }
+  if (collapsed === 'csv_parser/parse_csv') {
+    const native = readCsvNativePlan(step.input);
+    if (native) {
+      ctx.asToName.set(as, {
+        name,
+        headAlias: { from: 'lines', to: 'rows' },
+        ...(native.segmentAlias.size ? { segmentAlias: native.segmentAlias } : {}),
+      });
+      return;
+    }
   }
   const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
   const cardsByField =
@@ -404,7 +432,13 @@ function assignNames(
     bindAs(ctx, step.as, 'trigger', step);
   } else if (step.keyword === 'foreach') {
     step.apName = `loop_${ctx.counter.n++}`;
-    if (step.as) ctx.asToName.set(step.as, `${step.apName}.item`);
+    if (step.as) {
+      const alias = csvForeachAlias(ctx, step.source);
+      ctx.asToName.set(
+        step.as,
+        alias?.size ? { name: `${step.apName}.item`, segmentAlias: alias } : `${step.apName}.item`,
+      );
+    }
   } else if (step.keyword === 'if') {
     step.apName = `router_${ctx.counter.n++}`;
   } else if (step.keyword === 'repeat') {
@@ -2395,6 +2429,39 @@ function buildParseCsv(
     skipFirstLine: plan.skipFirstLine,
   };
   return codeStep(name, display, input, csvParseCode(plan.columns), true);
+}
+
+/** Arquivo CSV: piece nativa. `file` é a URL; as linhas saem em `rows`. */
+function buildReadCsvFile(
+  name: string,
+  display: string,
+  sourceInput: Record<string, any>,
+  plan: ReadCsvNativePlan,
+  ctx: Ctx,
+): any {
+  ctx.piecesUsed.add(CSV_PIECE);
+  const input = {
+    file: convertedField(sourceInput.csv_content, ctx, name, ''),
+    has_header_row: plan.hasHeaderRow,
+    delimiter: plan.delimiter,
+  };
+  const unresolved = String(input.file).includes('TODO');
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: input.file !== '' && !unresolved,
+    settings: {
+      input,
+      pieceName: CSV_PIECE,
+      actionName: CSV_READ_ACTION,
+      pieceVersion: CSV_PIECE_VERSION,
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display || 'Read CSV File',
+    lastUpdatedDate: NOW,
+  };
 }
 
 type CsvLineColumn = { kind: 'item'; path: string[] } | { kind: 'fixed'; value: unknown } | { kind: 'empty' };
@@ -4837,6 +4904,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     opKey;
 
   if (collapseOpKey(opKey) === 'csv_parser/parse_csv') {
+    const native = readCsvNativePlan(sourceInput);
+    if (native) return buildReadCsvFile(name, display, sourceInput, native, ctx);
     return buildParseCsv(name, display, sourceInput, ctx);
   }
   if (collapseOpKey(opKey) === 'csv_parser/create_csv_lines') {
@@ -7033,6 +7102,38 @@ function withPillPath(value: string, path: unknown[]): string | null {
 }
 
 /**
+ * `read_file` que só alimenta `parse_csv`: o `read_csv_file` baixa a URL e o GET sai.
+ * O `csv_content` passa a ser a URL do `read_file`.
+ */
+function absorbReadFileIntoParseCsv(root: ParsedStep, absorbed: Set<ParsedStep>): void {
+  const reads = new Map<string, ParsedStep>();
+  const parses: ParsedStep[] = [];
+  const walk = (step: ParsedStep) => {
+    const op = step.opKey ? collapseOpKey(step.opKey) : '';
+    if (
+      !step.skip &&
+      step.as &&
+      op === 'file_connector/read_file' &&
+      typeof step.input?.url === 'string' &&
+      step.input.url.trim()
+    ) {
+      reads.set(step.as, step);
+    }
+    if (!step.skip && op === 'csv_parser/parse_csv') parses.push(step);
+    step.children.forEach(walk);
+  };
+  walk(root);
+  for (const parse of parses) {
+    const line = readFileContentLine(parse.input?.csv_content);
+    if (!line) continue;
+    const read = reads.get(line);
+    if (!read?.as) continue;
+    parse.input = { ...(parse.input ?? {}), csv_content: read.input.url };
+    if (!stepReferencesLine(root, read.as, read)) absorbed.add(read);
+  }
+}
+
+/**
  * `uploadAttachment` aceita URL ou data URI, não o corpo binário do HTTP GET.
  * read_file que alimenta o upload: o `attachment` recebe a URL; o GET sai se ninguém mais lê o arquivo.
  * zipFiles e o Code de CSV já entregam o arquivo: o upload lê o step inteiro / o `dataUri`.
@@ -7328,6 +7429,7 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
   pairForeignIndexedLists(recipe.root, ctx.elidedSizedCreateLists);
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
   ctx.absorbedSteps = planFileTransport(recipe.root, merged);
+  absorbReadFileIntoParseCsv(recipe.root, ctx.absorbedSteps);
   assignNames(recipe.root, ctx, true);
   if (ctx.ambiguousAs.size) {
     ctx.todos.push(`SOURCE: ${ctx.ambiguousAs.size} origem(ns) ambigua(s); aliases duplicados exigem revisao.`);
