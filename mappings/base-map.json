@@ -237,7 +237,8 @@
         "value": "fieldValue"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "nodes/record_fields viram data.records[].fields. report_value continua report_value; value continua value."
     },
     "new_connector_6_connector_186728_1628717731/get_record_by_id": {
       "target": {
@@ -1111,7 +1112,7 @@
       "propMap": {},
       "difficulty": "medium",
       "manual": false,
-      "notes": "receita function vira trigger callableFlow; schema de parametros em exampleData."
+      "notes": "receita function vira trigger callableFlow; schema de parametros em exampleData. O payload sai em trigger, sem a chave parameters, lido uma vez num Code."
     },
     "workato_api_platform/receive_request": {
       "target": {
@@ -4623,7 +4624,8 @@
         "value": "fieldValue"
       },
       "difficulty": "low",
-      "manual": false
+      "manual": false,
+      "notes": "nodes/record_fields viram data.records[].fields. report_value continua report_value; value continua value."
     },
     "pipefy/import_cards": {
       "target": {

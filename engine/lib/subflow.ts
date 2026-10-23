@@ -100,6 +100,17 @@ export function sampleDataFromSchema(raw: unknown): Record<string, unknown> {
   return sampleFields(parseWorkatoSchema(raw));
 }
 
+/** Nomes do schema de parâmetros do callable. Schema inválido não inventa campo. */
+export function callableParameterNames(input: Record<string, unknown> | undefined): string[] {
+  try {
+    return parseWorkatoSchema(input?.parameters_schema_json ?? input?.request_schema_json)
+      .map((field) => field.name)
+      .filter((name): name is string => Boolean(name));
+  } catch {
+    return [];
+  }
+}
+
 export function resultLabelsFromSchema(raw: unknown): Map<string, string> {
   const labels = new Map<string, string>();
   for (const field of parseWorkatoSchema(raw)) {

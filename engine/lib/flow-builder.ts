@@ -48,6 +48,7 @@ import {
 import type { UpdateListFieldAdd } from './pipefy-piece.ts';
 import {
   dynamicPropertySettings,
+  callableParameterNames,
   resultLabelsFromSchema,
   shapeCallFlow,
   shapeCallableFlow,
@@ -175,6 +176,8 @@ interface Ctx {
   vars: VarIndex;
   /** Labels do result_schema da recipe function, para o returnResponse. */
   subflowResultLabels: Map<string, string>;
+  /** Code no começo que lê os parâmetros do callable em `trigger`, sem a chave `parameters`. */
+  callableParams?: { stepName: string; fields: string[] };
   /** Fases do schema Workato, para trocar phase_id "0" pelo id do formulário inicial. */
   phasesByPipe: PipePhase[];
   connectionsByProvider: Record<string, string>;
@@ -220,6 +223,11 @@ const PIPEFY_CREATE_RECORD_PAYLOAD_ROOT = 'data.createTableRecord.record';
 // custom_api_call devolve o envelope HTTP ({ status, headers, body }), sem o
 // `data` das outras ações; a resposta GraphQL fica em `body.data`.
 const PIPEFY_HTTP_RESPONSE_ROOT = 'body.data';
+/** Lista de registros da piece: `nodes`/`record_fields` da Workato. A propriedade (`report_value` ou `value`) fica. */
+const RECORD_LIST_ALIAS: ReadonlyMap<string, string> = new Map([
+  ['nodes', 'records'],
+  ['record_fields', 'fields'],
+]);
 
 function pipefyOutputRoot(targetName: string | undefined): string {
   if (targetName === 'getCardById') return PIPEFY_GET_CARD_PAYLOAD_ROOT;
@@ -240,8 +248,20 @@ function csvForeachAlias(ctx: Ctx, source: string | undefined): ReadonlyMap<stri
 }
 
 function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep): void {
-  if (!as) return;
   const opKey = step.opKey ?? (step.provider && step.name ? `${step.provider}/${step.name}` : undefined);
+  const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
+  if (target?.piece === SUBFLOW_PIECE && target.name === 'callableFlow' && name === 'trigger') {
+    const fields = callableParameterNames(step.input);
+    if (fields.length) {
+      const stepName = `step_${ctx.counter.n++}`;
+      ctx.callableParams = { stepName, fields };
+      if (as) ctx.asToName.set(as, { name: stepName, stripHead: 'parameters' });
+    } else if (as) {
+      ctx.asToName.set(as, { name, stripHead: 'parameters' });
+    }
+    return;
+  }
+  if (!as) return;
   const collapsed = opKey ? collapseOpKey(opKey) : undefined;
   if (collapsed === 'workato_list/create_list') {
     ctx.asToName.set(as, { name, headAlias: { from: 'list', to: 'items' } });
@@ -274,9 +294,9 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
       return;
     }
   }
-  const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
   const cardsByField =
     target?.name === 'getCardsByFieldValue' && !includeDoneIsFalse(step.input ?? {});
+  const recordList = target?.name === 'getRecordsByFieldValue' || target?.name === 'getRecordsByFilter';
   ctx.asToName.set(
     as,
     target?.piece === PIPEFY_PIECE
@@ -284,6 +304,7 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
           name,
           outputRoot: pipefyOutputRoot(target.name),
           ...(cardsByField ? { actionName: 'getCardsByFieldValue' as const } : {}),
+          ...(recordList ? { segmentAlias: RECORD_LIST_ALIAS } : {}),
         }
       : name,
   );
@@ -4376,6 +4397,26 @@ function prependJobContext(nextAction: any, ctx: Ctx): any {
   return nextAction;
 }
 
+function triggerParamPill(field: string): string {
+  return `{{trigger['${field.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}']}}`;
+}
+
+/** Lê cada parâmetro do callable uma vez. No canvas isso é `trigger['output']`, sem `parameters`. */
+function prependCallableParams(nextAction: any, ctx: Ctx): any {
+  const planned = ctx.callableParams;
+  if (!planned) return nextAction;
+  const input = Object.fromEntries(planned.fields.map((field) => [field, triggerParamPill(field)]));
+  const step = codeStep(
+    planned.stepName,
+    'Parâmetros',
+    input,
+    `export const code = async (inputs) => {\n  return { ...inputs };\n};\n`,
+    true,
+  );
+  step.nextAction = nextAction;
+  return step;
+}
+
 /** Domingo 1970-01-04 mais o dia da semana do trigger (0 = domingo). */
 function biweeklyAnchor(daysOfWeek: unknown): string {
   const raw = String(daysOfWeek ?? '0').split(/[,\s]+/)[0] ?? '0';
@@ -6767,6 +6808,7 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     }
     input = fillKnownProps(t, input, root.input ?? {}, ctx);
     nextAction = prependJobContext(nextAction, ctx);
+    nextAction = prependCallableParams(nextAction, ctx);
     if (collapseOpKey(opKey) === 'pipefy/new_updated_card' && t.name === 'cardFieldUpdated') {
       pushReviewNote(ctx, 'TRIGGER', NEW_UPDATED_CARD_NOTE, '', 'trigger');
     }
