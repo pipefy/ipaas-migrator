@@ -335,6 +335,7 @@ export function collectWorkatoTree(recipe) {
         source: typeof node.source === 'string' ? node.source : null,
         hasCatchBody: Boolean(catchChildren.length) && !catchStopOnly,
         catchStopOnly,
+        catchRetry: Number(catchNode?.input?.max_retry_count ?? 0) > 0,
         stopWithError: false,
       });
       return;
@@ -1503,7 +1504,109 @@ export function collectRafaGaps(recipe, flow, steps) {
     ));
   });
 
+  const recipeOps = actions.filter((action) => String(action.opKey).startsWith('workato_app/'));
+  if (recipeOps.length) {
+    const placeholder = steps.some(
+      (step) => step.type === 'CODE' && String(step.settings?.sourceCode?.code ?? '').includes('pending: true'),
+    );
+    if (placeholder) {
+      gaps.push(finding(
+        'bloqueia',
+        'RecipeOps',
+        'workato_app virou Code pending; omitir o passo, deixar a nota e nao bloquear o roteamento',
+      ));
+    }
+  }
+
+  const failureActions = new Map();
+  for (const step of steps) {
+    const failure = step.continueOnFailureBranches?.onFailure;
+    if (!failure) continue;
+    for (const item of walkFlowSteps(failure, [])) {
+      const name = opNameOf(item);
+      if (name !== 'updateCard' && name !== 'moveCard') continue;
+      const sig = `${name}:${JSON.stringify(item.settings?.input ?? {})}`;
+      failureActions.set(sig, (failureActions.get(sig) ?? 0) + 1);
+    }
+  }
+  if ([...failureActions.values()].some((count) => count > 1)) {
+    gaps.push(finding(
+      'bloqueia',
+      'CATCH duplicado',
+      'a mesma acao de erro (update ou move card) aparece em mais de um ramo de falha',
+    ));
+  }
+
+  if (steps.some((step) => opNameOf(step) === 'failFlow')) {
+    gaps.push(finding(
+      'revisar',
+      'failFlow',
+      'failFlow no flow; o stop da Workato usa stopFlow do flow helper',
+    ));
+  }
+
+  if (tree.controls.some((control) => control.catchRetry)) {
+    const retries = steps.some((step) => step.settings?.errorHandlingOptions?.retryOnFailure?.value === true);
+    if (!retries) {
+      gaps.push(finding(
+        'revisar',
+        'retry',
+        'catch com max_retry_count e nenhum passo com retryOnFailure',
+      ));
+    }
+  }
+
+  const notes = flow?.flows?.[0]?.notes ?? [];
+  if (notes.some((note) => /desligad|DESATIVADO/i.test(String(note.content ?? '')))) {
+    gaps.push(finding(
+      'revisar',
+      'nota informativa',
+      'nota sobre bloco desativado; passo pulado nao pede nota',
+    ));
+  }
+
+  if (siblingIfRun(recipeCode(recipe)) && !JSON.stringify(flow ?? {}).includes('EXECUTE_ALL_MATCH')) {
+    gaps.push(finding(
+      'revisar',
+      'ifs irmaos',
+      'ifs seguidos sem else viraram routers em sequencia; o iPaaS usa um router EXECUTE_ALL_MATCH',
+    ));
+  }
+
+  if (/ap-formula-v1::\{(?:replace|remove)\(/.test(JSON.stringify(flow ?? {}))) {
+    gaps.push(finding(
+      'revisar',
+      'formula ap',
+      'ap-formula-v1 replace/remove; confirmar que executa ou mover para Code',
+    ));
+  }
+
   return gaps;
+}
+
+function elseAllowsAllMatch(node) {
+  const kids = node.block ?? [];
+  if (kids.some((child) => child?.keyword === 'elsif' || child?.keyword === 'elseif')) return false;
+  const elses = kids.filter((child) => child?.keyword === 'else');
+  if (!elses.length) return true;
+  const body = (elses[0].block ?? []).filter((child) => child?.skip !== true);
+  return body.length === 1 && body[0]?.keyword === 'stop';
+}
+
+function siblingIfRun(code) {
+  let found = false;
+  const scan = (block) => {
+    if (!Array.isArray(block) || found) return;
+    let streak = 0;
+    for (const child of block) {
+      if (child?.keyword === 'if' && child.skip !== true && elseAllowsAllMatch(child)) streak += 1;
+      else streak = 0;
+      if (streak >= 2) found = true;
+      if (Array.isArray(child?.block)) scan(child.block);
+    }
+  };
+  scan(code?.block);
+  return found;
 }
 
 export function verifyTransport({
@@ -1714,6 +1817,18 @@ export function verifyTransport({
     }
   }
   findings.push(...collectRafaGaps(recipe, flow, steps));
+  const unmappedOps = routing?.unmapped_ops ?? [];
+  if (
+    routing?.status === 'ERROR' &&
+    unmappedOps.length > 0 &&
+    unmappedOps.every((op) => String(op).startsWith('workato_app/'))
+  ) {
+    findings.push(finding(
+      'bloqueia',
+      'RecipeOps',
+      'roteamento ERROR so por workato_app; RecipeOps nao bloqueia a migracao',
+    ));
+  }
   if (tree.controls.some((c) => c.stopWithError) && steps.some(routerLeaksPastStop)) {
     findings.push(finding('revisar', 'STOP', 'stop_with_error sem equivalente no AP'));
   }

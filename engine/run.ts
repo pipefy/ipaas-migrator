@@ -166,7 +166,9 @@ async function main(): Promise<void> {
   const blockedKeys = new Set(blockedChannels.map((o) => o.opKey));
   const mapped = ops.filter((o) => o.status === 'mapped' && !blockedKeys.has(o.opKey)).length;
 
-  const unmapped = ops.filter((o) => o.status === 'unmapped');
+  const unmapped = ops.filter(
+    (o) => o.status === 'unmapped' && !collapseOpKey(o.opKey).startsWith('workato_app/'),
+  );
 
   if (isEmptyWorkatoTrigger(recipe.root)) {
     const reason = [

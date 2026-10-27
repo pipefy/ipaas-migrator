@@ -6,12 +6,23 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.12 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.13 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.13 — 27 out 2026
+
+RecipeOps, IFs irmãos e o catch seguem o retorno da Rafa.
+
+- Ação RecipeOps sai do flow com nota. O callable ganha `execution_datetime`.
+- IFs seguidos rodam todos os ramos verdadeiros.
+- O catch que só para usa um `stopFlow`. Catch com retry liga de novo. Bloco desativado não vira nota.
+- Arquivo que alimenta Python ou Ruby chega em base64 pelo file helper.
+- O Code traduzido falha alto quando a entrada, a aba ou o zip não existem.
+- `migrador-workato-cliente-navegador-0.7.13.tgz`
 
 ## 0.7.12 — 23 out 2026
 

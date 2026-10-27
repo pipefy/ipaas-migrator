@@ -31,6 +31,16 @@ function inputFieldsOf(raw: unknown): WorkatoInputField[] | undefined {
   return fields.length ? fields : undefined;
 }
 
+function sourceLabelOf(picks: unknown): string | undefined {
+  if (!picks || typeof picks !== 'object') return undefined;
+  for (const [key, value] of Object.entries(picks as Record<string, unknown>)) {
+    if (key === 'phase_id' || typeof value !== 'string') continue;
+    const label = value.trim();
+    if (label) return label;
+  }
+  return undefined;
+}
+
 function parseStep(node: any): ParsedStep {
   const provider: string | undefined = node.provider;
   const name: string | undefined = node.name;
@@ -51,6 +61,7 @@ function parseStep(node: any): ParsedStep {
       typeof node.dynamicPickListSelection?.phase_id === 'string'
         ? node.dynamicPickListSelection.phase_id
         : undefined,
+    sourceLabel: sourceLabelOf(node.dynamicPickListSelection),
     inputFields: inputFieldsOf(node.extended_input_schema),
     children: Array.isArray(node.block) ? node.block.map(parseStep) : [],
   };

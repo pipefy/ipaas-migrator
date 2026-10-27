@@ -178,6 +178,10 @@ interface Ctx {
   subflowResultLabels: Map<string, string>;
   /** Code no começo que lê os parâmetros do callable em `trigger`, sem a chave `parameters`. */
   callableParams?: { stepName: string; fields: string[] };
+  /** Ação RecipeOps (`workato_app/*`) omitida: o callable ganha `execution_datetime`. */
+  omittedRecipeOps?: boolean;
+  /** `read_file` que alimenta Python/Ruby: vira file-helper `read_file` base64. */
+  base64FileReads: WeakSet<ParsedStep>;
   /** Fases do schema Workato, para trocar phase_id "0" pelo id do formulário inicial. */
   phasesByPipe: PipePhase[];
   connectionsByProvider: Record<string, string>;
@@ -263,6 +267,10 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
   }
   if (!as) return;
   const collapsed = opKey ? collapseOpKey(opKey) : undefined;
+  if (collapsed === 'file_connector/read_file' && ctx.base64FileReads.has(step)) {
+    ctx.asToName.set(as, { name });
+    return;
+  }
   if (collapsed === 'workato_list/create_list') {
     ctx.asToName.set(as, { name, headAlias: { from: 'list', to: 'items' } });
     return;
@@ -855,12 +863,79 @@ function prependPendingCode(built: any, ctx: Ctx, from = 0): any {
   return head;
 }
 
+function isAllMatchSibling(step: ParsedStep): boolean {
+  if (step.keyword !== 'if' || step.skip) return false;
+  const { branches, elseChildren } = splitBranches(step);
+  if (branches.length !== 1) return false;
+  const activeElse = elseChildren.filter((child) => !child.skip);
+  return activeElse.length === 0 || (activeElse.length === 1 && activeElse[0]!.keyword === 'stop');
+}
+
+function conditionReads(step: ParsedStep, lines: Set<string>): boolean {
+  const raw = JSON.stringify(step.input ?? {});
+  for (const line of lines) if (raw.includes(`"line":"${line}"`) || raw.includes(`\\"line\\":\\"${line}\\"`)) return true;
+  return false;
+}
+
+function collectActionLines(steps: ParsedStep[], out: Set<string>): void {
+  for (const step of steps) {
+    if (step.as && step.keyword === 'action' && !step.skip) out.add(step.as);
+    collectActionLines(step.children, out);
+  }
+}
+
+/** IFs irmãos sem else (ou else que só para) viram um router que roda todo ramo verdadeiro. */
+function buildAllMatchRouter(group: ParsedStep[], ctx: Ctx): any {
+  const name = nextName('router');
+  const written = new Set<string>();
+  const branches: any[] = [];
+  const children: any[] = [];
+  let review = false;
+  for (const step of group) {
+    if (conditionReads(step, written)) {
+      ctx.todos.push(
+        `ROUTER (${name}): a condição lê um passo de um if anterior. EXECUTE_ALL_MATCH avalia todas as condições antes; conferir a ordem.`,
+      );
+    }
+    const { branches: split } = splitBranches(step);
+    const built = buildConditionGroups(split[0]?.conditionsInput, ctx);
+    const groups = resolveFormulas(built.groups, ctx, name) as any[][];
+    review = review || built.review || hasTodoMarker(groups);
+    branches.push({
+      branchName: step.comment || 'Se verdadeiro',
+      branchType: 'CONDITION',
+      conditions: groups,
+    });
+    children.push(buildChain(split[0]?.children ?? [], ctx) ?? null);
+    collectActionLines(split[0]?.children ?? [], written);
+  }
+  if (review) ctx.todos.push(`ROUTER (${name}): revisar condicoes do "if".`);
+  return {
+    name,
+    skip: false,
+    type: 'ROUTER',
+    valid: !review,
+    settings: { branches, executionType: 'EXECUTE_ALL_MATCH' },
+    children,
+    displayName: 'Condicoes irmas',
+    lastUpdatedDate: NOW,
+  };
+}
+
 function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
   const steps: any[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i]!;
     const mark = ctx.pendingCode.length;
-    const rawBuilt = buildStep(child, ctx);
+    const siblingGroup: ParsedStep[] = [];
+    if (isAllMatchSibling(child)) {
+      siblingGroup.push(child);
+      while (i + 1 < children.length && isAllMatchSibling(children[i + 1]!)) {
+        siblingGroup.push(children[++i]!);
+      }
+    }
+    const rawBuilt =
+      siblingGroup.length > 1 ? buildAllMatchRouter(siblingGroup, ctx) : buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
     // `stop` encerra este bloco. O passo emitido é stopFlow e os irmãos seguintes não entram.
     if (child.keyword === 'stop' && !child.skip) {
@@ -880,7 +955,7 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     // seguintes so rodam nos caminhos que NAO param.
     // O resto entra no ROUTER, nao no head da cadeia (que pode ser o CODE das
     // formulas do proprio router).
-    if (rawBuilt.type === 'ROUTER' && child.keyword === 'if') {
+    if (rawBuilt.type === 'ROUTER' && child.keyword === 'if' && rawBuilt.settings?.executionType !== 'EXECUTE_ALL_MATCH') {
       const stops = branchStopFlags(child);
       if (!stops.some(Boolean)) continue;
 
@@ -896,6 +971,7 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
       const rest = buildChain(children.slice(i + 1), ctx);
       if (rest) {
         if (emptyStopMonitors.has(built)) built.nextAction = rest;
+        else if (catchFallsThrough.has(built)) appendToChain(built, rest);
         else attachRestToSuccessTails(built, rest, ctx);
       }
       break;
@@ -983,11 +1059,10 @@ const CONTROL_FLOW_KEYWORDS = new Set([
 
 function buildSkipped(step: ParsedStep, ctx: Ctx): any | null {
   if (CONTROL_FLOW_KEYWORDS.has(step.keyword)) {
-    const message =
+    ctx.todos.push(
       `DESATIVADO (${step.comment || step.keyword}): bloco \`${step.keyword}\` estava ` +
-      'desligado na receita e nao foi migrado.';
-    ctx.todos.push(message);
-    pushReviewNote(ctx, 'REPEAT', message);
+        'desligado na receita e nao foi migrado.',
+    );
   }
   return null;
 }
@@ -1523,6 +1598,9 @@ export const CHANNEL_HOLD_NOTE =
   'Não há envio equivalente. Os campos ficaram neste passo para você escolher o provedor.';
 export const RECIPE_OPS_NOTE =
   'Este gatilho acompanha execução de receitas. Não há equivalente. Se ele monitora erro, refaça as receitas acompanhadas com tratamento de erro. Se ele liga ou desliga uma receita, use um agendamento e uma condição.';
+export const REVIEW_RECIPE_OPS_LABEL = 'REVISAR: ação sem equivalente no iPaaS (RecipeOps)';
+export const ERROR_MONITOR_LABEL = 'Erro do monitor';
+const FILE_HELPER_PIECE = '@activepieces/piece-file-helper';
 export const COLLECTION_QUERY_NOTE =
   'A consulta da collection não foi convertida. O passo ficou incompleto.';
 const WEBHOOK_PIECE = '@activepieces/piece-webhook';
@@ -2293,6 +2371,62 @@ const UNMAPPED_HOLD_CODE = `export const code = async (inputs) => {
   };
 };
 `;
+
+function omitRecipeOps(step: ParsedStep, anchorHint: string, ctx: Ctx): null {
+  ctx.omittedRecipeOps = true;
+  const action = step.comment || step.name || 'RecipeOps';
+  const recipeId = step.input?.recipe_id != null ? String(step.input.recipe_id).trim() : '';
+  const recipeName = step.sourceLabel || '';
+  const target = recipeName || recipeId;
+  const param = ctx.callableParams?.fields[0] || 'job_id';
+  const lines = [
+    `Na receita do Workato este fluxo usava a ação RecipeOps '${action}'${
+      target ? `, na receita '${recipeName || recipeId}'${recipeId ? ` (id ${recipeId})` : ''}` : ''
+    }.`,
+    'O iPaaS não tem essa ação, por isso este flow não inclui esse passo. O gatilho e os passos que têm equivalente permanecem.',
+  ];
+  if (ctx.callableParams) {
+    lines.push(
+      `Neste flow, ${param} passa a ser o ID da execução (run ID) no iPaaS. Também foi incluído execution_datetime, a data e hora dessa execução. Quem chama este subflow deve enviar os dois.`,
+    );
+  }
+  lines.push(
+    'O que fazer: adicione a ação que fizer mais sentido, por exemplo enviar um e-mail, enviar uma mensagem ou criar um card com o ID e a data e hora da execução, para que a pessoa encontre a execução no iPaaS e a repita manualmente, se quiser.',
+  );
+  ctx.canvasNotes.push({
+    id: nextName('review_recipe_ops'),
+    kind: 'UNMAPPED',
+    content: `**${REVIEW_RECIPE_OPS_LABEL}**\n\n${lines.join(' ')}`,
+    anchorStepName: anchorHint,
+  });
+  ctx.noteAnchorPending = ctx.canvasNotes.length - 1;
+  return null;
+}
+
+/** file-helper `read_file` com saída base64. A opção existe na piece (`filesOutput.Base64`). */
+function buildReadFileBase64(name: string, display: string, sourceInput: Record<string, any>, ctx: Ctx): any {
+  ctx.piecesUsed.add(FILE_HELPER_PIECE);
+  const input = {
+    file: pills(String(sourceInput.url ?? ''), ctx),
+    readOptions: 'base64',
+  };
+  return {
+    name,
+    skip: false,
+    type: 'PIECE',
+    valid: Boolean(String(input.file).trim()) && !hasTodoMarker(input),
+    settings: {
+      input,
+      pieceName: FILE_HELPER_PIECE,
+      actionName: 'read_file',
+      pieceVersion: pieceVersion(ctx, FILE_HELPER_PIECE),
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: ERR(),
+    },
+    displayName: display,
+    lastUpdatedDate: NOW,
+  };
+}
 
 const CHANNEL_HOLD_CODE = `export const code = async (inputs) => {
   return {
@@ -4405,6 +4539,9 @@ function triggerParamPill(field: string): string {
 function prependCallableParams(nextAction: any, ctx: Ctx): any {
   const planned = ctx.callableParams;
   if (!planned) return nextAction;
+  const blob = JSON.stringify(nextAction ?? {});
+  const used = blob.includes(`{{${planned.stepName}[`) || blob.includes(`"${planned.stepName}"`);
+  if (!used) return nextAction;
   const input = Object.fromEntries(planned.fields.map((field) => [field, triggerParamPill(field)]));
   const step = codeStep(
     planned.stepName,
@@ -4943,6 +5080,11 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     step.comment ||
     (collapseOpKey(opKey) === 'file_connector/read_file' ? 'Get file from URL' : step.name) ||
     opKey;
+
+  if (collapseOpKey(opKey).startsWith('workato_app/')) return omitRecipeOps(step, name, ctx);
+  if (collapseOpKey(opKey) === 'file_connector/read_file' && ctx.base64FileReads.has(step)) {
+    return buildReadFileBase64(name, display, sourceInput, ctx);
+  }
 
   if (collapseOpKey(opKey) === 'csv_parser/parse_csv') {
     const native = readCsvNativePlan(sourceInput);
@@ -6214,6 +6356,8 @@ const CATCH_ROUTER_LABEL = 'Catch do monitor';
 
 const claimedByCatch = new WeakSet<object>();
 const emptyStopMonitors = new WeakSet<object>();
+/** Catch com ações e sem stop: o que vem depois do try segue a cadeia, não só o sucesso. */
+const catchFallsThrough = new WeakSet<object>();
 
 /**
  * Passos falíveis deste try. Um monitor de dentro já reivindicou os seus:
@@ -6319,6 +6463,12 @@ function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
   const walk = (node: any) => {
     if (!node || seen.has(node)) return;
     seen.add(node);
+    if (node.displayName === ERROR_MONITOR_LABEL) {
+      const branches = node.settings?.branches ?? [];
+      const index = branches.findIndex((branch: { branchType?: string }) => branch.branchType === 'FALLBACK');
+      if (index >= 0) node.children[index] = appendToChain(node.children[index], rest) ?? rest;
+      return;
+    }
     if (node.settings?.actionName === 'stopFlow') return;
     if (node.continueOnFailureBranches?.onSuccess) {
       walk(node.continueOnFailureBranches.onSuccess);
@@ -6399,37 +6549,205 @@ function stopFlowStep(ctx: Ctx): any {
  * Router e loop não têm ramo; os passos de dentro sim. Passo já reivindicado
  * por outro catch (router no fim, ou este mesmo tratamento) fica como está.
  */
-function rewireStopOnFailure(step: any, ctx: Ctx): any {
+function catchRetries(node: ParsedStep | undefined): boolean {
+  const count = Number(node?.input?.max_retry_count ?? 0);
+  return Number.isFinite(count) && count > 0;
+}
+
+function handlersIncludeStop(handlers: ParsedStep[]): boolean {
+  const visit = (step: ParsedStep): boolean => {
+    if (step.skip) return false;
+    if (step.keyword === 'stop') return true;
+    return step.children.some(visit);
+  };
+  return handlers.some(visit);
+}
+
+function findFirstUnclaimedFallible(step: any, seen = new Set<any>()): any {
+  let node = step;
+  while (node && !seen.has(node)) {
+    seen.add(node);
+    if (node.settings?.actionName === 'stopFlow') return null;
+    if (node.displayName === CATCH_ROUTER_LABEL || node.displayName === ERROR_MONITOR_LABEL) return null;
+    if (claimedByCatch.has(node) && node.continueOnFailureBranches?.onSuccess) {
+      node = node.continueOnFailureBranches.onSuccess;
+      continue;
+    }
+    if (isFallibleStep(node) && !claimedByCatch.has(node)) return node;
+    if (node.firstLoopAction) {
+      const inner = findFirstUnclaimedFallible(node.firstLoopAction, seen);
+      if (inner) return inner;
+    }
+    node = node.nextAction;
+  }
+  return null;
+}
+
+function nestStopSuccess(step: any, ctx: Ctx, retry: boolean): any {
   if (!step) return step;
   if (step.settings?.actionName === 'stopFlow') return step;
-  if (step.type === 'ROUTER' && step.displayName === CATCH_ROUTER_LABEL) {
-    step.nextAction = rewireStopOnFailure(step.nextAction, ctx);
-    return step;
-  }
-  if (step.continueOnFailureBranches || claimedByCatch.has(step)) {
-    step.nextAction = rewireStopOnFailure(step.nextAction, ctx);
+  if (step.displayName === CATCH_ROUTER_LABEL || step.displayName === ERROR_MONITOR_LABEL) return step;
+  if (claimedByCatch.has(step)) {
     if (step.continueOnFailureBranches?.onSuccess) {
-      step.continueOnFailureBranches.onSuccess = rewireStopOnFailure(step.continueOnFailureBranches.onSuccess, ctx);
+      step.continueOnFailureBranches.onSuccess = nestStopSuccess(step.continueOnFailureBranches.onSuccess, ctx, retry);
     }
+    step.nextAction = nestStopSuccess(step.nextAction, ctx, retry);
     return step;
   }
-  if (step.firstLoopAction) step.firstLoopAction = rewireStopOnFailure(step.firstLoopAction, ctx);
-  if (Array.isArray(step.children)) {
-    step.children = step.children.map((child: any) => rewireStopOnFailure(child, ctx));
+  if (step.type === 'ROUTER') {
+    step.children = (step.children ?? []).map((child: any) => nestStopSuccess(child, ctx, retry));
+    step.nextAction = nestStopSuccess(step.nextAction, ctx, retry);
+    return step;
   }
-  const rest = step.nextAction ? rewireStopOnFailure(step.nextAction, ctx) : undefined;
+  if (step.firstLoopAction) step.firstLoopAction = nestStopSuccess(step.firstLoopAction, ctx, retry);
   if (!isFallibleStep(step)) {
-    step.nextAction = rest;
+    step.nextAction = nestStopSuccess(step.nextAction, ctx, retry);
     return step;
   }
+  const rest = step.nextAction ? nestStopSuccess(step.nextAction, ctx, retry) : undefined;
   step.nextAction = undefined;
   if (step.settings?.errorHandlingOptions) {
     step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+    if (retry) step.settings.errorHandlingOptions.retryOnFailure = { value: true };
   }
-  const failure = stopFlowStep(ctx);
-  step.continueOnFailureBranches = rest ? { onSuccess: rest, onFailure: failure } : { onFailure: failure };
+  if (rest) step.continueOnFailureBranches = { ...(step.continueOnFailureBranches ?? {}), onSuccess: rest };
   claimedByCatch.add(step);
   return step;
+}
+
+function fallibleNames(step: any, names: string[], seen = new Set<any>()): void {
+  if (!step || seen.has(step)) return;
+  seen.add(step);
+  if (step.displayName === ERROR_MONITOR_LABEL || step.displayName === CATCH_ROUTER_LABEL) return;
+  if (isFallibleStep(step) && step.settings?.actionName !== 'stopFlow' && step.name) names.push(step.name);
+  fallibleNames(step.nextAction, names, seen);
+  fallibleNames(step.continueOnFailureBranches?.onSuccess, names, seen);
+  fallibleNames(step.firstLoopAction, names, seen);
+  for (const child of step.children ?? []) fallibleNames(child, names, seen);
+}
+
+function errorMonitor(owners: string[], stop: any): any {
+  return {
+    name: nextName('catch'),
+    skip: false,
+    type: 'ROUTER',
+    valid: true,
+    settings: {
+      branches: [
+        {
+          branchName: 'Algum passo falhou',
+          branchType: 'CONDITION',
+          conditions: owners.map((owner) => [{ operator: 'EXISTS', firstValue: `{{${owner}['error']}}` }]),
+        },
+        { branchName: 'Seguiu', branchType: 'FALLBACK' },
+      ],
+      executionType: 'EXECUTE_FIRST_MATCH',
+    },
+    children: [stop, null],
+    displayName: ERROR_MONITOR_LABEL,
+    lastUpdatedDate: NOW,
+  };
+}
+
+function armRouterStops(step: any, ctx: Ctx): any {
+  if (!step || step.displayName === ERROR_MONITOR_LABEL) return step;
+  if (step.type === 'ROUTER' && step.displayName !== CATCH_ROUTER_LABEL) {
+    step.children = (step.children ?? []).map((child: any) => armRouterStops(child, ctx));
+    const names: string[] = [];
+    for (const child of step.children ?? []) fallibleNames(child, names);
+    const next = armRouterStops(step.nextAction, ctx);
+    if (names.length) {
+      const monitor = errorMonitor(names, stopFlowStep(ctx));
+      monitor.children[1] = next ?? null;
+      step.nextAction = monitor;
+    } else step.nextAction = next;
+    return step;
+  }
+  step.nextAction = armRouterStops(step.nextAction, ctx);
+  if (step.continueOnFailureBranches?.onSuccess) {
+    step.continueOnFailureBranches.onSuccess = armRouterStops(step.continueOnFailureBranches.onSuccess, ctx);
+  }
+  if (step.firstLoopAction) step.firstLoopAction = armRouterStops(step.firstLoopAction, ctx);
+  for (const child of step.children ?? []) armRouterStops(child, ctx);
+  return step;
+}
+
+/**
+ * Catch que só para o job. O stop fica na falha do primeiro passo; o resto vai
+ * no sucesso, sem ramo de falha. Passos dentro de router não ganham falha:
+ * depois do router, um IF para se algum deles teve erro.
+ */
+function rewireStopOnFailure(step: any, ctx: Ctx, retry = false): any {
+  if (!step) return step;
+  const first = findFirstUnclaimedFallible(step);
+  if (!first) return armRouterStops(nestStopSuccess(step, ctx, retry), ctx);
+  const rest = first.nextAction;
+  first.nextAction = undefined;
+  if (first.settings?.errorHandlingOptions) {
+    first.settings.errorHandlingOptions.continueOnFailure = { value: true };
+    if (retry) first.settings.errorHandlingOptions.retryOnFailure = { value: true };
+  }
+  const success = rest ? armRouterStops(nestStopSuccess(rest, ctx, retry), ctx) : undefined;
+  first.continueOnFailureBranches = success
+    ? { onSuccess: success, onFailure: stopFlowStep(ctx) }
+    : { onFailure: stopFlowStep(ctx) };
+  claimedByCatch.add(first);
+  return step;
+}
+
+function countBuiltFallible(step: any, seen = new Set<any>()): number {
+  if (!step || seen.has(step)) return 0;
+  seen.add(step);
+  if (step.displayName === CATCH_ROUTER_LABEL || step.displayName === ERROR_MONITOR_LABEL) return 0;
+  const here = isFallibleStep(step) && step.settings?.actionName !== 'stopFlow' ? 1 : 0;
+  return (
+    here +
+    countBuiltFallible(step.nextAction, seen) +
+    countBuiltFallible(step.firstLoopAction, seen) +
+    countBuiltFallible(step.continueOnFailureBranches?.onSuccess, seen) +
+    (step.children ?? []).reduce((sum: number, child: any) => sum + countBuiltFallible(child, seen), 0)
+  );
+}
+
+function builtHasRouter(step: any, seen = new Set<any>()): boolean {
+  if (!step || seen.has(step)) return false;
+  seen.add(step);
+  if (step.type === 'ROUTER') return true;
+  return (
+    builtHasRouter(step.nextAction, seen) ||
+    builtHasRouter(step.firstLoopAction, seen) ||
+    builtHasRouter(step.continueOnFailureBranches?.onSuccess, seen) ||
+    (step.children ?? []).some((child: any) => builtHasRouter(child, seen))
+  );
+}
+
+function enableRetry(step: any, seen = new Set<any>()): void {
+  if (!step || seen.has(step)) return;
+  seen.add(step);
+  if (step.displayName === CATCH_ROUTER_LABEL || step.displayName === ERROR_MONITOR_LABEL) return;
+  if (claimedByCatch.has(step) && step.settings?.errorHandlingOptions && step.settings.actionName !== 'stopFlow') {
+    step.settings.errorHandlingOptions.retryOnFailure = { value: true };
+  }
+  enableRetry(step.nextAction, seen);
+  enableRetry(step.firstLoopAction, seen);
+  enableRetry(step.continueOnFailureBranches?.onSuccess, seen);
+  enableRetry(step.continueOnFailureBranches?.onFailure, seen);
+  for (const child of step.children ?? []) enableRetry(child, seen);
+}
+
+function markLinearMonitor(step: any, retry: boolean, seen = new Set<any>()): void {
+  if (!step || seen.has(step)) return;
+  seen.add(step);
+  if (step.displayName === CATCH_ROUTER_LABEL) return;
+  if (isFallibleStep(step) && step.settings?.actionName !== 'stopFlow' && step.settings?.errorHandlingOptions) {
+    step.settings.errorHandlingOptions.continueOnFailure = { value: true };
+    if (retry) step.settings.errorHandlingOptions.retryOnFailure = { value: true };
+    claimedByCatch.add(step);
+  }
+  markLinearMonitor(step.nextAction, retry, seen);
+  markLinearMonitor(step.firstLoopAction, retry, seen);
+  markLinearMonitor(step.continueOnFailureBranches?.onSuccess, retry, seen);
+  for (const child of step.children ?? []) markLinearMonitor(child, retry, seen);
 }
 
 /** Primeira mensagem de erro entre os passos deste monitor. */
@@ -6676,9 +6994,16 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
     ctx,
   );
 
+  const retry = catchRetries(catchNode);
   if (isStopOnlyCatch(activeHandlers)) {
-    if (!first) return stopOnlyEmptyMonitor(ctx);
-    return rewireStopOnFailure(first, ctx) ?? null;
+    if (!first) {
+      const empty = stopOnlyEmptyMonitor(ctx);
+      if (retry) enableRetry(empty);
+      return empty;
+    }
+    const wired = rewireStopOnFailure(first, ctx, retry) ?? null;
+    if (retry && wired) enableRetry(wired);
+    return wired;
   }
 
   if (!activeHandlers.length) {
@@ -6702,12 +7027,32 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   }
   notePendingJobContext(ctx, lastStepName(first));
 
+  const single = first && countBuiltFallible(first) === 1 && !builtHasRouter(first);
+  if (single) {
+    const owners = collectMonitorOwners(first);
+    const pill = catchErrorPill(owners);
+    const handler = pill ? bindCatchMessage(handlerHead, pill) : handlerHead;
+    if (pill) rewriteCatchErrorLiterals(handler, pill);
+    attachCatchFailure(first, handler);
+    if (!handlersIncludeStop(activeHandlers)) catchFallsThrough.add(first);
+    if (retry) enableRetry(first);
+    return first;
+  }
+
   const owners = collectMonitorOwners(first);
   const router = sharedCatchRouter(owners, handlerHead);
-  const fresh = new Set<any>();
-  const head = rewireOpenCatch(first, ctx, fresh);
-  if (!attachSharedRouter(head, router, new Set(), fresh)) return appendToChain(head, router) ?? router;
-  return head ?? null;
+  if (handlersIncludeStop(activeHandlers)) {
+    const fresh = new Set<any>();
+    const head = rewireOpenCatch(first, ctx, fresh);
+    if (!attachSharedRouter(head, router, new Set(), fresh)) appendToChain(head, router);
+    if (retry && head) enableRetry(head);
+    return head ?? router;
+  }
+
+  markLinearMonitor(first, retry);
+  const head = appendToChain(first, router) ?? router;
+  catchFallsThrough.add(head);
+  return head;
 }
 
 /** O router do catch fica no nextAction do primeiro passo falível deste monitor. */
@@ -6804,7 +7149,10 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
       ctx,
     );
     if (t.piece === SUBFLOW_PIECE && t.name === 'callableFlow') {
-      input = shapeCallableFlow(root.input ?? {});
+      input = shapeCallableFlow(
+        root.input ?? {},
+        ctx.omittedRecipeOps ? { execution_datetime: '2026-01-01T00:00:00.000Z' } : {},
+      );
     }
     input = fillKnownProps(t, input, root.input ?? {}, ctx);
     nextAction = prependJobContext(nextAction, ctx);
@@ -6938,7 +7286,9 @@ function isNonBlockingReviewTodo(todo: string): boolean {
   if (todo.startsWith('REVIEW (') && todo.includes('teto artificial da adaptacao condicional')) return true;
   if (
     todo.startsWith('ROUTER (') &&
-    (todo.includes('"elsif" viraram ramos do router') || todo.includes('todos os ramos terminam em "stop"'))
+    (todo.includes('"elsif" viraram ramos do router') ||
+      todo.includes('todos os ramos terminam em "stop"') ||
+      todo.includes('lê um passo de um if anterior'))
   ) {
     return true;
   }
@@ -7147,6 +7497,56 @@ function withPillPath(value: string, path: unknown[]): string | null {
  * `read_file` que só alimenta `parse_csv`: o `read_csv_file` baixa a URL e o GET sai.
  * O `csv_content` passa a ser a URL do `read_file`.
  */
+function fileBase64Pill(line: string): string {
+  return `#{_dp('${JSON.stringify({
+    pill_type: 'output',
+    provider: 'file_connector',
+    line,
+    path: ['base64'],
+  })}')}`;
+}
+
+function rewriteFilePill(value: any, line: string): void {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      if (typeof item === 'string') {
+        if (item.includes(line)) value[index] = fileBase64Pill(line);
+      } else rewriteFilePill(item, line);
+    });
+    return;
+  }
+  for (const key of Object.keys(value)) {
+    const item = value[key];
+    if (typeof item === 'string') {
+      if (item.includes(line)) value[key] = fileBase64Pill(line);
+    } else rewriteFilePill(item, line);
+  }
+}
+
+/** `read_file` cujo corpo alimenta Python ou Ruby vira file-helper base64. A opção `base64` existe na piece. */
+function retargetCodeFileReads(root: ParsedStep, marked: WeakSet<ParsedStep>): void {
+  const reads = new Map<string, ParsedStep>();
+  const codes: ParsedStep[] = [];
+  const walk = (step: ParsedStep) => {
+    const op = step.opKey ? collapseOpKey(step.opKey) : '';
+    if (!step.skip && step.as && op === 'file_connector/read_file') reads.set(step.as, step);
+    if (!step.skip && (op.endsWith('/invoke_custom_py_code') || op.endsWith('/invoke_custom_ruby_code'))) {
+      codes.push(step);
+    }
+    step.children.forEach(walk);
+  };
+  walk(root);
+  for (const code of codes) {
+    const blob = JSON.stringify(code.input?.code_input ?? {});
+    for (const [line, read] of reads) {
+      if (!blob.includes(line)) continue;
+      marked.add(read);
+      rewriteFilePill(code.input?.code_input, line);
+    }
+  }
+}
+
 function absorbReadFileIntoParseCsv(root: ParsedStep, absorbed: Set<ParsedStep>): void {
   const reads = new Map<string, ParsedStep>();
   const parses: ParsedStep[] = [];
@@ -7466,12 +7866,14 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     elidedSizedCreateLists: new Set(),
     absorbedSteps: new Set(),
     catchFieldGaps: new Set(),
+    base64FileReads: new WeakSet(),
   };
   ctx.elidedSizedCreateLists = retargetSizedListForeach(recipe.root);
   pairForeignIndexedLists(recipe.root, ctx.elidedSizedCreateLists);
   collectLoopedListLines(recipe.root, ctx.loopedListLines);
   ctx.absorbedSteps = planFileTransport(recipe.root, merged);
   absorbReadFileIntoParseCsv(recipe.root, ctx.absorbedSteps);
+  retargetCodeFileReads(recipe.root, ctx.base64FileReads);
   assignNames(recipe.root, ctx, true);
   if (ctx.ambiguousAs.size) {
     ctx.todos.push(`SOURCE: ${ctx.ambiguousAs.size} origem(ns) ambigua(s); aliases duplicados exigem revisao.`);

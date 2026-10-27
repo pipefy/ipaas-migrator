@@ -539,7 +539,7 @@
       },
       "difficulty": "low",
       "manual": false,
-      "notes": "Workato file_connector/read_file baixa por URL. Files Helper read_file so le File ja no flow. base64_encode/is_large ficam no Workato e nao tem prop HTTP. Quando alimenta upload_attachment, o motor nao emite o GET: o attachment recebe a URL (uploadAttachment aceita URL ou data URI, nao o corpo binario)."
+      "notes": "Workato file_connector/read_file baixa por URL. Files Helper read_file so le File ja no flow. base64_encode/is_large ficam no Workato e nao tem prop HTTP. Quando alimenta upload_attachment, o motor nao emite o GET: o attachment recebe a URL (uploadAttachment aceita URL ou data URI, nao o corpo binario). Quando o corpo alimenta Python ou Ruby, o passo vira @activepieces/piece-file-helper read_file com readOptions base64 (a opcao existe na piece) e o Code le base64."
     },
     "workato_variable/declare_variable": {
       "target": null,

@@ -84,6 +84,8 @@ export interface ParsedStep {
    * O input guarda `0` para o formulário inicial; o id real está no schema.
    */
   phasePickLabel?: string;
+  /** Rótulo de dropdown da ação (`dynamicPickListSelection`), fora de phase_id. */
+  sourceLabel?: string;
   /** Campos do `extended_input_schema` (nome, rótulo, tipo). */
   inputFields?: WorkatoInputField[];
   /** Nome do step no flow AP, atribuido no pre-pass. */

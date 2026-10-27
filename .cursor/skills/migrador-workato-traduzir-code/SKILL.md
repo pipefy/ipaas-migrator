@@ -78,6 +78,10 @@ Regras:
 - Token literal no input ou no fonte de uma integração: o motor troca por `{{variables['PROVEDOR_TOKEN']}}` e deixa a nota `REVISAR: token`. Traduzir o JS com `fetch`, lendo esse input. Não copiar o segredo para o JS, o comentário ou a nota.
 - Lógica ambígua: traduzir o que o corpo diz, com o original em comentário. Não deixar `AP-MIGRATION-TODO` no flow que vai anexar.
 - Pacote npm quando o código precisa (planilha `xlsx`, por exemplo): o patch do step é objeto `{ "code", "packageJson" }`. Sem necessidade de pacote, `packageJson` fica `{}`.
+- O Code falha alto. Entrada vazia, aba ausente, arquivo do zip ausente e casos parecidos lançam um erro com mensagem clara. Não devolver resultado vazio para uma receita que valida o arquivo.
+- Zip de xlsx: ler o central directory (end of central directory, depois cada entrada) para nome, offset e tamanho. Não confiar no tamanho 0 do local file header.
+- Achar a aba pelo nome em `workbook.xml` e no arquivo de rels. Se a aba ou a entrada não existir, lançar. Não cair na primeira aba em silêncio.
+- Com um arquivo de exemplo na pasta, rodar o Code no Node com essa entrada antes de entregar. Importar não basta: o passo tem de funcionar com o arquivo.
 
 O que **não** fazer no JS: chamar a API do Pipefy (isso é step de piece), embutir segredo, trocar `data` por `output` nas pills, reescrever datapill em ponto (o contrato é colchete, `{{trigger['data']['card']['id']}}`).
 
