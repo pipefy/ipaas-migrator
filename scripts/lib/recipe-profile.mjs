@@ -103,6 +103,17 @@ export function literalLookupId(raw) {
   return /^\d+$/.test(text) ? text : null;
 }
 
+/** On-prem agent da Workato: On-prem files, On-prem command-line scripts. */
+export function isOpaProvider(provider) {
+  return /^onprem($|_|-)/i.test(String(provider ?? '')) || /on_prem/i.test(String(provider ?? ''));
+}
+
+function countField(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function walk(node, visit) {
   if (Array.isArray(node)) {
     for (const n of node) walk(n, visit);
@@ -121,6 +132,11 @@ export function parseRecipeProfile(json) {
   const externals = new Map(); // label -> Set of Workato account ids
   const httpConns = new Set();
   const builtins = new Set();
+  const opa = new Set();
+  const noteOpa = (provider) => {
+    if (isOpaProvider(provider)) opa.add(String(provider));
+  };
+  for (const provider of Array.isArray(json.applications) ? json.applications : []) noteOpa(provider);
 
   const addExternal = (label, account) => {
     const set = externals.get(label) ?? new Set();
@@ -130,6 +146,7 @@ export function parseRecipeProfile(json) {
 
   for (const c of Array.isArray(config) ? config : []) {
     const provider = String(c?.provider ?? '');
+    noteOpa(provider);
     const account = connectionRef(c?.account_id);
     if (account === null) {
       builtins.add(provider);
@@ -158,6 +175,7 @@ export function parseRecipeProfile(json) {
 
   walk(code, (n) => {
     const provider = n.provider ? String(n.provider) : null;
+    noteOpa(provider);
     if (provider === 'lookup_table') {
       lookupTables.add(String(n.name ?? 'lookup_table'));
       const raw = n.input?.lookup_table_id;
@@ -221,6 +239,10 @@ export function parseRecipeProfile(json) {
     lookupTables: [...lookupTables],
     lookupTableIds: [...lookupTableIds],
     lookupTableDynamic: [...lookupTableDynamic],
+    opa: [...opa].sort(),
+    tasks: countField(json.lifetime_task_count),
+    jobsSucceeded: countField(json.job_succeeded_count),
+    jobsFailed: countField(json.job_failed_count),
     touched,
   };
 }

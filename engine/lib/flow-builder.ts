@@ -3867,6 +3867,21 @@ function phaseFieldsBlank(value: unknown): boolean {
   return false;
 }
 
+/**
+ * O webhook de campo atualizado só aceita id numérico.
+ * `phase_<id>` faz o LOCK_AND_PUBLISH devolver TRIGGER_UPDATE_STATUS.
+ * Pill fica como está. Sem id numérico, o campo sai.
+ */
+function webhookFieldIds(value: unknown): string | string[] | undefined {
+  if (typeof value === 'string' && (value.includes('{{') || value.includes('_dp('))) return value;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return String(value);
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  const ids = items.map((item) => String(item).trim()).filter((item) => /^\d+$/.test(item));
+  if (!ids.length) return undefined;
+  if (!Array.isArray(value) && ids.length === 1) return ids[0];
+  return ids;
+}
+
 function copyProp(input: Record<string, any>, dest: string, ...sources: string[]): void {
   if (!blankProp(input[dest])) return;
   for (const source of sources) {
@@ -4382,6 +4397,14 @@ function fillKnownProps(
     copySource(input, sourceInput, ctx, 'fileName', 'file_name');
     copySource(input, sourceInput, ctx, 'file', 'content');
     copySource(input, sourceInput, ctx, 'parentFolder', 'serverRelativeUrl');
+  }
+
+  if (target.piece === PIPEFY_PIECE && (target.name === 'cardFieldUpdated' || target.name === 'recordFieldUpdated')) {
+    if (!blankProp(input.fieldIds)) {
+      const ids = webhookFieldIds(input.fieldIds);
+      if (ids === undefined) delete input.fieldIds;
+      else input.fieldIds = ids;
+    }
   }
 
   return input;
