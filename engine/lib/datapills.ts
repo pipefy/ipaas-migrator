@@ -690,14 +690,28 @@ function parseGsubArg(s: string, start: number): { expr: string; end: number; em
   let value = '';
   let j = i + 1;
   while (j < s.length && s[j] !== quote) {
-    if (s[j] === '\\') return null;
+    if (s[j] === '\\') {
+      const next = s[j + 1];
+      // Escapes que o Ruby decodifica: `\\` e a própria aspa. Outro escape deixa a cadeia para o compilador.
+      if (next === '\\' || next === quote) {
+        value += next;
+        j += 2;
+        continue;
+      }
+      return null;
+    }
     value += s[j];
     j += 1;
   }
   if (s[j] !== quote) return null;
   if (value.length === 0) return { expr: '""', end: j + 1, empty: true };
-  if (!isSafeFormulaArg(value)) return null;
-  return { expr: `"${value}"`, end: j + 1, empty: false };
+  if (!isSafeGsubLiteral(value)) return null;
+  return { expr: `"${escapeFormulaString(value)}"`, end: j + 1, empty: false };
+}
+
+/** Literal de `.gsub` aceito na fórmula: aspas e barra entram escapadas; quebra de linha e controle não. */
+function isSafeGsubLiteral(value: string): boolean {
+  return !/[\u0000-\u001f{};]/.test(value);
 }
 
 /**

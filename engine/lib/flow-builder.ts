@@ -189,6 +189,10 @@ interface Ctx {
   projectVariables: Map<string, string>;
   /** Ids de data table Workato que já ganharam sticky note neste flow. */
   notedDataTableIds: Set<string>;
+  /** Lookup tables Workato usadas no flow (id ou nome) e o primeiro passo que as usa; uma nota de virada por flow. */
+  lookupTables: Map<string, string>;
+  /** Passos `tables-find-records` vindos de lookup table: o delete lê o primeiro registro por um check_found. */
+  lookupFindSteps: Set<string>;
   /** Metadados dos passos TODO (opKey Workato), para notas de revisão. */
   todoStepMeta: Map<string, { opKey: string; displayName: string }>;
   /** `as` de create_list elidido por retargetSizedListForeach. */
@@ -553,6 +557,9 @@ function waivedMissing(
     if (raw == null || raw === '' || (Array.isArray(raw) && raw.length === 0)) {
       out = out.filter((name) => name !== 'fieldIds');
     }
+  }
+  if (target.piece === TABLES_PIECE && input.table_id === '' && literalLookupId(sourceInput.lookup_table_id)) {
+    out = out.filter((name) => name !== 'table_id');
   }
   if (target.piece === PIPEFY_PIECE && target.name === 'getCardsByTitle') {
     out = out.filter((name) => name !== 'startFormFields');
@@ -1297,7 +1304,7 @@ function scheduleLookupStep(parsed: ParsedLookup, ctx: Ctx, harvest: Harvest): s
   found.valid = !hasTodoMarker(found.settings.input);
   ctx.piecesUsed.add(TABLES_PIECE);
   ctx.pendingCode.push(found);
-  pushReviewNote(ctx, 'LOOKUP', 'Confirmar importacao da tabela e identidade das colunas no destino.', '', name);
+  registerLookupTable(ctx, table, name);
   ctx.todos.push(`LOOKUP (${name}): confirmar identidade da tabela/colunas importadas.`);
   ctx.diagnostics.push({
     category: 'MANUAL_REVIEW',
@@ -1580,7 +1587,7 @@ export const REVIEW_VARIABLES_LABEL = 'AVISO: variáveis';
 export const REVIEW_REPEAT_LABEL = 'AVISO: repeat adaptado';
 export const REVIEW_TEMPLATE_LABEL = 'REVISAR: message template';
 export const REVIEW_TABLE_LABEL = 'REVISAR: data table';
-export const REVIEW_LOOKUP_LABEL = 'AVISO: lookup table';
+export const REVIEW_LOOKUP_LABEL = 'ATENÇÃO NA VIRADA: lookup table';
 export const REVIEW_SOAP_LABEL = 'REVISAR: soap';
 export const REVIEW_GRAPHQL_LABEL = 'REVISAR: graphql';
 export const REVIEW_MAPPER_LABEL = 'AVISO: mapper sem data';
@@ -1609,9 +1616,6 @@ export const NEW_UPDATED_CARD_NOTE =
 export const PUBSUB_WEBHOOK_NOTE =
   'O gatilho Workato é Pub/Sub (subscribe_to_topic) e virou catch_webhook. Atualize no sistema que publicava no tópico o endpoint novo deste webhook.';
 export const REVIEW_HTTP_LABEL = 'REVISAR: HTTP sem url';
-/** Frase estável da sticky note: o motor não entrega o arquivo de linhas. */
-export const LOOKUP_IMPORT_NOT_GENERATED =
-  'O arquivo de importação com os dados da lookup table não foi gerado.';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1943,6 +1947,40 @@ function noteProjectVariables(ctx: Ctx, anchorStepName?: string): void {
     '',
     anchorStepName,
   );
+}
+
+function findStepByName(root: any, name: string | undefined): any | undefined {
+  if (!root || !name) return undefined;
+  if (root.name === name) return root;
+  return (
+    findStepByName(root.nextAction, name) ??
+    findStepByName(root.firstLoopAction, name) ??
+    (root.children ?? []).map((child: any) => findStepByName(child, name)).find(Boolean)
+  );
+}
+
+/**
+ * Nota só com pendência real. Descarta (a) nota igual a outra já emitida e
+ * (b) nota "consulta da collection não convertida" ancorada num passo que o motor converteu
+ * (válido e sem marcador TODO): ela contradiria o flow.
+ */
+function pruneContradictoryNotes(trigger: any, ctx: Ctx): void {
+  const seen = new Set<string>();
+  ctx.canvasNotes = ctx.canvasNotes.filter((note) => {
+    const key = `${note.kind}\u0000${note.anchorStepName ?? ''}\u0000${note.content}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    // Só a nota de consulta de collection descreve conversão incompleta; as de HTTP/Code pedem conferência.
+    if (note.kind !== 'UNMAPPED' || !note.anchorStepName || !note.content.includes(COLLECTION_QUERY_NOTE)) return true;
+    const anchor = findStepByName(trigger, note.anchorStepName);
+    const settings = anchor?.settings;
+    const converted =
+      anchor?.valid === true &&
+      settings?.pieceName !== 'TODO' &&
+      !String(settings?.sourceCode?.code ?? '').includes('AP-MIGRATION-TODO') &&
+      !String(settings?.sourceCode?.code ?? '').includes('rows: []');
+    return !converted;
+  });
 }
 
 function placeCanvasNotes(trigger: any, pending: PendingCanvasNote[]): any[] {
@@ -3526,15 +3564,30 @@ const SMART_LIST_CODE = [
 const SMART_QUERY_CODE = [
   'export const code = async (inputs) => {',
   '  const rows = Array.isArray(inputs.rows) ? inputs.rows : [];',
-  '  const pattern = String(inputs.pattern ?? "").toLowerCase();',
-  '  const kept = rows.filter((row) => !String(row?.[inputs.where_field] ?? "").toLowerCase().includes(pattern));',
-  '  let max = null;',
+  '  const text = (value) => String(value ?? "").toLowerCase();',
+  '  const conditions = Array.isArray(inputs.conditions) && inputs.conditions.length',
+  '    ? inputs.conditions',
+  '    : [{ field: inputs.where_field, op: "not_like", value: inputs.pattern }];',
+  '  const matches = (row, cond) => {',
+  '    const cell = text(row?.[cond.field]);',
+  '    const wanted = text(cond.value);',
+  '    if (cond.op === "like") return cell.includes(wanted);',
+  '    if (cond.op === "not_like") return !cell.includes(wanted);',
+  '    if (cond.op === "eq") return cell === wanted;',
+  '    return cell !== wanted;',
+  '  };',
+  '  const kept = rows.filter((row) => conditions.every((cond) => !cond.field || matches(row, cond)));',
+  '  const aggregate = inputs.aggregate || "max";',
+  '  if (aggregate === "none") {',
+  '    return { rows: kept.map((row) => ({ columns: row?.[inputs.select_field] })) };',
+  '  }',
+  '  let best = null;',
   '  for (const row of kept) {',
   '    const value = row?.[inputs.select_field];',
   "    if (value == null || value === '') continue;",
-  '    if (max == null || String(value) > String(max)) max = value;',
+  '    if (best == null || (aggregate === "min" ? String(value) < String(best) : String(value) > String(best))) best = value;',
   '  }',
-  '  return { max, rows: max == null ? [] : [{ columns: max }] };',
+  '  return { max: best, rows: best == null ? [] : [{ columns: best }] };',
   '};',
 ].join('\n');
 
@@ -3552,19 +3605,40 @@ function dpColumn(fragment: string): string | null {
   }
 }
 
-function compileSmartListQuery(sql: string): { select: string; whereField: string; pattern: string; fromLine: string } | null {
+type SmartListCondition = { field: string; op: 'like' | 'not_like' | 'eq' | 'neq'; value: string };
+
+function compileSmartListQuery(sql: string): {
+  select: string;
+  aggregate: 'max' | 'min' | 'none';
+  conditions: SmartListCondition[];
+  fromLine: string;
+} | null {
   const match = sql.trim().match(
-    /^SELECT\s+MAX\(\s*([\s\S]+?)\s*\)\s+FROM\s+([\s\S]+?)\s+WHERE\s+([\s\S]+?)\s+NOT\s+LIKE\s+'%?([^'%]+)%?'\s*$/i,
+    /^SELECT\s+(?:(MAX|MIN)\(\s*([\s\S]+?)\s*\)|([\s\S]+?))\s+FROM\s+(\S+?(?:_dp\('(?:\\'|[^'])*'\)\}?)?|[\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?\s*$/i,
   );
   if (!match) return null;
-  const select = dpColumn(match[1]!);
-  const whereField = dpColumn(match[3]!);
-  const from = match[2]!.match(/_dp\('((?:\\'|[^'])*)'\)/);
-  if (!select || !whereField || !from) return null;
+  const aggregate = match[1] ? (match[1].toLowerCase() as 'max' | 'min') : 'none';
+  const select = dpColumn((match[2] ?? match[3])!.trim());
+  const from = match[4]!.match(/_dp\('((?:\\'|[^'])*)'\)/);
+  if (!select || !from) return null;
+  const conditions: SmartListCondition[] = [];
+  if (match[5]) {
+    for (const part of match[5].split(/\s+AND\s+(?=(?:#\{)?_dp\(|[A-Za-z_])/i)) {
+      const cond = part.trim().match(
+        /^([\s\S]+?)\s+(NOT\s+LIKE|LIKE|!=|<>|=)\s+'%?([^'%]*)%?'$/i,
+      );
+      if (!cond) return null;
+      const field = dpColumn(cond[1]!.trim());
+      if (!field) return null;
+      const operator = cond[2]!.toUpperCase().replace(/\s+/g, ' ');
+      const op = operator === 'NOT LIKE' ? 'not_like' : operator === 'LIKE' ? 'like' : operator === '=' ? 'eq' : 'neq';
+      conditions.push({ field, op, value: cond[3]! });
+    }
+  }
   try {
     const dp = JSON.parse(from[1]!.replace(/\\'/g, "'"));
     if (!dp.line) return null;
-    return { select, whereField, pattern: match[4]!, fromLine: String(dp.line) };
+    return { select, aggregate, conditions, fromLine: String(dp.line) };
   } catch {
     return null;
   }
@@ -3596,11 +3670,12 @@ function buildSmartListQuery(name: string, display: string, step: ParsedStep, ct
     pushReviewNote(ctx, 'UNMAPPED', COLLECTION_QUERY_NOTE, '', name);
     return codeStep(name, display, {}, 'export const code = async () => ({ rows: [] });', false);
   }
-  const input = {
+  const single = compiled.conditions.length === 1 && compiled.conditions[0]!.op === 'not_like' ? compiled.conditions[0]! : null;
+  const input: Record<string, any> = {
     rows: `{{${fromName}['items']}}`,
     select_field: compiled.select,
-    where_field: compiled.whereField,
-    pattern: compiled.pattern,
+    ...(compiled.aggregate !== 'max' ? { aggregate: compiled.aggregate } : {}),
+    ...(single ? { where_field: single.field, pattern: single.value } : { conditions: compiled.conditions }),
   };
   return codeStep(name, display, input, SMART_QUERY_CODE, true);
 }
@@ -5373,7 +5448,8 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     t = { piece: TABLES_PIECE, name: 'tables-find-records', kind: 'action' };
     ctx.piecesUsed.add(TABLES_PIECE);
     input.table_id = input.table_id ?? deepConvert(sourceInput.lookup_table_id, ctx);
-    input.filters = { filters: tableFilters.map(item => ({ field: { id: item.field, type: 'TEXT', name: item.field }, operator: 'EQ', value: deepConvert(item.value, ctx) })) };
+    input.filters = { filters: tableFilters.map(item => ({ field: { id: item.field, type: 'TEXT', name: item.field }, operator: 'eq', value: deepConvert(item.value, ctx) })) };
+    ctx.lookupFindSteps.add(name);
     delete input.parameters;
     delete input.record_id;
   }
@@ -5393,6 +5469,12 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   }
   if (mapperEmpty) {
     pushReviewNote(ctx, 'MAPPER', 'O Mapper by Workato não tinha data.', '', name);
+  }
+  const lookupId = isLookupTableOp(opKey) && t.piece === TABLES_PIECE ? literalLookupId(sourceInput.lookup_table_id) : null;
+  if (lookupId) {
+    // O id da Workato não existe no iPaaS: o `table_id` fica vazio até o import da tabela.
+    input.table_id = '';
+    if (t.name === 'tables-delete-record') redirectDeleteToFirstRecord(ctx, input);
   }
   const docsBatch = googleDocsBatchUpdate(t, input);
   if (docsBatch) {
@@ -5552,7 +5634,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
         t.piece === PIPEFY_PIECE ? pipefyPropertySettings(input, step.inputFields) : settingsFor(t.piece, t.name, input),
       errorHandlingOptions: ERR(),
     },
-    displayName: display,
+    displayName: lookupId ? `${display} - lookup ${lookupId}` : display,
     lastUpdatedDate: NOW,
   };
 }
@@ -6081,22 +6163,91 @@ function lookupTableIdLabel(raw: unknown): string {
   return JSON.stringify(raw);
 }
 
-/** Uma nota por id de lookup table. A piece Tables continua; o id e as linhas não vêm juntos. */
-function noteLookupTable(ctx: Ctx, opKey: string, sourceInput: Record<string, any>, anchor: string): void {
+/** Id numérico fixo da lookup table Workato; pill ou fórmula ficam como a receita trouxe. */
+function literalLookupId(raw: unknown): string | null {
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+  return /^\d+$/.test(text) ? text : null;
+}
+
+const CHECK_FOUND_CODE = [
+  'export const code = async (inputs) => {',
+  '  const found = inputs.records;',
+  '  const list = Array.isArray(found)',
+  '    ? found',
+  '    : Array.isArray(found?.records)',
+  '      ? found.records',
+  '      : Array.isArray(found?.data?.records)',
+  '        ? found.data.records',
+  '        : [];',
+  '  const first = list[0];',
+  "  if (!first) throw new Error('Registro não encontrado na lookup table');",
+  '  return { id: first.id, record: first };',
+  '};',
+].join('\n');
+
+/**
+ * `find records` devolve lista; o `delete_entry` da Workato recebe o id de um registro e falha
+ * quando não há (ignore not found = false). Um Code `check_found` entre os dois entrega o
+ * primeiro registro ou interrompe com erro.
+ */
+function redirectDeleteToFirstRecord(ctx: Ctx, input: Record<string, any>): void {
+  const raw = input.records_ids;
+  const items: unknown[] = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const sources = new Set<string>();
+  for (const item of items) {
+    for (const match of String(item).matchAll(/\{\{(\w+)\['id'\]\}\}/g)) {
+      if (ctx.lookupFindSteps.has(match[1]!)) sources.add(match[1]!);
+    }
+  }
+  if (!sources.size) return;
+  const checks = new Map<string, string>();
+  for (const source of sources) {
+    const checkName = nextName('check');
+    checks.set(source, checkName);
+    ctx.pendingCode.push(
+      codeStep(checkName, 'check_found', { records: `{{${source}}}` }, CHECK_FOUND_CODE, true),
+    );
+  }
+  const rewrite = (item: unknown): unknown =>
+    typeof item === 'string'
+      ? item.replace(/\{\{(\w+)\['id'\]\}\}/g, (all, source: string) =>
+          checks.has(source) ? `{{${checks.get(source)}['id']}}` : all,
+        )
+      : item;
+  input.records_ids = Array.isArray(raw) ? raw.map(rewrite) : rewrite(raw);
+}
+
+function isLookupTableOp(opKey: string): boolean {
   const collapsed = collapseOpKey(opKey);
-  if (!collapsed.startsWith('lookup_table/')) return;
-  const op = collapsed.slice('lookup_table/'.length);
-  if (!LOOKUP_TABLE_OPS.has(op)) return;
-  const id = lookupTableIdLabel(sourceInput.lookup_table_id);
-  const token = `Workato lookup_table_id: ${id}.`;
-  if (ctx.canvasNotes.some((note) => note.kind === 'LOOKUP' && note.content.includes(token))) return;
+  return collapsed.startsWith('lookup_table/') && LOOKUP_TABLE_OPS.has(collapsed.slice('lookup_table/'.length));
+}
+
+/** Registra a lookup table do passo. A nota de virada sai uma vez por flow (`noteLookupHandover`). */
+function noteLookupTable(ctx: Ctx, opKey: string, sourceInput: Record<string, any>, anchor: string): void {
+  if (!isLookupTableOp(opKey)) return;
+  registerLookupTable(ctx, lookupTableIdLabel(sourceInput.lookup_table_id), anchor);
+}
+
+function registerLookupTable(ctx: Ctx, table: string, anchor: string): void {
+  if (!ctx.lookupTables.has(table)) ctx.lookupTables.set(table, anchor);
+}
+
+/**
+ * Regra 4: receita com lookup table SEMPRE leva a nota de ATENÇÃO NA VIRADA, uma por flow,
+ * citando todas as tabelas. O id da Workato não vale no iPaaS: o `table_id` sai vazio.
+ */
+function noteLookupHandover(ctx: Ctx): void {
+  if (!ctx.lookupTables.size) return;
+  const tables = [...ctx.lookupTables.keys()].map((table) => `- Workato lookup table: ${table}`);
+  const anchor = [...ctx.lookupTables.values()][0];
   pushReviewNote(
     ctx,
     'LOOKUP',
     [
-      token,
-      'A Table do iPaaS não herda esse id da Workato e não carrega as linhas nem o volume da tabela original. Recrie ou importe a tabela no iPaaS.',
-      `${LOOKUP_IMPORT_NOT_GENERATED} Exporte essa lookup table na Workato.`,
+      'Tabelas usadas por este flow:',
+      tables.join('\n'),
+      'Na virada, desligue a receita na Workato e ligue o flow no iPaaS sem duplicar a execução nem deixar de rodar. A lookup table da Workato e a Table do iPaaS são cópias separadas: o que mudar em uma não aparece na outra.',
+      'Importe o arquivo de cada tabela no iPaaS (Import Table, na lista de tabelas) e confira os dados antes de ligar o flow. Depois selecione a Table e o campo do filtro em cada passo de tabela, porque o `table_id` fica vazio até o import.',
     ].join('\n\n'),
     '',
     anchor,
@@ -6113,10 +6264,27 @@ function integerBound(raw: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
-function loopOverKnownList(step: ParsedStep, ctx: Ctx, name: string, listJson: string, message: string): any {
-  const loop = buildIndexedListRepeat(step, ctx, name, listJson);
-  noteRepeatAdapted(ctx, name, message);
-  return loop;
+/**
+ * O índice do repeat da Workato começa em 0 e o `['index']` do loop do iPaaS começa em 1.
+ * Nos loops por número de voltas o item é `0..n-1`: o índice da receita passa a ser o item.
+ */
+function rebaseRepeatIndex(node: any, loopName: string): void {
+  const from = `${loopName}['index']`;
+  const to = `${loopName}['item']`;
+  const walk = (value: any): any => {
+    if (typeof value === 'string') return value.includes(from) ? value.split(from).join(to) : value;
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value)) value[key] = walk(value[key]);
+    }
+    return value;
+  };
+  walk(node);
+}
+
+/** A adaptação do repeat para lista não gera nota: a regra da receita está no flow (nota só com pendência). */
+function loopOverKnownList(step: ParsedStep, ctx: Ctx, name: string, listJson: string, _message: string): any {
+  return buildIndexedListRepeat(step, ctx, name, listJson);
 }
 
 function loopOverTurnCount(
@@ -6125,7 +6293,7 @@ function loopOverTurnCount(
   name: string,
   bound: string,
   extraOne: boolean,
-  message: string,
+  _message: string,
 ): any {
   const codeName = nextName('var_turns');
   const code = codeStep(
@@ -6152,7 +6320,7 @@ function loopOverTurnCount(
     firstLoopAction: buildChain(step.children, ctx),
     lastUpdatedDate: NOW,
   };
-  noteRepeatAdapted(ctx, name, message);
+  rebaseRepeatIndex(code.nextAction.firstLoopAction, name);
   return code;
 }
 
@@ -6312,6 +6480,7 @@ function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedS
     firstLoopAction,
     lastUpdatedDate: NOW,
   };
+  rebaseRepeatIndex(code.nextAction.firstLoopAction, name);
   noteRepeatAdapted(
     ctx,
     name,
@@ -7885,6 +8054,8 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     connectionsByProvider: recipe.connectionsByProvider ?? {},
     projectVariables: new Map(),
     notedDataTableIds: new Set(),
+    lookupTables: new Map(),
+    lookupFindSteps: new Set(),
     todoStepMeta: new Map(),
     elidedSizedCreateLists: new Set(),
     absorbedSteps: new Set(),
@@ -7906,6 +8077,8 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
   notePendingJobContext(ctx, lastStepName(trigger));
   noteProjectVariables(ctx, lastStepName(trigger));
   auditConversion(trigger, ctx);
+  noteLookupHandover(ctx);
+  pruneContradictoryNotes(trigger, ctx);
   if (ctx.catchFieldGaps.size) {
     pushReviewNote(
       ctx,
@@ -8386,11 +8559,11 @@ function lookupFindStep(
   lookup: { table: string; filters: { column: string; value: string }[] },
 ): any {
   const input = {
-    table_id: lookup.table,
+    table_id: '',
     filters: {
       filters: lookup.filters.map((filter) => ({
         field: { id: filter.column, type: 'TEXT', name: filter.column },
-        operator: 'EQ',
+        operator: 'eq',
         value: filter.value,
       })),
     },
@@ -8569,6 +8742,7 @@ function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: 
     firstLoopAction,
     lastUpdatedDate: NOW,
   };
+  rebaseRepeatIndex(code.nextAction.firstLoopAction, name);
   noteRepeatAdapted(
     ctx,
     name,

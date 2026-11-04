@@ -77,6 +77,9 @@ Regras:
 - Preservar o comportamento. Não inventar campo, endpoint ou regra que o original não tem.
 - Token literal no input ou no fonte de uma integração: o motor troca por `{{variables['PROVEDOR_TOKEN']}}` e deixa a nota `REVISAR: token`. Traduzir o JS com `fetch`, lendo esse input. Não copiar o segredo para o JS, o comentário ou a nota.
 - Lógica ambígua: traduzir o que o corpo diz, com o original em comentário. Não deixar `AP-MIGRATION-TODO` no flow que vai anexar.
+- Um Code só vale quando faz **duas ou mais** operações. Uma operação única (um `gsub`, um `replace`) não ganha Code: ela vai direto no campo do passo seguinte com a função do iPaaS (`ap-formula-v1::{replace(<valor>; "\""; "\\\"")}::ap-formula-v1`; referência: https://www.activepieces.com/docs/flows/formula-reference). Um índice literal (`lista[0]`) fica na própria datapill.
+- Dentro de loop, o Code lê o item do loop (`{{loop['item']}}`), não o índice para reler a lista. No iPaaS o índice começa em 1 e no Workato em 0.
+- Não acrescentar nota que descreve a tradução ("implementada", "adaptado"). Nota só com pendência para a pessoa.
 - Pacote npm quando o código precisa (planilha `xlsx`, por exemplo): o patch do step é objeto `{ "code", "packageJson" }`. Sem necessidade de pacote, `packageJson` fica `{}`.
 - O Code falha alto. Entrada vazia, aba ausente, arquivo do zip ausente e casos parecidos lançam um erro com mensagem clara. Não devolver resultado vazio para uma receita que valida o arquivo.
 - Zip de xlsx: ler o central directory (end of central directory, depois cada entrada) para nome, offset e tamanho. Não confiar no tamanho 0 do local file header.

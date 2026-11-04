@@ -1609,6 +1609,123 @@ function siblingIfRun(code) {
   return found;
 }
 
+const INFORMATIVE_NOTE_LABELS = ['AVISO: repeat adaptado'];
+const LOOKUP_HANDOVER_LABEL = 'ATENÇÃO NA VIRADA';
+const COLLECTION_QUERY_SNIPPET = 'A consulta da collection não foi convertida';
+const SINGLE_GSUB_CHAIN = /^\{\{[^{}]+\}\}(?:\.gsub\((?:[^()]|\([^()]*\))*\))+$/;
+
+function noteText(note) {
+  return String(note?.content ?? '');
+}
+
+/** Código do passo CODE de fórmulas: as linhas ` *   fN: <ruby>` do cabeçalho. */
+function formulaRubyLines(step) {
+  const out = [];
+  for (const line of sourceCodeOf(step).split('\n')) {
+    const match = /^ \*   (f\d+): (.*)$/.exec(line);
+    if (match) out.push(match[2].trim());
+  }
+  return out;
+}
+
+function lookupIdsOf(actions) {
+  const ids = new Set();
+  for (const action of actions) {
+    if (!collapseOpKey(action.opKey).startsWith('lookup_table/')) continue;
+    const raw = action.input?.lookup_table_id;
+    if (raw != null && /^\d+$/.test(String(raw).trim())) ids.add(String(raw).trim());
+  }
+  return ids;
+}
+
+/**
+ * Regras do feedback do card 1474474318: nota só com pendência, replace inline em fórmula de uma
+ * operação, item do loop em vez de índice, lookup table com table_id vazio e nota de virada.
+ */
+export function collectNoteGaps(recipe, flow, steps) {
+  const gaps = [];
+  const notes = canvasNotes(flow);
+  const actions = collectWorkatoTree(recipe ?? {}).actions;
+
+  for (const note of notes) {
+    const content = noteText(note);
+    if (content.includes(LOOKUP_HANDOVER_LABEL)) continue;
+    const pendingCap = /n[ãa]o traz esse teto/i.test(content);
+    const informative =
+      !pendingCap &&
+      (INFORMATIVE_NOTE_LABELS.some((label) => content.includes(label)) ||
+        content.includes('query_list implementada') ||
+        content.includes('Foi adaptada'));
+    if (informative) {
+      gaps.push(finding('revisar', 'nota informativa', `nota ${note.id ?? ''} descreve adaptação, não pendência`, String(note.id ?? '')));
+    }
+  }
+  const collectionNote = notes.some((note) => noteText(note).includes(COLLECTION_QUERY_SNIPPET));
+  if (collectionNote && notes.some((note) => noteText(note).includes('query_list implementada'))) {
+    gaps.push(finding('revisar', 'notas contraditórias', 'query_list: uma nota diz "não convertida" e outra "implementada"'));
+  }
+
+  for (const step of steps) {
+    if (step?.type !== 'CODE') continue;
+    const code = sourceCodeOf(step);
+    if (/export const code = async \(\) => \(\{ rows: \[\] \}\)/.test(code)) {
+      gaps.push(finding('bloqueia', 'query_list placeholder', `${step.name} devolve rows: [] sem consulta`, step.name));
+    }
+    if (collectionNote && code.includes('inputs.select_field') && !code.includes('AP-MIGRATION-TODO')) {
+      gaps.push(finding('revisar', 'notas contraditórias', `${step.name} implementa a consulta e a nota diz "não convertida"`, step.name));
+    }
+    const rubies = formulaRubyLines(step);
+    if (rubies.length === 1 && SINGLE_GSUB_CHAIN.test(rubies[0])) {
+      gaps.push(finding(
+        'revisar',
+        'code de uma operação',
+        `${step.name} só faz gsub; usar replace (ap-formula-v1) direto no campo e remover o Code`,
+        step.name,
+      ));
+    }
+  }
+
+  for (const loop of steps.filter((item) => item?.type === 'LOOP_ON_ITEMS')) {
+    const items = String(loop.settings?.items ?? '');
+    if (!items.startsWith('{{') || /^\{\{(?:var_turns|var_list)/.test(items)) continue;
+    const listPill = items.replace(/^\{\{|\}\}$/g, '');
+    for (const inner of walkFlowSteps(loop.firstLoopAction)) {
+      const blob = JSON.stringify(inner.settings?.input ?? {});
+      if (blob.includes(`${loop.name}['index']`) && blob.includes(listPill)) {
+        gaps.push(finding(
+          'revisar',
+          'loop por índice',
+          `${inner.name} relê a lista pelo índice de ${loop.name}; usar o item do loop (no iPaaS o índice começa em 1)`,
+          inner.name,
+        ));
+      }
+    }
+  }
+
+  const recipeLookupIds = lookupIdsOf(actions);
+  const hasLookup = actions.some((action) => collapseOpKey(action.opKey).startsWith('lookup_table/'));
+  for (const step of steps) {
+    if (pieceNameOf(step) !== '@activepieces/piece-tables') continue;
+    const tableId = String(step.settings?.input?.table_id ?? '').trim();
+    if (tableId && recipeLookupIds.has(tableId)) {
+      gaps.push(finding(
+        'bloqueia',
+        'lookup table_id',
+        `${step.name} usa o id ${tableId} da lookup table Workato; o iPaaS cria id próprio. Deixar vazio até o import`,
+        step.name,
+      ));
+    }
+    const filters = step.settings?.input?.filters?.filters;
+    if (Array.isArray(filters) && filters.some((filter) => filter?.operator && filter.operator !== String(filter.operator).toLowerCase())) {
+      gaps.push(finding('revisar', 'filtro operador', `${step.name} usa operador em maiúsculo; o iPaaS espera eq`, step.name));
+    }
+  }
+  if (hasLookup && !notes.some((note) => noteText(note).includes(LOOKUP_HANDOVER_LABEL))) {
+    gaps.push(finding('bloqueia', 'lookup virada', 'receita com lookup table sem a nota de ATENÇÃO NA VIRADA'));
+  }
+  return gaps;
+}
+
 export function verifyTransport({
   recipe,
   flow,
@@ -1714,6 +1831,7 @@ export function verifyTransport({
   for (const item of emailGaps) {
     findings.push(finding('info', 'email gap', `${item.step} ${item.reason}`, item.step));
   }
+  findings.push(...collectNoteGaps(recipe, flow, steps));
 
   if (clock && scheduleSteps.length) {
     const expected = workatoScheduleToCron(clock.input);

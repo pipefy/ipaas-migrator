@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.14 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.15 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.15 — 4 nov 2026
+
+Nota só com pendência, fórmula de uma operação no campo, item do loop e lookup table com nota de virada.
+
+- Repeat adaptado para lista ou contagem de voltas não gera nota. O índice do repeat por número de voltas vira o item do loop (o índice do iPaaS começa em 1).
+- `gsub` de aspas com escape vira `replace` direto no campo, sem Code de fórmula.
+- `query_list` aceita `MAX`/`MIN`, `WHERE` com `AND` e `LIKE`, `NOT LIKE`, `=`, `!=`.
+- Lookup table: `table_id` vazio, filtro `eq` minúsculo, `check_found` antes do delete e uma nota de ATENÇÃO NA VIRADA por flow. O arquivo de import das linhas sai em JSON no formato template do Activepieces.
+- `migrador-workato-cliente-navegador-0.7.15.tgz`
 
 ## 0.7.14 — 29 out 2026
 
