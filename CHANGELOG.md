@@ -6,12 +6,19 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.16 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.17 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.17 — 5 nov 2026
+
+O `.env.example` do kit deixa de citar a API key de plataforma (`sk-`), que só servia à skill de placeholders do pipe interno.
+
+- `IPAAS_API_KEY` e `PIPEFY_IPAAS_API_KEY` saem do `.env.example`. O kit continua usando só o login do iPaaS.
+- `migrador-workato-cliente-navegador-0.7.17.tgz`
 
 ## 0.7.16 — 4 nov 2026
 
