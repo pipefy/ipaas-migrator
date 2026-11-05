@@ -1088,7 +1088,9 @@ export function bracketizePills<T>(value: T, key?: string): T {
   if (Array.isArray(value)) return value.map((item) => bracketizePills(item)) as T;
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = bracketizePills(v, k);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k.includes('{{') ? bracketizePills(k) : k] = bracketizePills(v, k);
+    }
     return out as T;
   }
   return value;
@@ -1252,6 +1254,30 @@ function renderDataPill(
   return render();
 }
 
+/** `_dp(path: [])["output"]["x"]`: o índice Ruby continua o path, e o `stripHead` do passo vale para ele. */
+function withoutIndexedHead(json: string, segments: PillPathSegment[], asToName: StepNameMap): PillPathSegment[] {
+  if (!segments.length) return segments;
+  let dp: any;
+  try {
+    dp = JSON.parse(json);
+  } catch {
+    return segments;
+  }
+  if (dp?.pill_type !== 'output' || !Array.isArray(dp.path) || dp.path.length) return segments;
+  const binding = asToName.get(dp.line ?? '');
+  const head = binding && typeof binding !== 'string' ? binding.stripHead : undefined;
+  return head && segments[0] === head ? segments.slice(1) : segments;
+}
+
+function withoutRenderedHead(pill: string, segments: PillPathSegment[], asToName: StepNameMap): PillPathSegment[] {
+  const name = pill.match(/^\{\{\s*([A-Za-z_]\w*)\s*\}\}$/)?.[1];
+  if (!name || !segments.length) return segments;
+  for (const binding of asToName.values()) {
+    if (typeof binding !== 'string' && binding.name === name && binding.stripHead === segments[0]) return segments.slice(1);
+  }
+  return segments;
+}
+
 function appendPillPath(pill: string, extra: PillPathSegment[]): string {
   if (!pill) return '';
   if (!extra.length || containsMigrationMarker(pill)) return pill;
@@ -1354,7 +1380,7 @@ function convertPillPathFormula(
   const parsed = pureStructuredPill(input);
   if (parsed) {
     const rendered = renderDataPill(parsed.json, asToName, resolveLoopItem, options);
-    return appendPillPath(rendered, parsed.segments);
+    return appendPillPath(rendered, withoutIndexedHead(parsed.json, parsed.segments, asToName));
   }
 
   let source = input.trim().replace(/^=\s*/, '');
@@ -1373,7 +1399,7 @@ function convertPillPathFormula(
   if (staticAccess === 'invalid_literal') return '{{TODO_pill}}';
   if (staticAccess && staticAccess.end === suffix.length) {
     const rendered = renderDataPill(call.json, asToName, resolveLoopItem, options);
-    return appendPillPath(rendered, staticAccess.segments);
+    return appendPillPath(rendered, withoutIndexedHead(call.json, staticAccess.segments, asToName));
   }
 
   if (suffix.startsWith('[_dp(')) {
@@ -1503,7 +1529,7 @@ function renderDataRef(ref: string, asToName: StepNameMap, options?: PillOptions
   const segs = withoutStripHead(binding, aliasListHead(binding, [
     ...outputRootSegments(binding, pathHead),
     ...path.split('.').filter(Boolean),
-  ])).map((segment) => renamePillSegment(columnAlias, segment));
+  ])).map((segment) => String(renamePillSegment(columnAlias, segment)));
   const stored = redirectScalarField(binding, mapped, segs);
   return renderApTemplate(stored.base, stored.segments);
 }
@@ -1659,7 +1685,7 @@ export function convertPills(
 
   out = out.replace(/(\{\{[^{}]+\}\})((?:\[(?:\d+|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\])+)/g, (match, rendered, brackets) => {
     const segments = parsePillAccess(brackets);
-    return segments ? appendPillPath(rendered, segments) : '{{TODO_pill}}';
+    return segments ? appendPillPath(rendered, withoutRenderedHead(rendered, segments, asToName)) : '{{TODO_pill}}';
   });
 
   const folded = convertKnownRubyAfterPills(out);

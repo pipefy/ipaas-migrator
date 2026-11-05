@@ -6,12 +6,24 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.15 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.16 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.16 — 4 nov 2026
+
+Pill de Code sem `output` na frente, token literal vira variável e o verificador cobre as duas regras.
+
+- A pill de um Code (Python, JavaScript, Ruby) sai `{{step_N['campo']}}`, sem `['output']` como primeira chave. O import insere o `['output']`.
+- Token ou segredo literal no input ou no fonte vira `{{variables['PROVEDOR_TOKEN']}}` com a nota `REVISAR: token`, inclusive quando estava no comentário do stub.
+- O Code que recebe o índice do loop lê o índice menos 1 (o Workato conta de 0, o iPaaS de 1).
+- `table_id` vazio na peça Tables, com o nome da tabela no nome do passo.
+- `phaseId "0"` e API do Pipefy dentro de Code ganham nota `REVISAR`. Chaves de `phaseFields` com pill saem em colchete.
+- A skill `traduzir-code` ganha padrões de HTTP, datas, regex, CSV, xlsx e hash/JWT, com teste de entrada real.
+- `migrador-workato-cliente-navegador-0.7.16.tgz`
 
 ## 0.7.15 — 4 nov 2026
 

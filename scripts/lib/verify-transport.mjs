@@ -592,6 +592,19 @@ export function collectUndefinedPills(steps) {
   return hits;
 }
 
+const DOTTED_PILL_RE = /\{\{\s*[A-Za-z_]\w*\.[A-Za-z_]/;
+
+/** Pill em ponto (valor ou chave dinâmica): o import v20 vira `{x['output'].a}`, que não resolve. */
+export function collectDottedPills(steps) {
+  const hits = [];
+  for (const step of steps) {
+    const blob = [stepInputBlob(step), JSON.stringify(step?.settings?.propertySettings ?? {})].join('\n');
+    if (!DOTTED_PILL_RE.test(blob)) continue;
+    hits.push({ step: String(step.name ?? 'step'), reason: 'pill em ponto; o contrato é colchete' });
+  }
+  return hits;
+}
+
 /** Pills no schema achatado do Workato: o step parece preenchido e o flow publica, mas nao le dado. */
 export function collectWorkatoSchemaPills(steps) {
   const hits = [];
@@ -607,6 +620,85 @@ export function collectWorkatoSchemaPills(steps) {
 }
 
 /** Catalogo AP e `lowercase` / `uppercase`. `lowerCase` num lado so muda o if. */
+const OUTPUT_FIRST_PILL_RE = /\{\{\s*([A-Za-z_]\w*)\s*(?:\[\s*'output'\s*\]|\.output\b)/g;
+
+function codeReturnsOutputKey(step) {
+  const raw = sourceCodeOf(step);
+  // No stub o `return` só existe no original, que fica em comentário.
+  const code = raw.includes('AP-MIGRATION-TODO') ? raw : raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  return /[{,]\s*["']?output["']?\s*:/.test(code);
+}
+
+/**
+ * Schema 20: o import do iPaaS insere `['output']` em toda referência de step. Pill que já começa
+ * com `output` vira `['output']['output']…` e resolve vazio. Só o Code que devolve `{ output: … }`
+ * tem essa chave de verdade.
+ */
+export function collectOutputFirstPills(steps) {
+  const byName = new Map(steps.filter((step) => step?.name).map((step) => [step.name, step]));
+  const out = [];
+  for (const step of steps) {
+    const { sourceCode: _code, ...settings } = step?.settings ?? {};
+    const blob = JSON.stringify(settings);
+    const seen = new Set();
+    for (const match of blob.matchAll(OUTPUT_FIRST_PILL_RE)) {
+      const ref = byName.get(match[1]);
+      if (!ref || seen.has(ref.name)) continue;
+      seen.add(ref.name);
+      if (ref.type === 'CODE') {
+        if (codeReturnsOutputKey(ref)) continue;
+        out.push({ step: step.name, ref: ref.name, severity: 'bloqueia', reason: `lê {{${ref.name}['output']…}}; o Code devolve o objeto direto, a pill é {{${ref.name}['campo']}}` });
+        continue;
+      }
+      const piece = pieceNameOf(ref);
+      const strict = ref.name === 'trigger' || piece === PIPEFY_PIECE || ref.type === 'LOOP_ON_ITEMS';
+      out.push({
+        step: step.name,
+        ref: ref.name,
+        severity: strict ? 'bloqueia' : 'revisar',
+        reason: strict
+          ? `lê {{${ref.name}['output']…}}; no schema 20 a primeira chave é o payload (Pipefy: ['data'])`
+          : `lê {{${ref.name}['output']…}} de ${piece || ref.type}; confirmar no schema da piece (o import insere ['output'])`,
+      });
+    }
+  }
+  return out;
+}
+
+const INLINE_SECRET_RE = /(?:Bearer\s+[A-Za-z0-9._~+/=-]{16,}|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b|\b\w*?(?:token|secret|password|passwd|api[_-]?key|apikey|access_token|client_secret)\\?["']?\s*[:=]\s*\\?["'][A-Za-z0-9_\-./+=]{12,}\\?["'])/i;
+const SECRET_FIELD_RE = /token|secret|password|passwd|api[_-]?key|authorization|bearer|access[_-]?key/i;
+
+function literalSecretField(key, value) {
+  if (typeof value !== 'string' || !SECRET_FIELD_RE.test(key)) return false;
+  const text = value.trim();
+  if (text.length < 8 || text.includes('{{')) return false;
+  if (/^https?:\/\//i.test(text) || /^[a-z_ ]+$/i.test(text) || /^(?:true|false|null)$/i.test(text)) return false;
+  return !/\s/.test(text) || /^(?:Bearer|Basic|Token)\s+\S{8,}$/i.test(text);
+}
+
+/** Segredo literal no flow (input, código, inclusive comentário, ou nota). Não devolve o valor. */
+export function collectSecretLiterals(steps, flow) {
+  const out = [];
+  const visit = (value, key, path, step) => {
+    if (typeof value === 'string') {
+      if (literalSecretField(key, value) || INLINE_SECRET_RE.test(value)) out.push({ step: step.name, path });
+      return;
+    }
+    if (Array.isArray(value)) value.forEach((item, index) => visit(item, key, `${path}[${index}]`, step));
+    else if (value && typeof value === 'object') {
+      for (const [inner, item] of Object.entries(value)) visit(item, inner, `${path}.${inner}`, step);
+    }
+  };
+  for (const step of steps) {
+    visit(step?.settings?.input ?? {}, '', 'input', step);
+    if (INLINE_SECRET_RE.test(sourceCodeOf(step))) out.push({ step: step.name, path: 'sourceCode' });
+  }
+  for (const note of canvasNotes(flow)) {
+    if (INLINE_SECRET_RE.test(noteText(note))) out.push({ step: String(note.id ?? 'nota'), path: 'nota' });
+  }
+  return out;
+}
+
 export function collectBadCaseFormulas(steps) {
   const hits = [];
   for (const step of steps) {
@@ -1029,6 +1121,7 @@ const TODO_REVIEW_LABELS = [
   'REVISAR: operação sem mapa',
   'REVISAR: email',
   'REVISAR: sms',
+  'REVISAR: teto do repeat',
   'AVISO: repeat adaptado',
 ];
 
@@ -1631,8 +1724,12 @@ function formulaRubyLines(step) {
 function lookupIdsOf(actions) {
   const ids = new Set();
   for (const action of actions) {
-    if (!collapseOpKey(action.opKey).startsWith('lookup_table/')) continue;
-    const raw = action.input?.lookup_table_id;
+    const op = collapseOpKey(action.opKey);
+    const raw = op.startsWith('lookup_table/')
+      ? action.input?.lookup_table_id
+      : op.startsWith('workato_db_table/')
+        ? action.input?.table_id
+        : null;
     if (raw != null && /^\d+$/.test(String(raw).trim())) ids.add(String(raw).trim());
   }
   return ids;
@@ -1702,6 +1799,42 @@ export function collectNoteGaps(recipe, flow, steps) {
     }
   }
 
+  const pipefyApiNote = notes.some((note) => noteText(note).includes('API do Pipefy'));
+  for (const step of steps) {
+    const code = step?.type === 'CODE' ? sourceCodeOf(step) : '';
+    if (!pipefyApiNote && code.includes('AP-MIGRATION-TODO') && /api\.pipefy\.com/i.test(code)) {
+      gaps.push(finding('revisar', 'API do Pipefy no código', `${step.name} chama a API do Pipefy e não há nota pedindo a piece Pipefy`, step.name));
+    }
+  }
+
+  const startFormPhase = steps.filter((step) =>
+    pieceNameOf(step) === '@activepieces/piece-pipefy' && String(step.settings?.input?.phaseId ?? '').trim() === '0');
+  if (startFormPhase.length && !notes.some((note) => /REVISAR: fase|phaseId 0/.test(noteText(note)))) {
+    gaps.push(finding(
+      'revisar',
+      'fase 0',
+      `${startFormPhase.map((step) => step.name).join(', ')} com phaseId 0 (formulário inicial na Workato) e sem nota pedindo o id da fase`,
+      startFormPhase[0].name,
+    ));
+  }
+
+  for (const step of steps) {
+    if (step?.type !== 'CODE') continue;
+    const code = sourceCodeOf(step);
+    for (const [key, value] of Object.entries(step.settings?.input ?? {})) {
+      if (!/^\{\{loop_\d+\['index'\]\}\}$/.test(String(value))) continue;
+      const shifted = new RegExp(`\\b${key}\\b["'\\])]*\\s*-\\s*1\\b`).test(code);
+      if (!shifted && !code.includes('AP-MIGRATION-TODO')) {
+        gaps.push(finding(
+          'revisar',
+          'loop por índice',
+          `${step.name}.${key} recebe o índice do loop (base 1) e o código não subtrai 1; a fórmula Workato contava de 0`,
+          step.name,
+        ));
+      }
+    }
+  }
+
   const recipeLookupIds = lookupIdsOf(actions);
   const hasLookup = actions.some((action) => collapseOpKey(action.opKey).startsWith('lookup_table/'));
   for (const step of steps) {
@@ -1711,7 +1844,7 @@ export function collectNoteGaps(recipe, flow, steps) {
       gaps.push(finding(
         'bloqueia',
         'lookup table_id',
-        `${step.name} usa o id ${tableId} da lookup table Workato; o iPaaS cria id próprio. Deixar vazio até o import`,
+        `${step.name} usa o id ${tableId} da lookup/data table Workato; o iPaaS cria id próprio. Deixar vazio até o import`,
         step.name,
       ));
     }
@@ -1743,6 +1876,7 @@ export function verifyTransport({
   const emptyFileGets = collectEmptyFileGets(steps);
   const workatoPills = collectWorkatoSchemaPills(steps);
   const undefinedPills = collectUndefinedPills(steps);
+  const dottedPills = collectDottedPills(steps);
   const badCaseFormulas = collectBadCaseFormulas(steps);
   const httpPadGaps = collectHttpPadGaps(steps);
   const oneSidedCase = collectOneSidedCase(recipe, steps);
@@ -1812,6 +1946,20 @@ export function verifyTransport({
   }
   for (const item of undefinedPills) {
     findings.push(finding('bloqueia', 'datapill undefined', `${item.step} ${item.reason}`, item.step));
+  }
+  for (const item of dottedPills) {
+    findings.push(finding('bloqueia', 'datapill ponto', `${item.step} ${item.reason}`, item.step));
+  }
+  for (const item of collectOutputFirstPills(steps)) {
+    findings.push(finding(item.severity, 'datapill output primeiro', `${item.step} ${item.reason}`, item.step));
+  }
+  for (const item of collectSecretLiterals(steps, flow)) {
+    findings.push(finding(
+      'bloqueia',
+      'segredo literal',
+      `${item.step} ${item.path} tem token literal; usar {{variables['PROVEDOR_TOKEN']}} e a nota REVISAR: token`,
+      item.step,
+    ));
   }
   for (const item of badCaseFormulas) {
     findings.push(finding('bloqueia', 'formula grafia', `${item.step} ${item.reason}`, item.step));

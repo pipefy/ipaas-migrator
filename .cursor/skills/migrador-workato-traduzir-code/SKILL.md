@@ -14,7 +14,7 @@ Saída em **uma** interação — completar no mesmo turno, sem perguntar se pod
 
 Fora do escopo:
 
-- `TODO_FORMULA` e os steps `formula_*` — o compilador de fórmulas já emite o JS deles
+- `TODO_FORMULA` em input de piece, e os `formula_*` que o compilador já traduziu (sem `AP-MIGRATION-TODO`). Um `formula_*` com `fN: /* AP-MIGRATION-TODO: traduzir formula Ruby abaixo */ null` **entra**: traduzir só aquele `fN` a partir da linha `fN:` do cabeçalho `Original (Ruby/Workato)`, com as mesmas variáveis de `inputs`
 - Ruby que é só `sleep N` — vira `delayFor`, não chega aqui
 - Sticky notes `REVISAR: try/catch` / `REVISAR: stop_with_error` — continuam notas
 - Anexar, mover card, criar flow, publicar
@@ -88,6 +88,25 @@ Regras:
 
 O que **não** fazer no JS: chamar a API do Pipefy (isso é step de piece), embutir segredo, trocar `data` por `output` nas pills, reescrever datapill em ponto (o contrato é colchete, `{{trigger['data']['card']['id']}}`).
 
+Três regras que a IA quebrou na rodada de 1000 receitas (o verificador acusa as três):
+
+- Nenhuma pill começa com `output`. O arquivo é schema 20 e o import insere `['output']`. O retorno do Code é lido como `{{step_N['chave']}}`, nunca `{{step_N['output']['chave']}}`. Só quando o próprio `return` tem a chave `output` (`return {"output": {...}}`) a pill leva `['output']`.
+- Não acrescentar nota que descreve a tradução ou a adaptação ("repeat adaptado", "implementada", "traduzido para JS"). Nota só com pendência para a pessoa.
+- Fórmula não vira Code só com comentário. Um `fN` que devolve `null` ao lado de um comentário não é tradução: ou o `fN` tem a expressão em JS, ou o marcador `AP-MIGRATION-TODO` continua lá.
+
+Padrões recorrentes (HTTP, datas, regex, CSV, xlsx, hash/HMAC/JWT), com o equivalente em JS e o que costuma quebrar: [reference.md](reference.md#padrões-recorrentes-rodada-de-1000-receitas).
+
+### Teste com entrada real
+
+Antes de aplicar, rodar cada Code traduzido no Node com uma entrada real. Pode ser um valor literal do `code_input.data` da receita, o exemplo do `extended_input_schema` ou um caso montado a partir do original (sem dado de cliente). O retorno tem as **mesmas chaves** do original, e entrada vazia lança erro.
+
+```bash
+cat > /tmp/code-check/step_3.mjs   # o JS do patch
+node -e 'import("/tmp/code-check/step_3.mjs").then((m) => m.code({ code_input: { data: { texto: "A-12" } } })).then((r) => console.log(Object.keys(r), r))'
+```
+
+`conferir-code-traduzido.mjs` só confere o marcador e não executa o Code. Não entregar um Code que só foi importado.
+
 ### 3. Aplicar
 
 Patch: um arquivo JSON com `nome do step` → código.
@@ -139,12 +158,13 @@ Sem step de código: `code: nenhum stub`. Se `usedLib` for true, a linha inclui 
 
 ## Não fazer
 
-- Traduzir fórmula (`TODO_FORMULA`) ou mexer nos steps `formula_*`
+- Traduzir fórmula (`TODO_FORMULA`) em input de piece ou mexer em `formula_*` que já não tem marcador
 - Mudar piece, `settings.input`, `notes` ou `nextAction`
 - Transformar sticky note `REVISAR:` em step
 - Editar `mappings/`, `kb/` ou `engine/`
 - Anexar no card, mover fase, criar flow, `IMPORT_FLOW` ou publicar (é o transpile que segue)
 - Deixar `AP-MIGRATION-TODO` no código traduzido
+- Pill com `output` na primeira chave, nota de adaptação, `fN` com `null` e comentário
 - Imprimir senha / `sk-`
 
 ## Estado observado

@@ -213,7 +213,7 @@ interface ComposedFormula {
 
 interface PendingCanvasNote {
   id: string;
-  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS' | 'HTTP' | 'TRIGGER' | 'UNMAPPED';
+  kind: 'CATCH' | 'STOP' | 'JOB' | 'SECRET' | 'FORMULA' | 'SUBFLOW' | 'EMAIL' | 'SMS' | 'SCHEDULE' | 'UPDATE' | 'CONNECTION' | 'MODAL' | 'VARS' | 'REPEAT' | 'LOOKUP' | 'TABLE' | 'TEMPLATE' | 'SOAP' | 'GRAPHQL' | 'MAPPER' | 'PROP' | 'DOCS' | 'SHEETS' | 'HTTP' | 'TRIGGER' | 'PHASE' | 'PIPEFY_API' | 'UNMAPPED';
   content: string;
   anchorStepName?: string;
 }
@@ -255,6 +255,12 @@ function csvForeachAlias(ctx: Ctx, source: string | undefined): ReadonlyMap<stri
   return binding.segmentAlias;
 }
 
+const CODE_OUTPUT_OPS = new Set([
+  'py_eval/invoke_custom_py_code',
+  'js_eval/invoke_custom_js_code',
+  'workato_custom_code/invoke_custom_ruby_code',
+]);
+
 function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep): void {
   const opKey = step.opKey ?? (step.provider && step.name ? `${step.provider}/${step.name}` : undefined);
   const target = opKey ? lookupMap(ctx.merged, opKey)?.target : undefined;
@@ -289,6 +295,12 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
   }
   if (collapsed?.startsWith('graphql/')) {
     ctx.asToName.set(as, { name, outputRoot: pipefyOutputRoot(PIPEFY_GRAPHQL_TARGET.name) });
+    return;
+  }
+  // O `output` do path Workato e o hash devolvido pelo codigo; no Code do iPaaS o retorno e o
+  // proprio step, e o import v20 insere `['output']`. So o primeiro `output` sai.
+  if (opKey && CODE_OUTPUT_OPS.has(collapsed ?? '') && lookupMap(ctx.merged, opKey)?.builtin === 'code') {
+    ctx.asToName.set(as, { name, stripHead: 'output' });
     return;
   }
   if (collapsed === 'csv_parser/create_csv_lines' && csvLinesPlan(step.input)) {
@@ -558,7 +570,11 @@ function waivedMissing(
       out = out.filter((name) => name !== 'fieldIds');
     }
   }
-  if (target.piece === TABLES_PIECE && input.table_id === '' && literalLookupId(sourceInput.lookup_table_id)) {
+  if (
+    target.piece === TABLES_PIECE &&
+    input.table_id === '' &&
+    (literalLookupId(sourceInput.lookup_table_id) || literalLookupId(sourceInput.table_id))
+  ) {
     out = out.filter((name) => name !== 'table_id');
   }
   if (target.piece === PIPEFY_PIECE && target.name === 'getCardsByTitle') {
@@ -1433,6 +1449,8 @@ function replaceResidualRuby(value: any, harvest: Harvest, source: any, ctx: Ctx
   return value;
 }
 
+const FOREACH_INDEX_PILL = /^\{\{loop_\d+\['index'\]\}\}$/;
+
 /** Step CODE que resolve as formulas de um step: devolve um campo por formula. */
 function formulaCodeStep(harvest: Harvest): any {
   const inputs = [...harvest.registry.bindings.keys()].filter((name) =>
@@ -1440,6 +1458,8 @@ function formulaCodeStep(harvest: Harvest): any {
   );
   const input: Record<string, any> = {};
   for (const name of inputs) input[name] = harvest.registry.bindings.get(name);
+  const loopIndexes = inputs.filter((name) => FOREACH_INDEX_PILL.test(String(input[name] ?? '')));
+  const plain = inputs.filter((name) => !loopIndexes.includes(name));
 
   const ruby = harvest.fields
     .map((field) => ` *   ${field.key}: ${field.ruby.replace(/\*\//g, '* /')}`)
@@ -1453,7 +1473,9 @@ function formulaCodeStep(harvest: Harvest): any {
     ' */',
     ...(helpers ? [helpers, ''] : []),
     'export const code = async (inputs) => {',
-    ...(inputs.length ? [`  const { ${inputs.join(', ')} } = inputs;`] : []),
+    ...(plain.length ? [`  const { ${plain.join(', ')} } = inputs;`] : []),
+    ...(loopIndexes.length ? ['  // O índice do loop do iPaaS começa em 1; a fórmula Workato conta de 0.'] : []),
+    ...loopIndexes.map((name) => `  const ${name} = Number(inputs.${name}) - 1;`),
     '  return {',
     ...harvest.fields.map((field) => `    ${field.key}: ${field.expr},`),
     '  };',
@@ -1584,7 +1606,7 @@ export const REVIEW_EMPTY_UPDATE_LABEL = 'AVISO: update sem campos';
 export const REVIEW_CONNECTION_LABEL = 'REVISAR: conexão';
 export const REVIEW_MODAL_LABEL = 'AVISO: modal virou callback';
 export const REVIEW_VARIABLES_LABEL = 'AVISO: variáveis';
-export const REVIEW_REPEAT_LABEL = 'AVISO: repeat adaptado';
+export const REVIEW_REPEAT_LABEL = 'REVISAR: teto do repeat';
 export const REVIEW_TEMPLATE_LABEL = 'REVISAR: message template';
 export const REVIEW_TABLE_LABEL = 'REVISAR: data table';
 export const REVIEW_LOOKUP_LABEL = 'ATENÇÃO NA VIRADA: lookup table';
@@ -1616,6 +1638,8 @@ export const NEW_UPDATED_CARD_NOTE =
 export const PUBSUB_WEBHOOK_NOTE =
   'O gatilho Workato é Pub/Sub (subscribe_to_topic) e virou catch_webhook. Atualize no sistema que publicava no tópico o endpoint novo deste webhook.';
 export const REVIEW_HTTP_LABEL = 'REVISAR: HTTP sem url';
+export const REVIEW_PHASE_LABEL = 'REVISAR: fase inicial';
+export const REVIEW_PIPEFY_API_LABEL = 'REVISAR: API do Pipefy no código';
 const PIPESIGN_GET_DOCUMENT = 'new_connector_4_connector_186728_1623952876/getDocument';
 
 const SECRET_INPUT_KEY = /token|secret|password|api_key|apikey|authorization|bearer|access_token/i;
@@ -1693,6 +1717,117 @@ function liftCodeSecrets(
     );
   }
   return { input: scrub(lifted), source: redacted };
+}
+
+const SECRET_FIELD_KEY = /token|secret|password|passwd|api[_-]?key|authorization|bearer|access[_-]?key/i;
+const AUTH_SCHEME = /^(Bearer|Basic|Token)\s+(\S{8,})$/i;
+/** Segredo dentro de um texto (JSON, GraphQL, header). Com `keyed`, o grupo 1 é a chave e o 2 o valor. */
+const INLINE_SECRETS: { re: RegExp; keyed: boolean }[] = [
+  { re: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/g, keyed: false },
+  { re: /\b(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?)/g, keyed: false },
+  { re: /\b(xox[abprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/g, keyed: false },
+  {
+    re: /\b(\w*?(?:token|secret|password|passwd|api[_-]?key|apikey|access_token|client_secret))\\?["']?\s*[:=]\s*\\?["']([A-Za-z0-9_\-./+=]{12,})\\?["']/gi,
+    keyed: true,
+  },
+];
+
+function literalSecretValue(key: string, value: string): string | null {
+  const text = value.trim();
+  if (!SECRET_FIELD_KEY.test(key) || text.length < 8 || text.includes('{{')) return null;
+  if (/^https?:\/\//i.test(text) || /^[a-z_ ]+$/i.test(text) || /^(?:true|false|null)$/i.test(text)) return null;
+  if (/\s/.test(text) && !AUTH_SCHEME.test(text)) return null;
+  return text;
+}
+
+/**
+ * Segredo literal em qualquer passo (header, body, `__campos`, prop de piece) vira
+ * `{{variables['NOME']}}`. O valor não vai para nota, comentário nem código.
+ */
+function liftFlowSecrets(trigger: any, ctx: Ctx): void {
+  const used = new Set(ctx.projectVariables.keys());
+  const byRaw = new Map<string, string>();
+  const nameFor = (raw: string, key: string, source: string): string => {
+    const known = byRaw.get(raw);
+    if (known) return known;
+    const name = secretVariableName(key, source, used);
+    byRaw.set(raw, name);
+    ctx.projectVariables.set(name, 'token no passo');
+    return name;
+  };
+  const steps: any[] = [];
+  const collect = (step: any): void => {
+    if (!step || typeof step !== 'object') return;
+    steps.push(step);
+    collect(step.nextAction);
+    collect(step.firstLoopAction);
+    for (const child of step.children ?? []) collect(child);
+    collect(step.onFailureAction);
+    collect(step.continueOnFailureBranches?.onSuccess);
+    collect(step.continueOnFailureBranches?.onFailure);
+  };
+  collect(trigger);
+  for (const step of steps) {
+    if (step.type === 'CODE' && step.settings && !step.settings.input) step.settings.input = {};
+    const input = step.settings?.input;
+    if (!input || typeof input !== 'object') continue;
+    const source = String(input.url ?? '');
+    const names = new Set<string>();
+    const inline = (text: string): string => {
+      let next = text;
+      for (const { re, keyed } of INLINE_SECRETS) {
+        next = next.replace(re, (whole: string, first: string, second: unknown) => {
+          const raw = keyed ? String(second) : first;
+          if (raw.includes('{{')) return whole;
+          const name = nameFor(raw, keyed ? first : 'TOKEN', source);
+          names.add(name);
+          return whole.split(raw).join(`{{variables['${name}']}}`);
+        });
+      }
+      return next;
+    };
+    const walk = (value: any, key: string): any => {
+      if (typeof value === 'string') {
+        const raw = literalSecretValue(key, value);
+        if (!raw) return inline(value);
+        const scheme = AUTH_SCHEME.exec(raw);
+        const secret = scheme ? scheme[2]! : raw;
+        const name = nameFor(secret, key, source);
+        names.add(name);
+        return scheme ? `${scheme[1]} {{variables['${name}']}}` : `{{variables['${name}']}}`;
+      }
+      if (Array.isArray(value)) return value.map((item) => walk(item, key));
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).map(([inner, item]) => [inner, walk(item, inner)]));
+    };
+    step.settings.input = walk(input, '');
+    const code = step.settings.sourceCode;
+    if (step.type === 'CODE' && code && typeof code.code === 'string') {
+      // O fonte original fica em comentário no stub; o segredo dele vira input para o JS ler.
+      const before = new Set(names);
+      code.code = code.code
+        .replace(/\/\*[\s\S]*?\*\//g, (block: string) => inline(block))
+        .replace(/^[ \t]*\/\/.*$/gm, (line: string) => inline(line));
+      for (const name of names) {
+        if (!before.has(name) && !(name in step.settings.input)) step.settings.input[name] = `{{variables['${name}']}}`;
+      }
+    }
+    if (!names.size) continue;
+    if (code && typeof code.code === 'string') {
+      for (const [raw, name] of byRaw) code.code = code.code.split(raw).join(`{{variables['${name}']}}`);
+    }
+    pushReviewNote(
+      ctx,
+      'SECRET',
+      `Token na variavel ${[...names].join(', ')} do projeto (seguranca). Criar no iPaaS; nao fica no flow.`,
+      '',
+      step.name,
+    );
+  }
+  if (!byRaw.size) return;
+  for (const note of ctx.canvasNotes) {
+    for (const [raw, name] of byRaw) note.content = note.content.split(raw).join(`{{variables['${name}']}}`);
+  }
 }
 
 const SLACK_PIECE = '@activepieces/piece-slack';
@@ -1795,13 +1930,19 @@ function pushReviewNote(
     | 'SHEETS'
     | 'HTTP'
     | 'TRIGGER'
+    | 'PHASE'
+    | 'PIPEFY_API'
     | 'UNMAPPED',
   message: string,
   lost = '',
   anchorStepName?: string,
 ): void {
   const label =
-    kind === 'UNMAPPED'
+    kind === 'PIPEFY_API'
+      ? REVIEW_PIPEFY_API_LABEL
+      : kind === 'PHASE'
+      ? REVIEW_PHASE_LABEL
+      : kind === 'UNMAPPED'
       ? REVIEW_UNMAPPED_LABEL
       : kind === 'TRIGGER'
       ? REVIEW_TRIGGER_LABEL
@@ -1853,7 +1994,11 @@ function pushReviewNote(
                             ? REVIEW_TEMPLATE_LABEL
                             : REVIEW_JOB_CONTEXT_LABEL;
   const prefix =
-    kind === 'UNMAPPED'
+    kind === 'PIPEFY_API'
+      ? 'review_pipefy_api'
+      : kind === 'PHASE'
+      ? 'review_phase'
+      : kind === 'UNMAPPED'
       ? 'review_unmapped'
       : kind === 'TRIGGER'
         ? 'review_trigger'
@@ -1915,9 +2060,19 @@ function pushReviewNote(
 }
 
 /** Uma nota por `table_id`. A piece Tables continua mapeada; a nota avisa que as linhas não vieram. */
+function isDataTableOp(opKey: string): boolean {
+  return collapseOpKey(opKey).startsWith('workato_db_table/');
+}
+
+/** O id da data table não vale no iPaaS; o nome dela fica no passo para escolher a Table. */
+function dataTableDisplay(opKey: string, step: ParsedStep, display: string): string {
+  const label = isDataTableOp(opKey) ? step.sourceLabel : undefined;
+  return label && !display.includes(label) ? `${display} (Table ${label})` : display;
+}
+
 function noteWorkatoDataTable(ctx: Ctx, step: ParsedStep, anchorStepName: string): void {
   const opKey = collapseOpKey(step.opKey ?? `${step.provider ?? ''}/${step.name ?? ''}`);
-  if (!opKey.startsWith('workato_db_table/')) return;
+  if (!isDataTableOp(opKey)) return;
   const raw = step.input?.table_id;
   const tableId = raw == null ? '' : String(raw).trim();
   if (!tableId || ctx.notedDataTableIds.has(tableId)) return;
@@ -1927,12 +2082,102 @@ function noteWorkatoDataTable(ctx: Ctx, step: ParsedStep, anchorStepName: string
     'TABLE',
     [
       `Data table Workato \`${tableId}\`.`,
-      'A Table do iPaaS não herda esse id e não inclui as linhas originais.',
+      'A Table do iPaaS não herda esse id e não inclui as linhas originais. Selecione a Table em cada passo de tabela; o `table_id` fica vazio.',
       'O migrador não gerou um arquivo com as linhas dessa data table para importação. Exporte essa data table na Workato.',
     ].join('\n\n'),
     '',
     anchorStepName,
   );
+}
+
+/**
+ * `phaseId` "0" é o formulário inicial na Workato. O id real da fase só sai de uma consulta ao
+ * pipe, que o motor não faz: o valor fica e a nota pede a troca.
+ */
+function noteStartFormPhase(trigger: any, ctx: Ctx): void {
+  const names: string[] = [];
+  const visit = (step: any): void => {
+    if (!step || typeof step !== 'object') return;
+    const input = step.settings?.input;
+    if (step.settings?.pieceName === PIPEFY_PIECE && input && String(input.phaseId ?? '').trim() === '0') {
+      names.push(step.name);
+    }
+    visit(step.nextAction);
+    visit(step.firstLoopAction);
+    for (const child of step.children ?? []) visit(child);
+    visit(step.onFailureAction);
+    visit(step.continueOnFailureBranches?.onSuccess);
+    visit(step.continueOnFailureBranches?.onFailure);
+  };
+  visit(trigger);
+  if (!names.length) return;
+  pushReviewNote(
+    ctx,
+    'PHASE',
+    [
+      `Na Workato a fase \`0\` é o formulário inicial do pipe. Passos: ${names.join(', ')}.`,
+      'Troque `0` pelo id da fase inicial (start form) do pipe de cada passo antes de ligar; sem isso o iPaaS não carrega os campos da fase.',
+    ].join('\n\n'),
+    '',
+    names[0],
+  );
+}
+
+/**
+ * Código Workato recebia o índice do foreach contando de 0; o `['index']` do loop do iPaaS conta de 1.
+ * O Code pronto volta o input para base 0 antes do corpo. Stub fica para a tradução.
+ */
+function rebaseForeachIndexInCode(trigger: any): void {
+  const visit = (step: any): void => {
+    if (!step || typeof step !== 'object') return;
+    const source = step.settings?.sourceCode;
+    const code = String(source?.code ?? '');
+    if (step.type === 'CODE' && code && !code.includes('AP-MIGRATION-TODO')) {
+      const keys = Object.entries(step.settings.input ?? {})
+        .filter(([key, value]) => FOREACH_INDEX_PILL.test(String(value)) && !code.includes(`Number(inputs.${key}) - 1`))
+        .map(([key]) => key);
+      const opening = code.match(/export const code = async \((\w+)\) => \{\n/);
+      if (keys.length && opening) {
+        const param = opening[1]!;
+        const shifted = keys.map((key) => `${JSON.stringify(key)}: Number(${param}[${JSON.stringify(key)}]) - 1`).join(', ');
+        source.code = code.replace(
+          opening[0],
+          `${opening[0]}  // O índice do loop do iPaaS começa em 1; o código Workato conta de 0.\n  ${param} = { ...${param}, ${shifted} };\n`,
+        );
+      }
+    }
+    visit(step.nextAction);
+    visit(step.firstLoopAction);
+    for (const child of step.children ?? []) visit(child);
+    visit(step.onFailureAction);
+    visit(step.continueOnFailureBranches?.onSuccess);
+    visit(step.continueOnFailureBranches?.onFailure);
+  };
+  visit(trigger);
+}
+
+/** Stub cujo fonte original chama a API do Pipefy: a chamada é passo de piece, não de Code. */
+function notePipefyApiInCode(trigger: any, ctx: Ctx): void {
+  const visit = (step: any): void => {
+    if (!step || typeof step !== 'object') return;
+    const code = String(step.settings?.sourceCode?.code ?? '');
+    if (step.type === 'CODE' && code.includes('AP-MIGRATION-TODO') && /api\.pipefy\.com/i.test(code)) {
+      pushReviewNote(
+        ctx,
+        'PIPEFY_API',
+        'O código original chama a API do Pipefy com token próprio. Recrie essa chamada na piece Pipefy, com a conexão do pipe; o Code não leva o token.',
+        '',
+        step.name,
+      );
+    }
+    visit(step.nextAction);
+    visit(step.firstLoopAction);
+    for (const child of step.children ?? []) visit(child);
+    visit(step.onFailureAction);
+    visit(step.continueOnFailureBranches?.onSuccess);
+    visit(step.continueOnFailureBranches?.onFailure);
+  };
+  visit(trigger);
 }
 
 function noteProjectVariables(ctx: Ctx, anchorStepName?: string): void {
@@ -5174,10 +5419,13 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     return null;
   }
   noteWorkatoDataTable(ctx, step, name);
-  const display =
+  const display = dataTableDisplay(
+    opKey,
+    step,
     step.comment ||
-    (collapseOpKey(opKey) === 'file_connector/read_file' ? 'Get file from URL' : step.name) ||
-    opKey;
+      (collapseOpKey(opKey) === 'file_connector/read_file' ? 'Get file from URL' : step.name) ||
+      opKey,
+  );
 
   if (collapseOpKey(opKey).startsWith('workato_app/')) return omitRecipeOps(step, name, ctx);
   if (collapseOpKey(opKey) === 'file_connector/read_file' && ctx.base64FileReads.has(step)) {
@@ -5475,6 +5723,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     // O id da Workato não existe no iPaaS: o `table_id` fica vazio até o import da tabela.
     input.table_id = '';
     if (t.name === 'tables-delete-record') redirectDeleteToFirstRecord(ctx, input);
+  }
+  if (isDataTableOp(opKey) && t.piece === TABLES_PIECE && literalLookupId(input.table_id)) {
+    input.table_id = '';
   }
   const docsBatch = googleDocsBatchUpdate(t, input);
   if (docsBatch) {
@@ -6142,7 +6393,7 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
  * do bloco e o corpo segue uma vez. Quem ja virou `LOOP_ON_ITEMS` nao ganha marcador.
  */
 function noteRepeatAdapted(ctx: Ctx, anchor: string, message: string): void {
-  pushReviewNote(ctx, 'REPEAT', `Foi adaptada. ${message}`, '', anchor);
+  pushReviewNote(ctx, 'REPEAT', `Conferir o teto de voltas. ${message}`, '', anchor);
 }
 
 const LOOKUP_TABLE_OPS = new Set([
@@ -6536,7 +6787,6 @@ function buildRepeat(step: ParsedStep, ctx: Ctx): any {
   if (exit && conditionsOf(asConditionsInput(exit.input)).length) {
     const reviewCap = 'REVIEW (' + name + '): conferir teto artificial da adaptacao condicional.';
     ctx.todos.push(reviewCap);
-    pushReviewNote(ctx, 'REPEAT', reviewCap, '', name);
     ctx.diagnostics.push({ category: 'MANUAL_REVIEW', reason: 'REVIEW_PENDING', action: 'MANUAL_REVIEW', severity: 'REVIEW', stepName: name });
     return buildConditionalRepeat(step, ctx, name, exit);
   }
@@ -8074,6 +8324,10 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     ctx.diagnostics.push({ category: 'DATAPILL_SCHEMA', reason: 'AMBIGUOUS_SOURCE', action: 'NEEDS_CONTEXT', count: ctx.ambiguousAs.size });
   }
   const trigger = buildTrigger(recipe.root, ctx);
+  liftFlowSecrets(trigger, ctx);
+  noteStartFormPhase(trigger, ctx);
+  notePipefyApiInCode(trigger, ctx);
+  rebaseForeachIndexInCode(trigger);
   notePendingJobContext(ctx, lastStepName(trigger));
   noteProjectVariables(ctx, lastStepName(trigger));
   auditConversion(trigger, ctx);

@@ -80,6 +80,61 @@ O motor, no padrão `read_excel` + `to_csv` + base64, já emite o leitor puro co
 
 Aba que não existe: o step lança `sheet not found`. `.xls` antigo, senha, pivot ou gráfico: deixar o stub.
 
+## Padrões recorrentes (rodada de 1000 receitas)
+
+Contagem de stubs que a IA traduziu, por intenção: HTTP 63 receitas, datas 63, regex 42+12 (Python, Ruby), CSV 30, xlsx 29, hash/HMAC/JWT 9+6+5 (Python, Ruby, JS). Os corpos variam de receita para receita (só 6 fingerprints se repetem em 2 ou mais workspaces), por isso ficam na IA e não viram template do motor. Cada linha diz o equivalente e o erro que apareceu.
+
+### HTTP (`requests`, `Net::HTTP`, `HTTParty`, `fetch`)
+
+```js
+const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+const text = await response.text();
+if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
+const body = text ? JSON.parse(text) : null;
+```
+
+- `raise_for_status()` / `response.code != 200` → `throw` com o status. Não engolir o erro devolvendo `{}`.
+- `params=` → `new URLSearchParams(params)` na URL. `data=` (form) → `body: new URLSearchParams(data)` com `Content-Type: application/x-www-form-urlencoded`. `json=` → `JSON.stringify`.
+- `timeout=N` → `AbortSignal.timeout(N * 1000)`.
+- Token: ler o input que o motor já trocou por `{{variables['…']}}`. Não copiar o literal do comentário.
+- `api.pipefy.com`: não traduzir para `fetch`. A nota `REVISAR: API do Pipefy no código` pede a piece Pipefy.
+
+### Datas (`datetime`, `strptime`, `strftime`, `Time.parse`, `ZoneInfo`)
+
+- `strftime('%d/%m/%Y')` → montar com `getUTCDate`/`getUTCMonth()+1`/`getUTCFullYear` e `padStart(2,'0')`. Não usar `toLocaleDateString` sem `timeZone` explícito.
+- `datetime.now(ZoneInfo(tz))` → `new Intl.DateTimeFormat('en-CA', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date())`.
+- `fromisoformat(v.replace('Z',''))` é horário local sem fuso. `new Date('2026-01-02')` é UTC meia-noite: ler a data com `split('-')` quando o original só quer o dia.
+- `timedelta(days=n)` → somar `n * 86400000` em UTC. `relativedelta(months=n)` → `setUTCMonth(getUTCMonth() + n)`, e conferir o fim do mês.
+- `except ValueError: return value` → `isNaN(d.getTime()) ? value : …`. Manter o mesmo fallback do original.
+
+### Regex (`re`, `gsub`, `scan`, `=~`)
+
+- `re.sub(p, r, s)` → `s.replace(new RegExp(p, 'g'), r)`. Sem o `g`, troca só a primeira.
+- `re.findall` → `[...s.matchAll(/…/g)].map((m) => m[1] ?? m[0])`. `re.search(...).group(1)` → `s.match(/…/)?.[1] ?? null`.
+- Grupo nomeado `(?P<n>…)` → `(?<n>…)`. Referência `\g<1>` → `$1`.
+- Flags: `re.I` → `i`, `re.M` → `m`, `re.S` → `s`. Ruby `\A`/`\z` → `^`/`$` sem `m`.
+- Ruby `scan` com grupos devolve array de arrays. Manter a forma.
+
+### CSV (`csv.reader`, `DictReader`, `pandas.read_csv`, `CSV.parse`)
+
+- Usar um parser que respeite aspas e quebra de linha dentro de campo. `split(',')` quebra em vírgula dentro de aspas.
+- `DictReader` / `headers: true` → objeto por linha com o cabeçalho como chave. `dtype=str` → manter tudo como texto.
+- Separador e encoding do original (`delimiter=';'`, `encoding='latin-1'`). Arquivo em base64 → decodificar só se o original decodifica.
+- CSV para xlsx e xlsx para CSV: os blocos acima e os de [sem-dependencia](../migrador-workato-sem-dependencia/reference.md).
+
+### Xlsx (`openpyxl`, `pandas.read_excel`, `to_excel`)
+
+- Uma aba, sem senha, sem gráfico: bloco sem lib de sem-dependencia, ou `xlsx` no `packageJson`. Aba ausente lança erro.
+- `.xls` binário, várias abas, estilo ou fórmula de célula: traduzir com `xlsx` no `packageJson`, ou deixar o stub se a lib não cobre.
+
+### Hash, HMAC, JWT (`hashlib`, `hmac`, `jwt`, `OpenSSL`, `Digest`)
+
+- `hashlib.sha256(s.encode()).hexdigest()` → `createHash('sha256').update(s, 'utf8').digest('hex')` (`import { createHash, createHmac } from 'crypto'`).
+- `hmac.new(key, msg, sha256).hexdigest()` → `createHmac('sha256', key).update(msg).digest('hex')`. `base64.b64encode(…digest())` → `.digest('base64')`.
+- JWT HS256: `base64url(header) + '.' + base64url(payload)`, e a assinatura é `createHmac('sha256', secret).update(data).digest('base64url')`. `exp`/`iat` em segundos (`Math.floor(Date.now() / 1000)`).
+- RS256 (`jwt.encode(..., private_key, 'RS256')`): `createSign('RSA-SHA256')`. A chave vem de variável do projeto, nunca do fonte.
+- Se `crypto` do Node estiver bloqueado no Code do iPaaS, é "validar": não trocar por hash caseiro.
+
 ## Aplicar
 
 `aplicar-code-traduzido.mjs` escreve `settings.sourceCode.code`. Se o patch do step for objeto com `packageJson`, grava essa string também. Patch em string não mexe no `packageJson`. `valid` fica `true`. `input`, `displayName`, `notes` e `nextAction` ficam como o motor deixou. O iPaaS recalcula a validade no `IMPORT_FLOW`.
@@ -88,7 +143,7 @@ Exit 3 quando algum step foi recusado ou não existe. O arquivo ainda é escrito
 
 ## QA depois
 
-[verificar-transporte](../migrador-workato-verificar-transporte/SKILL.md) trata `AP-MIGRATION-TODO` como `revisar`. Stub identity (`inputs => inputs`) em step de **variável** é `bloqueia`. Traduzir de verdade tira os dois; deixar o stub mantém o `revisar`, que é honesto.
+[verificar-transporte](../migrador-workato-verificar-transporte/SKILL.md) trata `AP-MIGRATION-TODO` como `bloqueia` (o stub de fórmula também ganha `formula vira codigo`, `revisar`). Stub identity (`inputs => inputs`) em step de **variável** é `bloqueia`. Também acusa pill com `output` na primeira chave (`datapill output primeiro`), pill em ponto (`datapill ponto`), segredo literal (`segredo literal`) e índice de loop usado sem `- 1` num Code (`loop por índice`). Traduzir de verdade tira os achados; deixar o stub mantém o bloqueio, que é honesto.
 
 ## Scripts
 
