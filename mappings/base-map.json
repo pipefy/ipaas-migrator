@@ -4014,6 +4014,19 @@
       "difficulty": "low",
       "manual": false
     },
+    "onedrive/updated_file": {
+      "target": {
+        "piece": "@activepieces/piece-microsoft-onedrive",
+        "name": "new_file",
+        "kind": "trigger"
+      },
+      "propMap": {
+        "folder_path": "parentFolder"
+      },
+      "difficulty": "high",
+      "manual": false,
+      "notes": "Workato dispara em atualizacao; o iPaaS so tem New File (upload)."
+    },
     "onedrive/search_files_new": {
       "target": {
         "piece": "@activepieces/piece-microsoft-onedrive",
@@ -8355,6 +8368,20 @@
       "difficulty": "low",
       "manual": false,
       "notes": "Prop obrigatoria que depende da conta do cliente (document_id); escolher na importacao."
+    },
+    "azure_dev_ops/new_event": {
+      "target": {
+        "piece": "@activepieces/piece-azure-devops",
+        "name": "new_updated_work_item_webhook",
+        "kind": "trigger"
+      },
+      "propMap": {
+        "project": "project",
+        "event_type": "events"
+      },
+      "difficulty": "medium",
+      "manual": false,
+      "notes": "Service Hook; filtro de Area Path nao migra; sem URL publica, polling new_updated_work_item."
     },
     "azure_dev_ops/create_record": {
       "target": {

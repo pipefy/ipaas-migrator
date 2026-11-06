@@ -25,6 +25,7 @@ const RULES: [RegExp, string][] = [
   [/teams_bot|^teams/i, 'teams'],
   [/azure_active_directory|microsoft_entra|cnh_azure/i, 'azure_ad'],
   [/microsoft_graph/i, 'microsoft_graph'],
+  [/azure_dev_ops/i, 'azure_dev_ops'],
   [/click_up/i, 'clickup'],
   [/pipedrive/i, 'pipedrive'],
   [/notion/i, 'notion'],

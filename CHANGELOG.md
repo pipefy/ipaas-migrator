@@ -6,12 +6,20 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.17 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.18 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.18 — 5 nov 2026
+
+O pacote leva o mapa dos gatilhos OneDrive `updated_file` e Azure DevOps `new_event`, e o provider `azure_dev_ops_*` colapsa para `azure_dev_ops`.
+
+- `onedrive/updated_file` → `new_file` (o iPaaS dispara em upload, não em edição).
+- `azure_dev_ops/new_event` → `new_updated_work_item_webhook`.
+- `migrador-workato-cliente-navegador-0.7.18.tgz`
 
 ## 0.7.17 — 5 nov 2026
 
