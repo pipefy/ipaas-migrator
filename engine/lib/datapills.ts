@@ -1251,6 +1251,20 @@ function renderDataPill(
     }
     return '{{TODO_pill}}';
   }
+  const phaseAt = segments.lastIndexOf('fields_by_phase');
+  const fieldsAt = segments.lastIndexOf('fields');
+  const last = segments[segments.length - 1];
+  if (
+    phaseAt >= 0 &&
+    fieldsAt > phaseAt &&
+    typeof last === 'string' &&
+    last !== 'fields' &&
+    last !== 'report_value' &&
+    last !== 'value' &&
+    last !== 'float_value'
+  ) {
+    segments.push('value');
+  }
   return render();
 }
 

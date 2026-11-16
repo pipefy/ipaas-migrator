@@ -10,6 +10,8 @@ Entrada: o `flow.json` e o `recipe.json` que o transpile acabou de escrever. Que
 
 O motor é determinístico e **não** traduz: `buildCodeStub` deixa `AP-MIGRATION-TODO` e `return inputs`. Esta skill escreve o JavaScript desses steps. Sem stub, não faz nada.
 
+O Code do iPaaS não usa `require`, `import`, `Buffer`, `zlib` nem `fetch`. Rede e zip ficam em passos HTTP e `zipFiles`.
+
 Saída em **uma** interação — completar no mesmo turno, sem perguntar se pode seguir.
 
 Fora do escopo:

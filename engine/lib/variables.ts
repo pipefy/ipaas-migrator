@@ -232,7 +232,7 @@ export function indexVariables(root: ParsedStep): VarIndex {
         fields: declFields(step),
         strategy: 'store',
         storeKey: kind === 'list'
-          ? `wv_${step.as}`
+          ? declLabel(step, kind)
           : isLegacyNameValueDeclare(step)
             ? String(step.input?.name ?? '').trim()
             : '',

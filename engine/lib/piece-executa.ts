@@ -109,7 +109,7 @@ export function pieceExecuta(flow: { flows?: Array<{ trigger?: unknown }> }, kb:
       });
     }
 
-    // Props só valem quando a versão emitida é a da KB. Pipefy 0.2.4 e
+    // Props só valem quando a versão emitida é a da KB. Pipefy 0.2.7 e
     // subflows 0.7.0 estão à frente do snapshot; a lista required de lá
     // não é a piece que roda.
     if (found.op && version === piece.version) {

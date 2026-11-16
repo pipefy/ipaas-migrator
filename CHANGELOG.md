@@ -6,12 +6,22 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.18 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.20 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.20 — 16 nov 2026
+
+O pacote leva a piece Pipefy em 0.2.7, a leitura enxuta do card, a limpeza de campo em GraphQL, a tabela sem arquivo acima de 10 mil linhas e o router da rodada.
+
+- `piece-pipefy` sai em `0.2.7`.
+- `getCardById` pede `title` e `current_phase`, mais o que a receita lê.
+- Lookup acima de 10 mil linhas não gera arquivo. A coluna do import é o label.
+- Fórmula de uma operação fica no campo. A key de variável usa o nome original.
+- `migrador-workato-cliente-navegador-0.7.20.tgz`
 
 ## 0.7.18 — 5 nov 2026
 

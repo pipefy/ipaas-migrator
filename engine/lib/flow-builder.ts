@@ -372,6 +372,17 @@ const ERR = () => ({
   continueOnFailure: { value: false },
 });
 
+/** HTTP no host Pipefy vira a URL do GraphQL. ST fica no host do tenant, sem /resource. */
+function pipefyGraphqlUrl(url: string): string | null {
+  if (!/pipefy\.com/i.test(url)) return null;
+  const host = url.match(/^(https?:\/\/[^/]*pipefy\.com)/i)?.[1];
+  if (!host) return url;
+  if (/\/\/api\.pipefy\.com/i.test(host) || /\/\/app\.pipefy\.com/i.test(host)) {
+    return url.replace(/\/resource\b.*$/i, '/graphql');
+  }
+  return `${host}/graphql`;
+}
+
 const FLOW_HELPER_PIECE = '@activepieces/piece-flow-helper';
 
 function isFallibleStep(step: any): boolean {
@@ -477,6 +488,7 @@ function assignNames(
     bindAs(ctx, step.as, 'trigger', step);
   } else if (step.keyword === 'foreach') {
     step.apName = `loop_${ctx.counter.n++}`;
+    takenNames.add(step.apName);
     if (step.as) {
       const alias = csvForeachAlias(ctx, step.source);
       ctx.asToName.set(
@@ -486,6 +498,7 @@ function assignNames(
     }
   } else if (step.keyword === 'if') {
     step.apName = `router_${ctx.counter.n++}`;
+    takenNames.add(step.apName);
   } else if (step.keyword === 'repeat') {
     // Sem equivalente no AP, mas o `as` precisa de nome: o corpo referencia
     // `<as>.index`, e sem registro isso vazaria o hash cru no template.
@@ -493,6 +506,7 @@ function assignNames(
     if (step.as) ctx.asToName.set(step.as, step.apName);
   } else if (step.opKey && (step.keyword === 'action' || step.keyword === 'trigger') && !ctx.absorbedSteps.has(step)) {
     step.apName = `step_${ctx.counter.n++}`;
+    takenNames.add(step.apName);
     bindAs(ctx, step.as, step.apName, step);
   }
 
@@ -840,7 +854,13 @@ function convInput(
 }
 
 let nameSeq = 0;
-const nextName = (prefix: string) => `${prefix}_${++nameSeq}`;
+const takenNames = new Set<string>();
+const nextName = (prefix: string) => {
+  let name = `${prefix}_${++nameSeq}`;
+  while (takenNames.has(name)) name = `${prefix}_${++nameSeq}`;
+  takenNames.add(name);
+  return name;
+};
 
 function appendToChain(head: any | undefined, tail: any | undefined): any | undefined {
   if (!head) return tail;
@@ -886,6 +906,29 @@ function prependPendingCode(built: any, ctx: Ctx, from = 0): any {
   return head;
 }
 
+function branchValueLabel(step: ParsedStep): string {
+  const raw = step.input?.conditions;
+  const list = Array.isArray(raw) ? raw : [];
+  for (const item of list) {
+    const rhs = item?.rhs;
+    if (typeof rhs === 'string' && rhs.trim() && !rhs.includes('{{') && !rhs.startsWith('=')) return rhs.trim();
+  }
+  return step.comment || 'Se verdadeiro';
+}
+
+function actionClearsField(step: ParsedStep): boolean {
+  const op = collapseOpKey(step.opKey ?? '');
+  if (!op.endsWith('/update_card_field')) return false;
+  return String(step.input?.new_value ?? '').includes('.clear');
+}
+
+function ifOnlyClearsField(step: ParsedStep): boolean {
+  if (!isAllMatchSibling(step)) return false;
+  const { branches } = splitBranches(step);
+  const kids = (branches[0]?.children ?? []).filter((child) => !child.skip && child.keyword !== 'stop');
+  return kids.length === 1 && kids[0]!.keyword === 'action' && actionClearsField(kids[0]!);
+}
+
 function isAllMatchSibling(step: ParsedStep): boolean {
   if (step.keyword !== 'if' || step.skip) return false;
   const { branches, elseChildren } = splitBranches(step);
@@ -925,7 +968,7 @@ function buildAllMatchRouter(group: ParsedStep[], ctx: Ctx): any {
     const groups = resolveFormulas(built.groups, ctx, name) as any[][];
     review = review || built.review || hasTodoMarker(groups);
     branches.push({
-      branchName: step.comment || 'Se verdadeiro',
+      branchName: branchValueLabel(step),
       branchType: 'CONDITION',
       conditions: groups,
     });
@@ -945,6 +988,67 @@ function buildAllMatchRouter(group: ParsedStep[], ctx: Ctx): any {
   };
 }
 
+/** IFs irmãos que só esvaziam campo viram um ramo com as condições em OU e uma mutation. */
+function buildClearFieldsRouter(group: ParsedStep[], ctx: Ctx): any {
+  const name = nextName('router');
+  const groups: any[][] = [];
+  const updates: { card: string; field: string }[] = [];
+  for (const step of group) {
+    const { branches } = splitBranches(step);
+    const built = buildConditionGroups(branches[0]?.conditionsInput, ctx);
+    const resolved = resolveFormulas(built.groups, ctx, name) as any[][];
+    groups.push(...resolved);
+    const action = (branches[0]?.children ?? []).find((child) => !child.skip && actionClearsField(child));
+    updates.push({
+      card: pills(String(action?.input?.card_id ?? action?.input?.cardId ?? ''), ctx),
+      field: String(action?.input?.field_id ?? action?.input?.fieldId ?? ''),
+    });
+  }
+  const lines = updates.map(
+    (item, index) =>
+      `  u${index}: updateCardField(input: {card_id: ${JSON.stringify(item.card)}, field_id: ${JSON.stringify(item.field)}, new_value: null}) { success }`,
+  );
+  const callName = nextName('step');
+  ctx.piecesUsed.add(PIPEFY_PIECE);
+  const input = {
+    method: 'POST',
+    url: 'https://api.pipefy.com/graphql',
+    headers: {},
+    queryParams: {},
+    body_type: 'json',
+    body: { query: `mutation {\n${lines.join('\n')}\n}` },
+  };
+  const call = {
+    name: callName,
+    skip: false,
+    type: 'PIECE',
+    valid: updates.every((item) => item.field) && !hasTodoMarker(input),
+    settings: {
+      input,
+      pieceName: PIPEFY_PIECE,
+      actionName: 'custom_api_call',
+      pieceVersion: pieceVersion(ctx, PIPEFY_PIECE),
+      propertySettings: propertySettings(input),
+      errorHandlingOptions: { retryOnFailure: { value: true }, continueOnFailure: { value: false } },
+    },
+    displayName: 'Limpar campos',
+    lastUpdatedDate: NOW,
+  };
+  return {
+    name,
+    skip: false,
+    type: 'ROUTER',
+    valid: !hasTodoMarker(groups),
+    settings: {
+      branches: [{ branchName: 'Campo preenchido', branchType: 'CONDITION', conditions: groups }],
+      executionType: 'EXECUTE_FIRST_MATCH',
+    },
+    children: [call, null],
+    displayName: 'Limpar campos',
+    lastUpdatedDate: NOW,
+  };
+}
+
 function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
   const steps: any[] = [];
   for (let i = 0; i < children.length; i++) {
@@ -958,7 +1062,11 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
       }
     }
     const rawBuilt =
-      siblingGroup.length > 1 ? buildAllMatchRouter(siblingGroup, ctx) : buildStep(child, ctx);
+      siblingGroup.length > 1 && siblingGroup.every(ifOnlyClearsField)
+        ? buildClearFieldsRouter(siblingGroup, ctx)
+        : siblingGroup.length > 1
+          ? buildAllMatchRouter(siblingGroup, ctx)
+          : buildStep(child, ctx);
     const built = rawBuilt ? prependPendingCode(rawBuilt, ctx, mark) : rawBuilt;
     // `stop` encerra este bloco. O passo emitido é stopFlow e os irmãos seguintes não entram.
     if (child.keyword === 'stop' && !child.skip) {
@@ -990,7 +1098,7 @@ function buildChain(children: ParsedStep[], ctx: Ctx): any | undefined {
     // O que vem depois do try só entra no sucesso. nextAction rodaria também na falha.
     // Monitor vazio não tem passo que falhe: o stop fica no ramo de falha e a
     // continuação segue no nextAction.
-    if (child.keyword === 'try' && hasActiveCatch(child)) {
+    if (child.keyword === 'try' && hasActiveCatch(child) && !catchOnlyStops(child)) {
       const rest = buildChain(children.slice(i + 1), ctx);
       if (rest) {
         if (emptyStopMonitors.has(built)) built.nextAction = rest;
@@ -1405,9 +1513,15 @@ function resolveTodoFormulaBody(
       if (!compositionPart) return evaluated;
       return compiled.float && typeof evaluated === 'number' ? rubyFloatText(evaluated) : String(evaluated);
     }
-    if (!harvest.allowCode) {
+    if (!harvest.allowCode || compiled.helpers.size === 0 && !/\(/.test(compiled.expr)) {
       harvest.approximations.push(...compiled.approximations);
       for (const helper of compiled.helpers) harvest.helpers.add(helper);
+      if (compiled.helpers.size === 0 && !/\(/.test(compiled.expr)) {
+        let expr = compiled.expr;
+        const names = [...compiled.bindings.keys()].sort((a, b) => b.length - a.length);
+        for (const binding of names) expr = expr.split(binding).join(String(compiled.bindings.get(binding)));
+        return expr;
+      }
       harvest.uncompiled.push(typeof source === 'string' && source.trim() ? source.trim() : rawBody);
       return wrapApFormula(compiled.expr);
     }
@@ -3052,7 +3166,9 @@ function buildMessageTemplate(
 ): any {
   const fields = templateInputFields(sourceInput.template_input);
   const input = resolveFormulas(convInput(fields, undefined, ctx), ctx, name, fields);
-  pushReviewNote(ctx, 'TEMPLATE', messageTemplateNote(sourceInput.template_id), '', name);
+  if (sourceInput.template_id != null && String(sourceInput.template_id).trim() !== '') {
+    input.template_id = String(sourceInput.template_id).trim();
+  }
   return codeStep(name, display, input, messageTemplateCode(Object.keys(input)), !hasTodoMarker(input));
 }
 
@@ -4427,6 +4543,13 @@ function fillKnownProps(
     if (!blankProp(input.organizationId)) delete input.organization_id;
     copyProp(input, 'pipeId', 'pipe_id');
     if (!blankProp(input.pipeId)) delete input.pipe_id;
+    if (blankProp(input.phaseId)) {
+      const phases = input.on_phase_ids ?? input.filter ?? sourceInput.on_phase_ids ?? sourceInput.filter;
+      if (Array.isArray(phases)) input.phaseId = phases;
+      else if (!blankProp(phases)) input.phaseId = String(phases).split(',').map((item) => item.trim()).filter(Boolean);
+      delete input.on_phase_ids;
+      delete input.filter;
+    }
   }
 
   if (target.piece === PIPEFY_PIECE && target.name === 'updateCard') {
@@ -4468,6 +4591,17 @@ function fillKnownProps(
       for (const [key, value] of Object.entries(sourceInput)) {
         if (meta.has(key) || blankProp(value) || value === '=skip') continue;
         if (typeof value === 'string' && /^=\s*(?:\(\s*\)|null|clear)?\s*$/i.test(value.trim())) continue;
+        if (
+          (key === 'phaseFields' || key === 'startFormFields' || key === 'start_form_fields') &&
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value)
+        ) {
+          for (const [field, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+            fields[field] = deepConvert(fieldValue, ctx);
+          }
+          continue;
+        }
         fields[key] = deepConvert(value, ctx);
       }
       if (Object.keys(fields).length) input.phaseFields = fields;
@@ -5631,7 +5765,17 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
   let input = shaped ?? convInput(sourceInput, entry, ctx);
   const omie = fillOmieHttp(opKey, t, input, sourceInput, ctx, name);
   if (omie) input = omie;
-  if (t.piece === PIPEFY_PIECE) input = withPipefyCardFields(t.name, input);
+  if (t.piece === PIPEFY_PIECE) {
+    const used = new Set<string>();
+    const raw = JSON.stringify(sourceInput ?? {});
+    for (const key of ['comments', 'assignees', 'attachments', 'inbox_emails', 'phases_history', 'child_relations', 'parent_relations', 'created_by']) {
+      if (raw.includes(key)) used.add(key);
+    }
+    for (const key of ['url', 'due_date', 'uuid', 'creatorEmail']) {
+      if (raw.includes(`"${key}"`) || raw.includes(`.${key}`)) used.add(key);
+    }
+    input = withPipefyCardFields(t.name, input, used);
+  }
   if (collapseOpKey(opKey) === 'slack/block_kit_modals' && t.name === 'custom_api_call') {
     input = fillSlackModal(input, sourceInput, ctx);
     pushReviewNote(
@@ -5871,6 +6015,46 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       name,
     );
   }
+  if (t.piece === '@activepieces/piece-http' && t.name === 'send_request') {
+    const graphql = pipefyGraphqlUrl(String(input.url ?? ''));
+    if (graphql) {
+      t = { piece: PIPEFY_PIECE, name: 'custom_api_call', kind: 'action' };
+      input.url = graphql;
+      ctx.piecesUsed.add(PIPEFY_PIECE);
+    }
+    if (/pdf/i.test(`${input.url ?? ''} ${display} ${opKey}`)) input.response_is_binary = true;
+  }
+  if (
+    (t.name === 'tables-update-record' || t.name === 'tables-create-records') &&
+    input.table_id === ''
+  ) {
+    const payload: Record<string, unknown> = {};
+    if (input.record_id != null) payload.record_id = input.record_id;
+    if (input.values && typeof input.values === 'object') Object.assign(payload, input.values);
+    if (input.filters && typeof input.filters === 'object') payload.filters = input.filters;
+    const storeInput = { key: `Valores para: ${name}`, value: payload, store_scope: STORE_SCOPE };
+    ctx.piecesUsed.add(STORE_PIECE);
+    ctx.pendingCode.push({
+      name: nextName('step'),
+      skip: false,
+      type: 'PIECE',
+      valid: true,
+      settings: {
+        input: storeInput,
+        pieceName: STORE_PIECE,
+        actionName: 'put',
+        pieceVersion: pieceVersion(ctx, STORE_PIECE),
+        propertySettings: {
+          ...propertySettings(storeInput),
+          value: { type: 'MANUAL', schema: Object.fromEntries(Object.keys(payload).map((key) => [key, { type: 'SHORT_TEXT' }])) },
+        },
+        errorHandlingOptions: ERR(),
+      },
+      displayName: `Valores para: ${name}`,
+      lastUpdatedDate: NOW,
+    });
+  }
+  const pipefyStep = t.piece === PIPEFY_PIECE;
   return {
     name,
     skip: false,
@@ -5883,7 +6067,9 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
       pieceVersion: pieceVersion(ctx, t.piece),
       propertySettings:
         t.piece === PIPEFY_PIECE ? pipefyPropertySettings(input, step.inputFields) : settingsFor(t.piece, t.name, input),
-      errorHandlingOptions: ERR(),
+      errorHandlingOptions: pipefyStep
+        ? { retryOnFailure: { value: true }, continueOnFailure: { value: false } }
+        : ERR(),
     },
     displayName: lookupId ? `${display} - lookup ${lookupId}` : display,
     lastUpdatedDate: NOW,
@@ -6089,9 +6275,29 @@ function branchHasTerminatingStop(children: ParsedStep[]): boolean {
 }
 
 /** if / elsif... / else -> ROUTER com EXECUTE_FIRST_MATCH (mesma semantica). */
+function peelNestedIf(branch: { conditionsInput: WorkatoConditionsInput | undefined; children: ParsedStep[] }): {
+  conditionsInput: WorkatoConditionsInput | undefined;
+  children: ParsedStep[];
+} {
+  const active = branch.children.filter((child) => !child.skip);
+  if (active.length !== 1 || active[0]!.keyword !== 'if') return branch;
+  const { branches, elseChildren } = splitBranches(active[0]!);
+  const elseActive = elseChildren.filter((child) => !child.skip && child.keyword !== 'stop');
+  if (branches.length !== 1 || elseActive.length) return branch;
+  const inner = peelNestedIf(branches[0]!);
+  const outer = branch.conditionsInput?.conditions ?? [];
+  const nested = inner.conditionsInput?.conditions ?? [];
+  return {
+    conditionsInput: { operand: 'and', conditions: [...outer, ...nested] },
+    children: inner.children,
+  };
+}
+
 function buildRouter(step: ParsedStep, ctx: Ctx): any {
   const name = step.apName || nextName('router');
-  const { branches, elseChildren } = splitBranches(step);
+  const split = splitBranches(step);
+  const branches = split.branches.map((branch) => peelNestedIf(branch));
+  const { elseChildren } = split;
   const built = branches.map((branch) => buildConditionGroups(branch.conditionsInput, ctx));
   const groups = resolveFormulas(
     built.map((item) => item.groups),
@@ -6497,8 +6703,8 @@ function noteLookupHandover(ctx: Ctx): void {
     [
       'Tabelas usadas por este flow:',
       tables.join('\n'),
-      'Na virada, desligue a receita na Workato e ligue o flow no iPaaS sem duplicar a execução nem deixar de rodar. A lookup table da Workato e a Table do iPaaS são cópias separadas: o que mudar em uma não aparece na outra.',
-      'Importe o arquivo de cada tabela no iPaaS (Import Table, na lista de tabelas) e confira os dados antes de ligar o flow. Depois selecione a Table e o campo do filtro em cada passo de tabela, porque o `table_id` fica vazio até o import.',
+      'Importe o arquivo de cada tabela. Preencha os passos copiando de "Valores para…". Na virada, desligue a receita na Workato e ligue o flow no iPaaS. As tabelas são cópias separadas.',
+      'Acima de 10 mil linhas o arquivo não entra: a pessoa transpõe a lógica, porque a Table do iPaaS não cobre esse volume. O `table_id` fica vazio até o import. Filtro e valor usam o nome da coluna.',
     ].join('\n\n'),
     '',
     anchor,
@@ -6834,9 +7040,17 @@ function isStopOnlyCatch(handlers: ParsedStep[]): boolean {
   return handlers.length === 1 && handlers[0]!.keyword === 'stop';
 }
 
-function hasActiveCatch(step: ParsedStep): boolean {
+function activeCatchHandlers(step: ParsedStep): ParsedStep[] {
   const catchNode = step.children.find((child) => child.keyword === 'catch');
-  return (catchNode?.children ?? []).some((handler) => handler.keyword !== 'catch' && handler.skip !== true);
+  return (catchNode?.children ?? []).filter((handler) => handler.keyword !== 'catch' && handler.skip !== true);
+}
+
+function hasActiveCatch(step: ParsedStep): boolean {
+  return activeCatchHandlers(step).length > 0;
+}
+
+function catchOnlyStops(step: ParsedStep): boolean {
+  return isStopOnlyCatch(activeCatchHandlers(step));
 }
 
 function endsWithStopFlow(step: any): boolean {
@@ -7438,14 +7652,8 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
 
   const retry = catchRetries(catchNode);
   if (isStopOnlyCatch(activeHandlers)) {
-    if (!first) {
-      const empty = stopOnlyEmptyMonitor(ctx);
-      if (retry) enableRetry(empty);
-      return empty;
-    }
-    const wired = rewireStopOnFailure(first, ctx, retry) ?? null;
-    if (retry && wired) enableRetry(wired);
-    return wired;
+    if (retry && first) enableRetry(first);
+    return first ?? null;
   }
 
   if (!activeHandlers.length) {
@@ -7601,6 +7809,15 @@ function buildTrigger(root: ParsedStep, ctx: Ctx): any {
     nextAction = prependCallableParams(nextAction, ctx);
     if (collapseOpKey(opKey) === 'pipefy/new_updated_card' && t.name === 'cardFieldUpdated') {
       pushReviewNote(ctx, 'TRIGGER', NEW_UPDATED_CARD_NOTE, '', 'trigger');
+    }
+    if (t.name === 'cardFieldUpdated' && root.sourceLabel && blankProp(input.fieldIds)) {
+      pushReviewNote(
+        ctx,
+        'TRIGGER',
+        `O campo observado pelo gatilho (${root.sourceLabel}) não está no flow. Confira se ele ainda existe no pipe. Se a conta não lê o pipe, peça o id da fase do formulário inicial.`,
+        '',
+        'trigger',
+      );
     }
     if (collapseOpKey(opKey) === 'workato_pub_sub/subscribe_to_topic' && t.name === 'catch_webhook') {
       pushReviewNote(ctx, 'TRIGGER', PUBSUB_WEBHOOK_NOTE, '', 'trigger');
@@ -8279,6 +8496,7 @@ function indexPairsCode(keys: string[]): string {
 
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
   nameSeq = 0;
+  takenNames.clear();
   NOW = new Date().toISOString();
   const ctx: Ctx = {
     merged,

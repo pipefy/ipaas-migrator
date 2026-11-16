@@ -1666,6 +1666,20 @@ export function collectRafaGaps(recipe, flow, steps) {
     ));
   }
 
+  const names = steps.map((step) => step.name).filter(Boolean);
+  const duplicated = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))];
+  if (duplicated.length) {
+    gaps.push(finding('bloqueia', 'nome repetido', `steps com o mesmo nome: ${duplicated.join(', ')}`));
+  }
+  const source = JSON.stringify(flow ?? {});
+  if (/\brequire\s*\(|\bimport\s+|Buffer\.|zlib\.|\bfetch\s*\(/.test(source)) {
+    gaps.push(finding(
+      'revisar',
+      'code proibido',
+      'Code do iPaaS não usa require, import, Buffer, zlib nem fetch',
+    ));
+  }
+
   if (/ap-formula-v1::\{(?:replace|remove)\(/.test(JSON.stringify(flow ?? {}))) {
     gaps.push(finding(
       'revisar',
@@ -2023,7 +2037,7 @@ export function verifyTransport({
 
   const ifs = tree.controls.filter((c) => c.keyword === 'if' && !c.skip).length;
   const routers = steps.filter((s) => s.type === 'ROUTER').length;
-  if (ifs > routers) {
+  if (ifs > 0 && routers === 0) {
     findings.push(finding('bloqueia', 'if sem ROUTER', `${ifs} if Workato, ${routers} ROUTER no flow`));
   }
 

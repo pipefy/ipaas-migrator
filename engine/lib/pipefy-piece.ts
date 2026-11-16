@@ -1,33 +1,15 @@
-// piece-pipefy das próximas traduções. A KB continua no snapshot 0.1.9;
-// o destino (Invenergy ST) tem 0.2.4, e o input de leitura de card ganhou
-// as listas de campo. Valores copiados do gabarito Offshore (schema 23).
+// piece-pipefy das próximas traduções. A KB continua no snapshot 0.1.9.
+// O flow grava 0.2.7, a versão que a importação desta rodada usa.
+// card_info sai só com title e current_phase, salvo o que a receita lê.
 
-export const PIPEFY_PIECE_VERSION = '0.2.4';
+export const PIPEFY_PIECE_VERSION = '0.2.7';
 
 const CARD_READ_ACTIONS = new Set(['getCardById', 'getCardsByFieldValue']);
 
 export const PIPEFY_CARD_FIELDS: Record<string, string[]> = {
   comments: ['id', 'text', 'created_at', 'author_name'],
   assignees: ['name', 'email', 'id', 'locale', 'timezone'],
-  card_info: [
-    'uuid',
-    'suid',
-    'age',
-    'title',
-    'comments_count',
-    'createdAt',
-    'current_phase_age',
-    'done',
-    'due_date',
-    'emailMessagingAddress',
-    'expired',
-    'late',
-    'started_current_phase_at',
-    'updated_at',
-    'url',
-    'creatorEmail',
-    'current_phase',
-  ],
+  card_info: ['title', 'current_phase'],
   created_by: ['email', 'id', 'locale', 'name', 'timezone'],
   attachments: ['createdAt', 'createdBy', 'field', 'path', 'phase', 'url'],
   inbox_emails: [
@@ -449,14 +431,36 @@ export function pipefyPropertySettings(
         type: fieldPropertyType(def?.controlType),
       };
     }
-    if (Object.keys(schema).length) settings[prop] = { type: 'MANUAL', schema };
+    if (Object.keys(schema).length) {
+      const dynamic = Object.values(value).some(
+        (item) => typeof item === 'string' && (item.includes('{{') || item.includes('#{')),
+      );
+      settings[prop] = { type: dynamic ? 'DYNAMIC' : 'MANUAL', schema };
+    }
   }
   return settings;
 }
 
-export function withPipefyCardFields(actionName: string, input: Record<string, any>): Record<string, any> {
+const CARD_INFO_EXTRA = [
+  'uuid', 'suid', 'age', 'comments_count', 'createdAt', 'current_phase_age', 'done',
+  'due_date', 'emailMessagingAddress', 'expired', 'late', 'started_current_phase_at',
+  'updated_at', 'url', 'creatorEmail',
+];
+
+/** Listas de leitura só entram quando a receita cita a chave. card_info fica em title e current_phase, mais o que for lido. */
+export function withPipefyCardFields(
+  actionName: string,
+  input: Record<string, any>,
+  used: Set<string> = new Set(),
+): Record<string, any> {
   if (!CARD_READ_ACTIONS.has(actionName)) return input;
   const fields: Record<string, string[]> = {};
-  for (const [key, values] of Object.entries(PIPEFY_CARD_FIELDS)) fields[key] = [...values];
+  for (const [key, values] of Object.entries(PIPEFY_CARD_FIELDS)) {
+    if (key === 'card_info') {
+      fields[key] = ['title', 'current_phase', ...CARD_INFO_EXTRA.filter((item) => used.has(item))];
+      continue;
+    }
+    fields[key] = used.has(key) ? [...values] : [];
+  }
   return { ...input, ...fields };
 }
