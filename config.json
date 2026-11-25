@@ -5,10 +5,5 @@
     "baseMap": "mappings/base-map.json",
     "userMap": "mappings/user-map.json",
     "output": "output"
-  },
-  "toolkitLogs": {
-    "pipeId": "307438279",
-    "formId": "SvdeZSlT",
-    "publicApi": "https://app.pipefy.com/public_api"
   }
 }

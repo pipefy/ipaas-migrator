@@ -6,19 +6,26 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.21 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.22 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
 
+## 0.7.22 — 25 nov 2026
+
+`decode_base64` que alimenta um campo de arquivo vira data URI. PDF com nome `.pdf` sai `data:application/pdf;base64,...`. Texto fora de campo FILE continua decodificado.
+
+- O anexo deixa de receber a string base64 crua.
+- `migrador-workato-cliente-navegador-0.7.22.tgz`
+
 ## 0.7.21 — 16 nov 2026
 
-Melhoria de logs e feedback. Ao fim da tradução, o kit envia um log silencioso pelo formulário público do pipe Migrador Toolkit - Logs. `MIGRADOR_LOGS=off` desliga. A org vem do login, senão das receitas traduzidas.
+Ao fim da tradução, o kit envia um log silencioso pelo formulário público do pipe Migrador Toolkit - Logs. `MIGRADOR_LOGS=off` desliga. A org vem do login, senão das receitas traduzidas.
 
 - O POST vai para `public_api` com `submitPublicForm`. Sem token.
-- Captcha ou rede falham sem texto. O feedback fica em `output/.toolkit-log-feedback.json` e entra na próxima submissão.
+- Captcha ou rede falham sem texto. O feedback fica para a submissão seguinte.
 - `migrador-workato-cliente-navegador-0.7.21.tgz`
 
 ## 0.7.20 — 16 nov 2026

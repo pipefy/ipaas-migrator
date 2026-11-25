@@ -552,6 +552,14 @@ function targetPropTypes(ctx: Ctx, target?: MapTarget | null): Map<string, strin
   return result;
 }
 
+function filePropNames(ctx: Ctx, target?: MapTarget | null): Set<string> {
+  const names = new Set<string>();
+  for (const [name, type] of targetPropTypes(ctx, target)) {
+    if (type === 'FILE') names.add(name);
+  }
+  return names;
+}
+
 function missingRequiredProps(ctx: Ctx, target: MapTarget, input: Record<string, any>): string[] {
   return (operationDef(ctx, target)?.props ?? [])
     .filter((prop) => prop.required && (input[prop.name] === undefined || input[prop.name] === ''))
@@ -1615,7 +1623,71 @@ function formulaCodeStep(harvest: Harvest): any {
  * Converte as formulas residuais de um step em UM step CODE anterior a ele.
  * Devolve o valor com as referencias `{{formula_N.fX}}` no lugar.
  */
-function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any, allowCode = true): any {
+function formulaFieldKey(value: string, formulaName: string): string | null {
+  const dotted = value.match(/^\{\{([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\}\}$/);
+  if (dotted?.[1] === formulaName) return dotted[2]!;
+  const bracket = value.match(/^\{\{([A-Za-z0-9_]+)\['([A-Za-z0-9_]+)'\]\}\}$/);
+  if (bracket?.[1] === formulaName) return bracket[2]!;
+  return null;
+}
+
+function ensureFormulaBinding(registry: BindingRegistry, pill: string): string {
+  const known = registry.pillNames.get(pill);
+  if (known) return known;
+  for (const [name, bound] of registry.bindings) {
+    if (bound === pill) return name;
+  }
+  const name = `v${registry.seq.n++}`;
+  registry.bindings.set(name, pill);
+  registry.pillNames.set(pill, name);
+  return name;
+}
+
+function fileNameJs(fileName: unknown, harvest: Harvest): string {
+  if (typeof fileName !== 'string' || !fileName.trim()) return '""';
+  const key = formulaFieldKey(fileName, harvest.name());
+  if (key) {
+    const other = harvest.fields.find((field) => field.key === key);
+    return other ? `(${other.expr})` : '""';
+  }
+  if (fileName.includes('{{')) return ensureFormulaBinding(harvest.registry, fileName);
+  return JSON.stringify(fileName);
+}
+
+/**
+ * Campo FILE do iPaaS consome URL ou data URI. `decode_base64` de PDF devolve
+ * a string base64 crua quando há byte nulo; o upload não grava esse texto.
+ * Aqui o passo devolve `data:<mime>;base64,<payload>`, com o mime do fileName.
+ */
+function liftFileDecode(harvest: Harvest, replaced: any, fileProps?: Set<string>): void {
+  if (!fileProps?.size || !harvest.fields.length) return;
+  if (!replaced || typeof replaced !== 'object' || Array.isArray(replaced)) return;
+  const formulaName = harvest.name();
+  const fileName = (replaced as Record<string, unknown>).fileName;
+  for (const prop of fileProps) {
+    const value = (replaced as Record<string, unknown>)[prop];
+    if (typeof value !== 'string') continue;
+    const key = formulaFieldKey(value, formulaName);
+    if (!key) continue;
+    const field = harvest.fields.find((item) => item.key === key);
+    const decoded = field?.expr.match(/^decodeB64\((.*)\)$/s);
+    if (!field || !decoded) continue;
+    field.expr = `fileDataUri(${decoded[1]}, ${fileNameJs(fileName, harvest)})`;
+    harvest.helpers.add('fileDataUri');
+  }
+  if (harvest.fields.some((field) => /\bdecodeB64\(/.test(field.expr))) return;
+  harvest.helpers.delete('decodeB64');
+  harvest.approximations = harvest.approximations.filter((note) => note !== DECODE_B64_NOTE);
+}
+
+function resolveFormulas(
+  value: any,
+  ctx: Ctx,
+  owner: string,
+  source?: any,
+  allowCode = true,
+  fileProps?: Set<string>,
+): any {
   let assigned: string | undefined;
   const harvest: Harvest = {
     allowCode,
@@ -1628,6 +1700,7 @@ function resolveFormulas(value: any, ctx: Ctx, owner: string, source?: any, allo
     composed: ctx.composedFormulas,
   };
   const replaced = replaceResidualRuby(value, harvest, source, ctx);
+  liftFileDecode(harvest, replaced, fileProps);
   if (harvest.uncompiled.length) {
     ctx.diagnostics.push({ category: 'FORMULA', reason: 'UNCOMPILED_FORMULA', action: 'CHECK_DOCUMENTATION', stepName: owner, count: harvest.uncompiled.length });
     const formulas = [...new Set(harvest.uncompiled)].join('\n\n');
@@ -5857,7 +5930,14 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     mapperEmpty = mapped.empty;
   }
   if (!shaped && !omie) {
-    input = resolveFormulas(input, ctx, name, workatoMapper ? { mapping: sourceInput.data } : sourceInput);
+    input = resolveFormulas(
+      input,
+      ctx,
+      name,
+      workatoMapper ? { mapping: sourceInput.data } : sourceInput,
+      true,
+      filePropNames(ctx, t),
+    );
   }
   if (mapperEmpty) {
     pushReviewNote(ctx, 'MAPPER', 'O Mapper by Workato não tinha data.', '', name);

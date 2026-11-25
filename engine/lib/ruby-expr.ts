@@ -648,6 +648,26 @@ const HELPERS: Record<string, string> = {
   if (buf.includes(0)) return raw;
   return buf.toString('utf8');
 };`,
+  fileDataUri: `const fileDataUri = (b64, name) => {
+  const raw = String(b64 ?? '').replace(/\\s/g, '');
+  const file = String(name ?? '').toLowerCase().split('?')[0].split('#')[0];
+  const ext = file.includes('.') ? file.slice(file.lastIndexOf('.') + 1) : '';
+  const mime = {
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    csv: 'text/csv',
+    txt: 'text/plain',
+    html: 'text/html',
+    htm: 'text/html',
+    zip: 'application/zip',
+    json: 'application/json',
+    xml: 'application/xml',
+  }[ext] || 'application/octet-stream';
+  return 'data:' + mime + ';base64,' + raw;
+};`,
   sliceAt: `const sliceAt = (v, from, to, exclusive) => {
   const invalid = () => { throw new Error('AP-MIGRATION-INVALID-RANGE'); };
   const string = typeof v === 'string';
