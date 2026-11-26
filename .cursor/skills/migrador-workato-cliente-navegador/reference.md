@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.7.23**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.7.24**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + atualização no GitHub + smoke → idioma (inferir) → API ou JSON → pipe → conexão → motor → Downloads do `*.flow.json` (com ok) → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → teste.
 
@@ -102,6 +102,8 @@ node scripts/verificar-transporte.mjs \
 
 Exit 0: sem `bloqueia`. Siga para Downloads sem comentar. Exit 3: há achado. Exit 2: arquivo. `info` não conta. `revisar` conta como pendência.
 
+Antes de gravar o relatório, o script cura no `flow.json` local o que for seguro (nome repetido isolado, cópia do mesmo passo, passo sem nome, router, pill em ponto, `output` na frente, `table_id` e operador `eq`), alinha o `<slug>.flow.json` e verifica de novo. Ciclo, alias, pill ambígua e router com filho a mais seguem bloqueando. `--no-heal` não altera o arquivo.
+
 A pergunta ao cliente usa o bloco `validacao-pergunta`. No máximo 3 frases, depois "e mais N". Cada frase sai da tabela abaixo, no idioma da sessão. Nunca cite o `kind`, "piece", "datapill", "schema", "AP-MIGRATION-TODO" nem "Active Pieces". A pesquisa na web usa a documentação do Workato e a da plataforma de destino; a conversa fala "o Pipefy" ou "a plataforma de destino".
 
 | kind | pt | en | es |
@@ -162,7 +164,7 @@ Esse comando existe só no helper (`workato_migrator_helper`), não no kit publi
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.7.23.tgz
+# dist/migrador-workato-cliente-navegador-0.7.24.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

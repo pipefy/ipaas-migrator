@@ -222,14 +222,63 @@ function graphSummary(flow) {
   return summary;
 }
 
+function healItems(list) {
+  return Array.isArray(list) ? list : [];
+}
+
+function autoHealRecord(report) {
+  const heal = report?.autoHeal;
+  if (!heal || heal.attempted !== true) return null;
+  return {
+    changed: Boolean(heal.changed),
+    before: heal.before && typeof heal.before === 'object' ? heal.before : null,
+    applied: healItems(heal.applied).map((item) => ({
+      kind: item?.kind ?? '',
+      step: item?.step ?? '',
+      detail: item?.detail ?? '',
+    })),
+    skipped: healItems(heal.skipped).map((item) => ({
+      kind: item?.kind ?? '',
+      step: item?.step ?? '',
+      reason: item?.reason ?? item?.kind ?? '',
+    })),
+  };
+}
+
 function transportSummary(report) {
   if (!report || typeof report !== 'object') return null;
+  const heal = autoHealRecord(report);
   return {
     limpo: Boolean(report.limpo),
     bloqueia: Array.isArray(report.bloqueia) ? report.bloqueia.length : 0,
     revisar: Array.isArray(report.revisar) ? report.revisar.length : 0,
     structuralErrors: Array.isArray(report.structuralErrors) ? report.structuralErrors.map((item) => item.kind) : [],
+    ...(heal ? { autoHeal: true } : {}),
+    ...(heal?.applied.length ? { healed: heal.applied.map((item) => item.kind) } : {}),
+    ...(heal?.skipped.length ? { healSkipped: heal.skipped.map((item) => item.reason || item.kind) } : {}),
   };
+}
+
+function autoHealLine(entry) {
+  const heal = entry.autoHeal;
+  if (!heal) return null;
+  const id = entry.id ?? 'sem id';
+  const cured = heal.applied.length
+    ? heal.applied.map((item) => [item.kind, item.step, item.detail].filter(Boolean).join(' · ')).join('; ')
+    : 'nada';
+  const refused = heal.skipped.length
+    ? heal.skipped.map((item) => [item.reason, item.step].filter(Boolean).join(' · ')).join('; ')
+    : '';
+  const before = heal.before
+    ? `antes ${heal.before.bloqueia ?? 0} bloqueia, ${heal.before.revisar ?? 0} revisar`
+    : '';
+  return [
+    `${id} — auto-heal entrou`,
+    heal.changed ? 'gravou o flow' : 'sem alteração',
+    before,
+    `curou: ${cured}`,
+    refused ? `recusou: ${refused}` : '',
+  ].filter(Boolean).join(' — ');
 }
 
 function readJson(path) {
@@ -281,6 +330,7 @@ export function entryFromDir(dir) {
     consultas: Array.isArray(avaliacao?.consultas) ? avaliacao.consultas : null,
     graph: graphSummary(flow),
     transport: transportSummary(transporte),
+    autoHeal: autoHealRecord(transporte),
     trees: [recipe, flow].filter(Boolean),
   };
 }
@@ -332,6 +382,7 @@ export function buildPayload({ version, migrador = '', login = null, feedback = 
     .map((entry) => entry.transport)
     .filter(Boolean)
     .map((report) => JSON.stringify(report));
+  const autoHeals = entries.map(autoHealLine).filter(Boolean);
   const telemetria = [
     `migrador: ${migrador || 'desconhecido'}`,
     `versão: ${version ?? 'desconhecida'}`,
@@ -340,6 +391,7 @@ export function buildPayload({ version, migrador = '', login = null, feedback = 
     `origem: ${identified.source}`,
     grafos.length ? `grafo: ${grafos.join(' | ')}` : 'grafo: não registrado',
     transportes.length ? `transporte: ${transportes.join(' | ')}` : 'transporte: não registrado',
+    ...(autoHeals.length ? [`auto-heal:\n${autoHeals.join('\n')}`] : []),
     consultas.length ? consultas.join('\n') : 'consulta: não registrada',
   ].join('\n');
   return {

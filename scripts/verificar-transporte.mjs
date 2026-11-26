@@ -6,9 +6,11 @@
 //
 // Exit 0 = ok (sem bloqueia). Exit 3 = tem bloqueia. Exit 2 = arquivo/uso.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { autoHealFlow } from './lib/flow-auto-heal.mjs';
+import { syncNamedFlowCopy } from './lib/flow-graph-guard.mjs';
 import { formatChat, formatComment, verifyTransport } from './lib/verify-transport.mjs';
 
 function arg(name, fallback = null) {
@@ -25,6 +27,17 @@ const flowId = arg('--flow-id');
 const mapPath = resolve(arg('--map') ?? resolve(root, 'mappings/base-map.json'));
 const outDir = arg('--out') ? resolve(arg('--out')) : null;
 const pipeId = arg('--pipe-id') ?? '';
+const noHeal = process.argv.includes('--no-heal');
+
+function namedCopyDiverges(file) {
+  if (basename(file) !== 'flow.json') return false;
+  const raw = readFileSync(file);
+  for (const name of readdirSync(dirname(file))) {
+    if (!name.endsWith('.flow.json') || name === 'flow.json') continue;
+    if (!readFileSync(join(dirname(file), name)).equals(raw)) return true;
+  }
+  return false;
+}
 
 if (!recipePath || !flowPath) {
   console.error(
@@ -147,7 +160,28 @@ for (const routingPath of routingCandidates) {
     /* ignora */
   }
 }
-const report = verifyTransport({ recipe, flow, operations, source, draftStatus, routing });
+let report = verifyTransport({ recipe, flow, operations, source, draftStatus, routing });
+const canHeal = !noHeal && !live && (report.bloqueia.length > 0 || report.revisar.length > 0);
+if (canHeal) {
+  const before = { bloqueia: report.bloqueia.length, revisar: report.revisar.length };
+  const healed = autoHealFlow({ flow: anexo, recipe, report });
+  const autoHeal = {
+    attempted: true,
+    changed: healed.changed,
+    applied: healed.applied,
+    skipped: healed.skipped,
+    before,
+  };
+  if (healed.changed) {
+    writeFileSync(flowPath, `${JSON.stringify(healed.flow)}\n`);
+    if (basename(flowPath) === 'flow.json') syncNamedFlowCopy(flowPath);
+    report = verifyTransport({ recipe, flow: healed.flow, operations, source, draftStatus, routing });
+  }
+  report.autoHeal = autoHeal;
+} else if (!noHeal && !live && namedCopyDiverges(flowPath)) {
+  syncNamedFlowCopy(flowPath);
+  report.autoHeal = { attempted: false, changed: false, applied: [], skipped: [], synced: true };
+}
 report.live = { ok: liveMeta.ok === true, reason: liveMeta.reason ?? null, http: liveMeta.http ?? null };
 report.comment = formatComment(report, pipeId || report.recipeId || 'hospedeiro');
 report.chat = formatChat(report, pipeId || report.recipeId || 'hospedeiro');

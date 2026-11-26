@@ -6,12 +6,20 @@ Há dois arquivos no histórico. O kit sem navegador saiu de linha em 23 set 202
 
 | Kit | Versão atual | Arquivo |
 | --- | --- | --- |
-| Com navegador (vigente) | 0.7.23 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
+| Com navegador (vigente) | 0.7.24 | [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator) `main` |
 | Sem navegador | descontinuado (0.4.3) | não empacota mais |
 
 O Cloud Agent e as skills do pipe interno têm outro histórico, no repositório: `docs/CHANGELOG.md`.
 
 Cada bloco abaixo descreve o tarball daquela data. O motor dentro do pacote é a foto do repositório na hora do `npm run pack-cliente`. O kit vigente para quem migra é o `main` de [github.com/pipefy/ipaas-migrator](https://github.com/pipefy/ipaas-migrator).
+
+## 0.7.24 — 26 nov 2026
+
+A verificação cura o flow local: tira a cópia do mesmo passo, renomeia o passo que só repetia o nome e grava de novo. O log silencioso registra quando a cura entra.
+
+- `--no-heal` deixa o arquivo como está.
+- O bloco `auto-heal:` diz o que foi curado e o que ficou bloqueado.
+- `migrador-workato-cliente-navegador-0.7.24.tgz`
 
 ## 0.7.23 — 26 nov 2026
 

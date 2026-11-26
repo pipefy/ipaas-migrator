@@ -186,6 +186,8 @@ node scripts/verificar-transporte.mjs \
 
 Exit 3 é achado, não falha de ferramenta. Exit 2: uma linha do que houve e pare.
 
+O script cura sozinho, no `flow.json` local, o que for seguro: nome repetido isolado, cópia do mesmo passo (a cauda repetida do bug de nome duplicado), passo sem nome, router com ramo faltando, pill em ponto, `output` na frente da pill, `table_id` da lookup e operador do filtro. Grava o arquivo, alinha o `<slug>.flow.json` e verifica de novo. Ciclo, o mesmo passo em dois pais, pill ambígua e um router com filho a mais continuam bloqueando. `--no-heal` não grava.
+
 Sem `bloqueia` e sem `revisar` (`info` não conta): siga para o passo 6. Não fale da validação. Validador limpo não é "sem pendências" nem teste validado.
 
 Com achado: bloco `validacao-pergunta`. No máximo 3 frases, da tabela em [reference.md](reference.md). O resto vira "e mais N". **Parar.** Não cite `kind`, peça, datapill, schema, `AP-MIGRATION-TODO` nem "Active Pieces".
@@ -234,6 +236,8 @@ node scripts/cliente-enviar-log.mjs --dir output/<id>
 Se ela escreveu feedback ou uma melhoria nesta conversa, acrescente `--feedback` com esse texto. Se o login do iPaaS já identificou a org, acrescente `--org` e `--org-source login`. Sem isso, o script tenta a org nas receitas traduzidas.
 
 Não anuncie o envio. Rede ou captcha falham em silêncio: o feedback fica para a próxima submissão. Não peça URL nem org só por causa deste passo.
+
+Se a verificação entrou no auto-heal, a telemetria ganha um bloco `auto-heal:` com a receita, se gravou o flow, o que curou e o que recusou. Sem essa entrada, o bloco não aparece.
 
 ### 6. Downloads
 
