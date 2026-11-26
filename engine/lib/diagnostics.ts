@@ -10,6 +10,13 @@ export class InvalidCompositionInputError extends Error {
   }
 }
 
+export class InvalidFlowGraphError extends Error {
+  constructor(detail: string) {
+    super(`AP-MIGRATION-INVALID-FLOW-GRAPH: ${detail}`);
+    this.name = 'InvalidFlowGraphError';
+  }
+}
+
 export type MigrationDiagnosticCategory =
   | 'CODE_TRANSLATION_REQUIRED' | 'FORMULA' | 'MISSING_PROPERTY'
   | 'DATAPILL_SCHEMA' | 'MAPPING' | 'UNSUPPORTED_OPERATION' | 'MANUAL_REVIEW';
@@ -19,7 +26,8 @@ export interface MigrationDiagnostic {
   reason: 'UNTRANSLATED_CODE' | 'UNCOMPILED_FORMULA' | 'FORMULA_REVIEW'
     | 'MISSING_REQUIRED_PROPERTY' | 'UNRESOLVED_REFERENCE' | 'AMBIGUOUS_SOURCE' | 'INVALID_SCHEMA'
     | 'INVALID_SUBFLOW_INPUT' | 'AMBIGUOUS_MAPPING' | 'INVALID_COMPOSITION_INPUT'
-    | 'UNMAPPED_OPERATION' | 'UNSUPPORTED_CHANNEL' | 'CONTROL_FLOW_UNSUPPORTED' | 'INCOMPLETE_STEP' | 'REVIEW_PENDING';
+    | 'UNMAPPED_OPERATION' | 'UNSUPPORTED_CHANNEL' | 'CONTROL_FLOW_UNSUPPORTED' | 'INCOMPLETE_STEP' | 'REVIEW_PENDING'
+    | 'INVALID_FLOW_GRAPH';
   /** SKIP_LLM skips deterministic public fixing, never the generated business step. */
   action: 'SKIP_LLM' | 'CHECK_DOCUMENTATION' | 'NEEDS_CONTEXT' | 'PRODUCT_DECISION' | 'MANUAL_REVIEW';
   stepName?: string;
@@ -31,6 +39,9 @@ export interface MigrationDiagnostic {
 export function diagnosticsForError(error: unknown): MigrationDiagnostic[] {
   if (error instanceof InvalidCompositionInputError) {
     return [{ category: 'MAPPING', reason: 'INVALID_COMPOSITION_INPUT', action: 'NEEDS_CONTEXT', severity: 'ERROR' }];
+  }
+  if (error instanceof InvalidFlowGraphError) {
+    return [{ category: 'MANUAL_REVIEW', reason: 'INVALID_FLOW_GRAPH', action: 'MANUAL_REVIEW', severity: 'ERROR' }];
   }
   if (error instanceof InvalidWorkatoSchemaError) {
     return [{ category: 'DATAPILL_SCHEMA', reason: 'INVALID_SCHEMA', action: 'NEEDS_CONTEXT', severity: 'ERROR' }];

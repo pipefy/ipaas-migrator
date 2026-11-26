@@ -11,8 +11,9 @@
 // Exit 0 = tudo aplicado. Exit 3 = algum step recusado/desconhecido. Exit 2 = arquivo/uso.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { applyCodeTranslations } from './lib/code-stubs.mjs';
+import { inspectFlowGraph, syncNamedFlowCopy } from './lib/flow-graph-guard.mjs';
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(name);
@@ -51,7 +52,14 @@ if (!flow || !patch) {
 }
 
 const result = applyCodeTranslations(flow, patch);
-if (result.applied.length) writeFileSync(outPath, `${JSON.stringify(result.flow)}\n`);
+if (!inspectFlowGraph(result.flow).ok) {
+  console.log(JSON.stringify({ ok: false, reason: 'invalid_flow_graph' }));
+  process.exit(3);
+}
+if (result.applied.length) {
+  writeFileSync(outPath, `${JSON.stringify(result.flow)}\n`);
+  if (basename(outPath) === 'flow.json') syncNamedFlowCopy(outPath);
+}
 
 const ok = result.unknown.length === 0 && result.rejected.length === 0;
 console.log(

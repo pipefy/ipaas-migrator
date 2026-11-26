@@ -8,9 +8,10 @@
 // Com --patch: { "step_3": "<js sem require/import de pacote>" }. Zera packageJson.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { rewriteEngineXlsxImport } from '../engine/lib/xlsx-csv.ts';
 import { applyDependencyFree, listCodeDependencies, stripKnownDependencies } from './lib/code-deps.mjs';
+import { inspectFlowGraph, syncNamedFlowCopy } from './lib/flow-graph-guard.mjs';
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(name);
@@ -25,6 +26,15 @@ const outPath = arg('--out') ? resolve(arg('--out')) : flowPath;
 if (!flowPath) {
   console.error('uso: npx tsx scripts/sem-dependencia.mjs --flow-json <flow.json> [--patch <patch.json>] [--out <flow.json>]');
   process.exit(2);
+}
+
+function writeFlow(flow) {
+  if (!inspectFlowGraph(flow).ok) {
+    console.log(JSON.stringify({ ok: false, reason: 'invalid_flow_graph' }));
+    process.exit(3);
+  }
+  writeFileSync(outPath, `${JSON.stringify(flow)}\n`);
+  if (basename(outPath) === 'flow.json') syncNamedFlowCopy(outPath);
 }
 
 function readJson(path) {
@@ -51,7 +61,7 @@ if (patchPath) {
     process.exit(2);
   }
   const result = applyDependencyFree(readJson(flowPath), patch);
-  if (result.applied.length) writeFileSync(outPath, `${JSON.stringify(result.flow)}\n`);
+  if (result.applied.length) writeFlow(result.flow);
   const ok = result.unknown.length === 0 && result.rejected.length === 0;
   console.log(
     JSON.stringify(
@@ -72,7 +82,7 @@ if (patchPath) {
 
 const before = listCodeDependencies(readJson(flowPath));
 const result = stripKnownDependencies(readJson(flowPath), rewriteEngineXlsxImport);
-if (result.rewritten.length) writeFileSync(outPath, `${JSON.stringify(result.flow)}\n`);
+if (result.rewritten.length) writeFlow(result.flow);
 console.log(
   JSON.stringify(
     {

@@ -8,8 +8,9 @@
 // Só escreve o flow.json. Não chama Pipefy. Não edita mapa, KB nem engine.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { annotateFlow } from './lib/cliente-anotar-flow.mjs';
+import { inspectFlowGraph, syncNamedFlowCopy } from './lib/flow-graph-guard.mjs';
 
 function arg(name) {
   const i = process.argv.indexOf(name);
@@ -46,5 +47,10 @@ try {
 }
 
 const result = annotateFlow(flow, report, lang);
+if (!inspectFlowGraph(result.flow).ok) {
+  console.log(JSON.stringify({ ok: false, reason: 'invalid_flow_graph' }));
+  process.exit(3);
+}
 writeFileSync(flowFile, `${JSON.stringify(result.flow, null, 2)}\n`);
+if (basename(flowFile) === 'flow.json') syncNamedFlowCopy(flowFile);
 console.log(JSON.stringify({ ok: true, added: result.added, notes: result.notes, lang }));

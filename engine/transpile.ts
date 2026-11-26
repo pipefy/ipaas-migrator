@@ -10,6 +10,7 @@ import { ingest } from './lib/ingest.ts';
 import { parseRecipe } from './lib/parse-recipe.ts';
 import { classifyOps } from './lib/classify.ts';
 import { buildFlow } from './lib/flow-builder.ts';
+import { InvalidFlowGraphError } from './lib/diagnostics.ts';
 
 async function main(): Promise<void> {
   const input = process.argv[2];
@@ -45,7 +46,18 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const { flow, todos, diagnostics } = buildFlow(recipe, merged, kb);
+    let built;
+    try {
+      built = buildFlow(recipe, merged, kb);
+    } catch (err) {
+      if (err instanceof InvalidFlowGraphError) {
+        blocked++;
+        console.log(`⛔ ${recipe.name}: grafo inválido — ${err.message}`);
+        continue;
+      }
+      throw err;
+    }
+    const { flow, todos, diagnostics } = built;
     const incomplete = todos.length > 0 || flow.flows.some((entry: any) => entry.valid !== true);
     if (incomplete) blocked++;
     await writeFile(join(out, `${baseName}.flow.json`), JSON.stringify(flow, null, 2), 'utf8');

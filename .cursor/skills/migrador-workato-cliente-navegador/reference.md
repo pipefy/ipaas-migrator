@@ -1,6 +1,6 @@
 # Referência — migrador cliente (com navegador)
 
-Versão: **0.7.22**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
+Versão: **0.7.23**. Variante **com navegador** (`migrador-workato-cliente-navegador`). Kit vigente no GitHub: `https://github.com/pipefy/ipaas-migrator` (`main`, arquivo `VERSION`). A variante sem navegador (`migrador-workato-cliente`) saiu de linha em 23 set 2026 (última 0.4.3).
 
 Tutor: instalação + atualização no GitHub + smoke → idioma (inferir) → API ou JSON → pipe → conexão → motor → Downloads do `*.flow.json` (com ok) → ok do Chrome → Import (verificar canvas) → ok do MCP Pipefy → teste.
 
@@ -115,6 +115,10 @@ A pergunta ao cliente usa o bloco `validacao-pergunta`. No máximo 3 frases, dep
 | `HTTP pad` | Uma chamada HTTP ficou incompleta. | An HTTP call was left incomplete. | Una llamada HTTP quedó incompleta. |
 | `pill de erro` | A mensagem de erro de um passo não veio. | A step's error message did not come through. | El mensaje de error de un paso no llegó. |
 | `python` | Um trecho em Python não virou código. | A Python snippet did not become code. | Un fragmento en Python no se volvió código. |
+| `nome repetido` | Dois passos ficaram com o mesmo nome. O fluxo não pode ser importado assim. | Two steps ended up with the same name. This flow cannot be imported like this. | Dos pasos quedaron con el mismo nombre. Este flujo no se puede importar así. |
+| `passo sem nome` | Um passo ficou sem nome. O fluxo não pode ser importado assim. | A step was left without a name. This flow cannot be imported like this. | Un paso quedó sin nombre. Este flujo no se puede importar así. |
+| `ciclo no grafo` | Um passo aponta de volta para ele mesmo. O fluxo não pode ser importado assim. | A step points back to itself. This flow cannot be imported like this. | Un paso vuelve a apuntar a sí mismo. Este flujo no se puede importar así. |
+| `router desalinhado` | Uma condição ficou sem o caminho correspondente. O fluxo não pode ser importado assim. | A condition is missing its matching path. This flow cannot be imported like this. | Una condición quedó sin el camino correspondiente. Este flujo no se puede importar así. |
 | outro | Um passo precisa de ajuste antes do teste. | A step needs a fix before the test. | Un paso necesita un ajuste antes de la prueba. |
 
 O reparo, só com o sim, altera apenas `output/<id>/flow.json`. Duas tentativas por achado. Revalide ao fim de cada rodada. Sem inventar ação, sem `--force`, sem editar `engine/`, `mappings/` ou `kb/`. Datapill Pipefy continua com colchetes em `data`.
@@ -129,6 +133,8 @@ node scripts/cliente-anotar-flow.mjs \
 ```
 
 A nota ancora no passo do achado. Sem passo, ancora no gatilho. Rodar de novo não duplica. Depois, bloco `validacao-restou`.
+
+Se `structuralErrors` no `transporte.json` não estiver vazio, Downloads e Import ficam bloqueados. A nota amarela só segue o arquivo quando o que resta é pendência de lógica.
 
 Smoke da instalação:
 
@@ -156,7 +162,7 @@ Esse comando existe só no helper (`workato_migrator_helper`), não no kit publi
 
 ```bash
 node scripts/pack-cliente.mjs --variant navegador
-# dist/migrador-workato-cliente-navegador-0.7.22.tgz
+# dist/migrador-workato-cliente-navegador-0.7.23.tgz
 ```
 
 `npm run pack-cliente` gera só este pack. `--variant sem` recusa (kit descontinuado).

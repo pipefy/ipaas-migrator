@@ -14,7 +14,7 @@ import type {
   WorkatoConditionsInput,
 } from './types.ts';
 import { collapseOpKey, lookupMap, withInheritedPropMap } from './collapse.ts';
-import { InvalidCompositionInputError, isBlockingDiagnostic, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
+import { InvalidCompositionInputError, InvalidFlowGraphError, isBlockingDiagnostic, uniqueDiagnostics, type MigrationDiagnostic } from './diagnostics.ts';
 import { OMIE_APP_KEY, OMIE_APP_SECRET, omieActionName, omieHttpInput } from './omie-http.ts';
 import { csvParseCode, csvParsePlan } from './csv-parse.ts';
 import {
@@ -165,6 +165,10 @@ interface Ctx {
   jobContextHits: JobContextHits;
   jobContextNoted: JobContextHits;
   counter: { n: number };
+  /** Sequência dos nomes gerados (`formula_1`, `var_get_2`). Zera a cada flow. */
+  nameSeq: number;
+  /** Nomes já reservados neste flow. O canvas do iPaaS usa `name` como id do nó. */
+  takenNames: Set<string>;
   /**
    * Steps CODE de formula criados para o step que esta sendo montado. Quem
    * monta a cadeia (buildChain / gateOnTriggerFilter) os encadeia ANTES dele.
@@ -267,7 +271,7 @@ function bindAs(ctx: Ctx, as: string | undefined, name: string, step: ParsedStep
   if (target?.piece === SUBFLOW_PIECE && target.name === 'callableFlow' && name === 'trigger') {
     const fields = callableParameterNames(step.input);
     if (fields.length) {
-      const stepName = `step_${ctx.counter.n++}`;
+      const stepName = reserveName(ctx, `step_${ctx.counter.n++}`);
       ctx.callableParams = { stepName, fields };
       if (as) ctx.asToName.set(as, { name: stepName, stripHead: 'parameters' });
     } else if (as) {
@@ -485,10 +489,11 @@ function assignNames(
 
   if (isRoot) {
     step.apName = 'trigger';
+    reserveName(ctx, step.apName);
     bindAs(ctx, step.as, 'trigger', step);
   } else if (step.keyword === 'foreach') {
     step.apName = `loop_${ctx.counter.n++}`;
-    takenNames.add(step.apName);
+    reserveName(ctx, step.apName);
     if (step.as) {
       const alias = csvForeachAlias(ctx, step.source);
       ctx.asToName.set(
@@ -498,15 +503,16 @@ function assignNames(
     }
   } else if (step.keyword === 'if') {
     step.apName = `router_${ctx.counter.n++}`;
-    takenNames.add(step.apName);
+    reserveName(ctx, step.apName);
   } else if (step.keyword === 'repeat') {
     // Sem equivalente no AP, mas o `as` precisa de nome: o corpo referencia
     // `<as>.index`, e sem registro isso vazaria o hash cru no template.
     step.apName = `repeat_${ctx.counter.n++}`;
+    reserveName(ctx, step.apName);
     if (step.as) ctx.asToName.set(step.as, step.apName);
   } else if (step.opKey && (step.keyword === 'action' || step.keyword === 'trigger') && !ctx.absorbedSteps.has(step)) {
     step.apName = `step_${ctx.counter.n++}`;
-    takenNames.add(step.apName);
+    reserveName(ctx, step.apName);
     bindAs(ctx, step.as, step.apName, step);
   }
 
@@ -861,20 +867,39 @@ function convInput(
   return out;
 }
 
-let nameSeq = 0;
-const takenNames = new Set<string>();
-const nextName = (prefix: string) => {
-  let name = `${prefix}_${++nameSeq}`;
-  while (takenNames.has(name)) name = `${prefix}_${++nameSeq}`;
-  takenNames.add(name);
+function reserveName(ctx: Ctx, name: string): string {
+  ctx.takenNames.add(name);
   return name;
-};
+}
+
+function nextName(ctx: Ctx, prefix: string): string {
+  let name = `${prefix}_${++ctx.nameSeq}`;
+  while (ctx.takenNames.has(name)) name = `${prefix}_${++ctx.nameSeq}`;
+  ctx.takenNames.add(name);
+  return name;
+}
+
+function chainContains(head: any, target: any): boolean {
+  const seen = new Set<any>();
+  let cursor = head;
+  while (cursor && !seen.has(cursor)) {
+    if (cursor === target) return true;
+    seen.add(cursor);
+    cursor = cursor.nextAction;
+  }
+  return false;
+}
 
 function appendToChain(head: any | undefined, tail: any | undefined): any | undefined {
   if (!head) return tail;
+  if (!tail || head === tail || chainContains(head, tail) || chainContains(tail, head)) return head;
   let last = head;
-  while (last.nextAction) last = last.nextAction;
-  last.nextAction = tail;
+  const seen = new Set<any>([head]);
+  while (last.nextAction && !seen.has(last.nextAction)) {
+    last = last.nextAction;
+    seen.add(last);
+  }
+  if (!last.nextAction) last.nextAction = tail;
   return head;
 }
 
@@ -960,7 +985,7 @@ function collectActionLines(steps: ParsedStep[], out: Set<string>): void {
 
 /** IFs irmãos sem else (ou else que só para) viram um router que roda todo ramo verdadeiro. */
 function buildAllMatchRouter(group: ParsedStep[], ctx: Ctx): any {
-  const name = nextName('router');
+  const name = nextName(ctx, 'router');
   const written = new Set<string>();
   const branches: any[] = [];
   const children: any[] = [];
@@ -998,7 +1023,7 @@ function buildAllMatchRouter(group: ParsedStep[], ctx: Ctx): any {
 
 /** IFs irmãos que só esvaziam campo viram um ramo com as condições em OU e uma mutation. */
 function buildClearFieldsRouter(group: ParsedStep[], ctx: Ctx): any {
-  const name = nextName('router');
+  const name = nextName(ctx, 'router');
   const groups: any[][] = [];
   const updates: { card: string; field: string }[] = [];
   for (const step of group) {
@@ -1016,7 +1041,7 @@ function buildClearFieldsRouter(group: ParsedStep[], ctx: Ctx): any {
     (item, index) =>
       `  u${index}: updateCardField(input: {card_id: ${JSON.stringify(item.card)}, field_id: ${JSON.stringify(item.field)}, new_value: null}) { success }`,
   );
-  const callName = nextName('step');
+  const callName = nextName(ctx, 'step');
   ctx.piecesUsed.add(PIPEFY_PIECE);
   const input = {
     method: 'POST',
@@ -1048,7 +1073,10 @@ function buildClearFieldsRouter(group: ParsedStep[], ctx: Ctx): any {
     type: 'ROUTER',
     valid: !hasTodoMarker(groups),
     settings: {
-      branches: [{ branchName: 'Campo preenchido', branchType: 'CONDITION', conditions: groups }],
+      branches: [
+        { branchName: 'Campo preenchido', branchType: 'CONDITION', conditions: groups },
+        { branchName: 'Senao', branchType: 'FALLBACK' },
+      ],
       executionType: 'EXECUTE_FIRST_MATCH',
     },
     children: [call, null],
@@ -1208,7 +1236,7 @@ function buildSkipped(step: ParsedStep, ctx: Ctx): any | null {
 
 /** Step `store/get`, encadeado ANTES do passo que le a variavel. */
 function injectStoreGet(key: string, label: string, ctx: Ctx): string {
-  const name = nextName('var_get');
+  const name = nextName(ctx, 'var_get');
   const input = { key, store_scope: STORE_SCOPE };
   ctx.piecesUsed.add(STORE_PIECE);
   ctx.pendingCode.push({
@@ -1335,7 +1363,10 @@ function buildStepInner(step: ParsedStep, ctx: Ctx): any | null {
 }
 
 function stepName(step: ParsedStep, ctx: Ctx): string {
-  return step.apName || stepBindingName(step.as ? ctx.asToName.get(step.as) : undefined) || nextName('step');
+  if (step.apName) return step.apName;
+  const bound = stepBindingName(step.as ? ctx.asToName.get(step.as) : undefined);
+  if (bound && !ctx.takenNames.has(bound)) return reserveName(ctx, bound);
+  return nextName(ctx, 'step');
 }
 
 /**
@@ -1424,7 +1455,7 @@ function lookupPillRef(stepName: string, field: string): string {
 }
 
 function scheduleLookupStep(parsed: ParsedLookup, ctx: Ctx, harvest: Harvest): string {
-  const name = nextName('lookup');
+  const name = nextName(ctx, 'lookup');
   const filters = parsed.filters.map((filter) => {
     const raw = pills(filter.value.startsWith('=') ? filter.value : `=${filter.value}`, ctx);
     const value = resolveFormulas(raw, ctx, name, filter.value);
@@ -1691,7 +1722,7 @@ function resolveFormulas(
   let assigned: string | undefined;
   const harvest: Harvest = {
     allowCode,
-    name: () => (assigned ??= nextName('formula')),
+    name: () => (assigned ??= nextName(ctx, 'formula')),
     registry: newBindingRegistry(),
     fields: [],
     helpers: new Set(),
@@ -2239,7 +2270,7 @@ function pushReviewNote(
   const suffix = lost ? ` — ${lost}` : '';
   const title = `${label}${suffix}`.slice(0, 120);
   ctx.canvasNotes.push({
-    id: nextName(prefix),
+    id: nextName(ctx, prefix),
     kind,
     content: `**${title}**\n\n${message}`,
     anchorStepName,
@@ -2591,7 +2622,7 @@ function buildScalarStore(
   let head: any;
   for (const [index, [field, value]] of entries.entries()) {
     const put = storeActionStep(
-      index === 0 ? name : nextName('var_put'),
+      index === 0 ? name : nextName(ctx, 'var_put'),
       'put',
       { key: decl.storeKey || scalarStorageKey(field), value, store_scope: STORE_SCOPE },
       entries.length === 1 ? display : `Gravar variavel "${field}"`,
@@ -2668,7 +2699,7 @@ function buildListStore(
     );
   }
 
-  const codeName = nextName('var_item');
+  const codeName = nextName(ctx, 'var_item');
   const code = codeStep(codeName, `Item JSON "${decl.label}"`, { [FIELDS_KEY]: fields }, listItemCode(), valid);
   code.skip = skip;
   code.nextAction = storeActionStep(
@@ -2698,7 +2729,7 @@ function buildListBatch(
   skip: boolean,
   batch: ReturnType<typeof listBatchFields>,
 ): any {
-  const codeName = nextName('var_items');
+  const codeName = nextName(ctx, 'var_items');
   const indexed = compileListBatchIndexes(step, ctx);
   const pending = writtenFields(step, op);
   for (const field of indexed.fields) delete pending[field];
@@ -2864,7 +2895,7 @@ function omitRecipeOps(step: ParsedStep, anchorHint: string, ctx: Ctx): null {
     'O que fazer: adicione a ação que fizer mais sentido, por exemplo enviar um e-mail, enviar uma mensagem ou criar um card com o ID e a data e hora da execução, para que a pessoa encontre a execução no iPaaS e a repita manualmente, se quiser.',
   );
   ctx.canvasNotes.push({
-    id: nextName('review_recipe_ops'),
+    id: nextName(ctx, 'review_recipe_ops'),
     kind: 'UNMAPPED',
     content: `**${REVIEW_RECIPE_OPS_LABEL}**\n\n${lines.join(' ')}`,
     anchorStepName: anchorHint,
@@ -3451,7 +3482,7 @@ function buildAccumulateListAppend(name: string, display: string, step: ParsedSt
   const key = `workato_list:${listName}`;
   const item = resolveFormulas(deepConvert(accumulateItem(step.input?.list_item), ctx), ctx, name);
   const valid = !hasTodoMarker({ item });
-  const getName = nextName('var_get');
+  const getName = nextName(ctx, 'var_get');
   const get = storeActionStep(
     getName,
     'get',
@@ -3470,7 +3501,7 @@ function buildAccumulateListAppend(name: string, display: string, step: ParsedSt
   );
   code.skip = step.skip === true;
   const put = storeActionStep(
-    nextName('var_put'),
+    nextName(ctx, 'var_put'),
     'put',
     { key, value: `{{${name}['list_items']}}`, store_scope: STORE_SCOPE },
     `Gravar lista "${listName}"`,
@@ -4786,7 +4817,7 @@ function fillKnownProps(
     const batch = zipListBatch(sourceInput.file_list);
     const urlRow = batch?.rows.find((row) => row.key === 'file_contents') ?? batch?.rows.find((row) => row.key !== 'file_name');
     if (batch && urlRow) {
-      const codeName = nextName('zip_files');
+      const codeName = nextName(ctx, 'zip_files');
       const source = resolveFormulas(deepConvert(batch.source, ctx), ctx, codeName);
       const mapped = codeStep(codeName, 'Arquivos do zip', { source }, zipBatchCode(urlRow.path), !hasTodoMarker({ source }));
       ctx.pendingCode.push(mapped);
@@ -6049,14 +6080,14 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const head = updateListFieldPiece(name, display, listSplit.adds[0]!, ctx);
     let tail = head;
     for (const extra of listSplit.adds.slice(1)) {
-      const next = updateListFieldPiece(nextName('step'), display, extra, ctx);
+      const next = updateListFieldPiece(nextName(ctx, 'step'), display, extra, ctx);
       tail.nextAction = next;
       tail = next;
     }
     if (listSplit.residualQuery) {
       const residualInput = replaceGraphqlQuery(input, listSplit.residualQuery);
       tail.nextAction = {
-        name: nextName('step'),
+        name: nextName(ctx, 'step'),
         skip: false,
         type: 'PIECE',
         valid: missing.length === 0 && unresolved.length === 0,
@@ -6115,7 +6146,7 @@ function buildAction(step: ParsedStep, ctx: Ctx): any {
     const storeInput = { key: `Valores para: ${name}`, value: payload, store_scope: STORE_SCOPE };
     ctx.piecesUsed.add(STORE_PIECE);
     ctx.pendingCode.push({
-      name: nextName('step'),
+      name: nextName(ctx, 'step'),
       skip: false,
       type: 'PIECE',
       valid: true,
@@ -6374,7 +6405,7 @@ function peelNestedIf(branch: { conditionsInput: WorkatoConditionsInput | undefi
 }
 
 function buildRouter(step: ParsedStep, ctx: Ctx): any {
-  const name = step.apName || nextName('router');
+  const name = step.apName || nextName(ctx, 'router');
   const split = splitBranches(step);
   const branches = split.branches.map((branch) => peelNestedIf(branch));
   const { elseChildren } = split;
@@ -6429,7 +6460,7 @@ function listDeclFromSource(source: unknown, ctx: Ctx): VarDecl | undefined {
 }
 
 function buildLoop(step: ParsedStep, ctx: Ctx): any {
-  const name = step.apName || nextName('loop');
+  const name = step.apName || nextName(ctx, 'loop');
   // A colecao e avaliada no escopo de FORA: o source de um loop aninhado
   // referencia o item do loop externo, nao o proprio.
   let items = step.source
@@ -6437,7 +6468,7 @@ function buildLoop(step: ParsedStep, ctx: Ctx): any {
     : '{{TODO_lista}}';
   const listDecl = listDeclFromSource(step.source, ctx);
   if (listDecl && !items.includes('TODO')) {
-    const parsed = nextName('var_list');
+    const parsed = nextName(ctx, 'var_list');
     const code = codeStep(parsed, `Ler lista "${listDecl.label}"`, { list: items }, listReadCode(), true);
     ctx.pendingCode.push(code);
     items = `{{${parsed}}}`;
@@ -6446,7 +6477,7 @@ function buildLoop(step: ParsedStep, ctx: Ctx): any {
     ctx.todos.push(`LOOP (${name}): definir a lista de itens (items).`);
   }
   if (step.indexPairs?.length && step.source && !items.includes('TODO')) {
-    const pairs = nextName('pares');
+    const pairs = nextName(ctx, 'pares');
     const input: Record<string, any> = { [PAIR_ITEM_KEY]: items };
     for (const list of step.indexPairs) input[list.key] = resolveFormulas(pills(list.pill, ctx), ctx, pairs);
     const keys = step.indexPairs.map((list) => list.key);
@@ -6645,7 +6676,7 @@ function buildIndexedListRepeat(step: ParsedStep, ctx: Ctx, name: string, listJs
   let items = resolveFormulas(collection, ctx, name);
   const listDecl = listDeclFromSource(listRaw, ctx);
   if (listDecl && !items.includes('TODO')) {
-    const parsed = nextName('var_list');
+    const parsed = nextName(ctx, 'var_list');
     const code = codeStep(parsed, `Ler lista "${listDecl.label}"`, { list: items }, listReadCode(), true);
     ctx.pendingCode.push(code);
     items = `{{${parsed}}}`;
@@ -6739,7 +6770,7 @@ function redirectDeleteToFirstRecord(ctx: Ctx, input: Record<string, any>): void
   if (!sources.size) return;
   const checks = new Map<string, string>();
   for (const source of sources) {
-    const checkName = nextName('check');
+    const checkName = nextName(ctx, 'check');
     checks.set(source, checkName);
     ctx.pendingCode.push(
       codeStep(checkName, 'check_found', { records: `{{${source}}}` }, CHECK_FOUND_CODE, true),
@@ -6832,7 +6863,7 @@ function loopOverTurnCount(
   extraOne: boolean,
   _message: string,
 ): any {
-  const codeName = nextName('var_turns');
+  const codeName = nextName(ctx, 'var_turns');
   const code = codeStep(
     codeName,
     'Voltas do repeat',
@@ -6962,7 +6993,7 @@ function sleepSecondsIn(step: ParsedStep): number | null {
 }
 
 function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep, seconds: number): any {
-  const codeName = nextName('var_turns');
+  const codeName = nextName(ctx, 'var_turns');
   const code = codeStep(
     codeName,
     'Voltas do repeat',
@@ -6986,7 +7017,7 @@ function buildStatusPoll(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedS
       ctx,
     );
     const router = {
-      name: nextName('router'),
+      name: nextName(ctx, 'router'),
       skip: false,
       type: 'ROUTER',
       valid: !built.review && !hasTodoMarker(groups),
@@ -7196,13 +7227,21 @@ function attachRestToOpenBranch(node: any, rest: any, ctx: Ctx): boolean {
 function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
   const tails: any[] = [];
   const seen = new Set<any>();
+  let attachedMonitor = false;
   const walk = (node: any) => {
     if (!node || seen.has(node)) return;
     seen.add(node);
     if (node.displayName === ERROR_MONITOR_LABEL) {
+      if (attachedMonitor) {
+        ctx.todos.push(
+          `STOP (${node.name}): a continuação depois do try também se aplica a este monitor — duplicar manualmente.`,
+        );
+        return;
+      }
       const branches = node.settings?.branches ?? [];
       const index = branches.findIndex((branch: { branchType?: string }) => branch.branchType === 'FALLBACK');
       if (index >= 0) node.children[index] = appendToChain(node.children[index], rest) ?? rest;
+      attachedMonitor = true;
       return;
     }
     if (node.settings?.actionName === 'stopFlow') return;
@@ -7243,7 +7282,7 @@ function attachRestToSuccessTails(step: any, rest: any, ctx: Ctx): void {
  */
 function stopOnlyEmptyMonitor(ctx: Ctx): any {
   const step = codeStep(
-    nextName('catch'),
+    nextName(ctx, 'catch'),
     'Monitor sem passos',
     {},
     'export const code = async () => {\n  return {};\n};',
@@ -7257,7 +7296,7 @@ function stopOnlyEmptyMonitor(ctx: Ctx): any {
 }
 
 function stopFlowStep(ctx: Ctx): any {
-  const name = nextName('stop');
+  const name = nextName(ctx, 'stop');
   const input = {};
   ctx.piecesUsed.add(FLOW_HELPER_PIECE);
   return {
@@ -7362,9 +7401,9 @@ function fallibleNames(step: any, names: string[], seen = new Set<any>()): void 
   for (const child of step.children ?? []) fallibleNames(child, names, seen);
 }
 
-function errorMonitor(owners: string[], stop: any): any {
+function errorMonitor(owners: string[], stop: any, ctx: Ctx): any {
   return {
-    name: nextName('catch'),
+    name: nextName(ctx, 'catch'),
     skip: false,
     type: 'ROUTER',
     valid: true,
@@ -7393,7 +7432,7 @@ function armRouterStops(step: any, ctx: Ctx): any {
     for (const child of step.children ?? []) fallibleNames(child, names);
     const next = armRouterStops(step.nextAction, ctx);
     if (names.length) {
-      const monitor = errorMonitor(names, stopFlowStep(ctx));
+      const monitor = errorMonitor(names, stopFlowStep(ctx), ctx);
       monitor.children[1] = next ?? null;
       step.nextAction = monitor;
     } else step.nextAction = next;
@@ -7487,8 +7526,8 @@ function markLinearMonitor(step: any, retry: boolean, seen = new Set<any>()): vo
 }
 
 /** Primeira mensagem de erro entre os passos deste monitor. */
-function catchMessageStep(owners: string[]): any {
-  const name = nextName('catch_msg');
+function catchMessageStep(owners: string[], ctx: Ctx): any {
+  const name = nextName(ctx, 'catch_msg');
   const input: Record<string, string> = {};
   owners.forEach((owner, index) => {
     input[`e${index}`] = `{{${owner}['error']['message']}}`;
@@ -7558,7 +7597,7 @@ function replaceErroValues(value: any, pill: string): void {
 }
 
 /** Um router para o catch. As ações, e o stop quando existe, aparecem uma vez. Sem ação ativa o ramo fica vazio: passo com skip não entra. */
-function sharedCatchRouter(owners: string[], handler: any | null): any {
+function sharedCatchRouter(owners: string[], handler: any | null, ctx: Ctx): any {
   let branch: any = null;
   if (handler) {
     const pill = catchErrorPill(owners);
@@ -7567,12 +7606,12 @@ function sharedCatchRouter(owners: string[], handler: any | null): any {
       rewriteCatchErrorLiterals(bound, pill);
       branch = bound;
     } else {
-      const message = catchMessageStep(owners);
+      const message = catchMessageStep(owners, ctx);
       branch = appendToChain(message, bindCatchMessage(handler, `{{${message.name}['message']}}`));
     }
   }
   return {
-    name: nextName('catch'),
+    name: nextName(ctx, 'catch'),
     skip: false,
     type: 'ROUTER',
     valid: true,
@@ -7680,7 +7719,7 @@ function nilScalarDeclare(step: ParsedStep, ctx: Ctx): any | null {
   let head: any;
   decl.fields.forEach((field, index) => {
     const put = storeActionStep(
-      index === 0 ? name : nextName('var_put'),
+      index === 0 ? name : nextName(ctx, 'var_put'),
       'put',
       { key: decl.storeKey || scalarStorageKey(field), value: '', store_scope: STORE_SCOPE },
       decl.fields.length === 1 ? display : `Gravar variavel "${field}"`,
@@ -7742,7 +7781,7 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
       return first ?? null;
     }
     const owners = collectMonitorOwners(first);
-    const router = sharedCatchRouter(owners, null);
+    const router = sharedCatchRouter(owners, null, ctx);
     const fresh = new Set<any>();
     const head = rewireOpenCatch(first, ctx, fresh);
     if (head) attachSharedRouter(head, router, new Set(), fresh);
@@ -7770,7 +7809,7 @@ function buildTry(step: ParsedStep, ctx: Ctx): any | null {
   }
 
   const owners = collectMonitorOwners(first);
-  const router = sharedCatchRouter(owners, handlerHead);
+  const router = sharedCatchRouter(owners, handlerHead, ctx);
   if (handlersIncludeStop(activeHandlers)) {
     const fresh = new Set<any>();
     const head = rewireOpenCatch(first, ctx, fresh);
@@ -7832,7 +7871,7 @@ function gateOnTriggerFilter(root: ParsedStep, nextAction: any | undefined, ctx:
   if (!conditionsOf(root.filter).length) return nextAction;
 
   const built = buildConditionGroups(root.filter, ctx);
-  const name = nextName('trigger_filter');
+  const name = nextName(ctx, 'trigger_filter');
   const groups = resolveFormulas(built.groups, ctx, name) as any[][];
   const review = built.review || hasTodoMarker(groups);
   ctx.todos.push(
@@ -8575,8 +8614,6 @@ function indexPairsCode(keys: string[]): string {
 }
 
 export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>, kb: Kb): BuildResult {
-  nameSeq = 0;
-  takenNames.clear();
   NOW = new Date().toISOString();
   const ctx: Ctx = {
     merged,
@@ -8595,6 +8632,8 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     jobContextHits: emptyHits(),
     jobContextNoted: emptyHits(),
     counter: { n: 1 },
+    nameSeq: 0,
+    takenNames: new Set(['job_now', 'job_run', 'agenda_semana', 'agenda_quinzena']),
     pendingCode: [],
     vars: indexVariables(recipe.root),
     subflowResultLabels: new Map(),
@@ -8668,7 +8707,55 @@ export function buildFlow(recipe: ParsedRecipe, merged: Record<string, MapEntry>
     ],
     status: 'PUBLISHED',
   };
+  assertFlowGraphIntegrity(trigger);
   return { flow: bracketizePills(flow), todos: [...new Set(ctx.todos)], diagnostics: uniqueDiagnostics(ctx.diagnostics) };
+}
+
+const GRAPH_LINKS = ['nextAction', 'firstLoopAction', 'onFailureAction'] as const;
+
+/** O canvas identifica o nó pelo `name`. Nome repetido, ciclo ou o mesmo objeto em dois pais não importa. */
+export function assertFlowGraphIntegrity(trigger: any): void {
+  const names: string[] = [];
+  const seen = new Set<any>();
+  const problems: string[] = [];
+  const visit = (node: any, stack: Set<any>) => {
+    if (!node || typeof node !== 'object') return;
+    if (stack.has(node)) {
+      problems.push('ciclo');
+      return;
+    }
+    if (seen.has(node)) {
+      problems.push('alias');
+      return;
+    }
+    seen.add(node);
+    if (node.type) {
+      if (typeof node.name !== 'string' || !node.name.trim()) problems.push('passo sem nome');
+      else names.push(node.name);
+      if (node.type === 'ROUTER') {
+        const branches = Array.isArray(node.settings?.branches) ? node.settings.branches.length : 0;
+        const children = Array.isArray(node.children) ? node.children.length : 0;
+        if (branches !== children) problems.push('router desalinhado');
+      }
+    }
+    const next = new Set(stack);
+    next.add(node);
+    for (const key of GRAPH_LINKS) visit(node[key], next);
+    const forks = node.continueOnFailureBranches;
+    if (forks && typeof forks === 'object') {
+      visit(forks.onSuccess, next);
+      visit(forks.onFailure, next);
+    }
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) visit(child, next);
+    }
+  };
+  visit(trigger, new Set());
+  const counts = new Map<string, number>();
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  const duplicated = [...counts.entries()].filter(([, count]) => count > 1).map(([name]) => name);
+  if (duplicated.length) problems.push(`nome repetido: ${duplicated.join(', ')}`);
+  if (problems.length) throw new InvalidFlowGraphError([...new Set(problems)].join('; '));
 }
 
 // CASE-067: approved engine extensions; current pipeline retained.
@@ -9166,7 +9253,7 @@ function buildSheetsMultiFind(
   columns: { header: string; value: unknown }[],
   ctx: Ctx,
 ): any {
-  const rowsName = nextName('sheet_rows');
+  const rowsName = nextName(ctx, 'sheet_rows');
   const rowsInput: Record<string, any> = {
     spreadsheetId: input.spreadsheetId,
     sheetId: input.sheetId,
@@ -9239,7 +9326,7 @@ function buildSheetsMultiFind(
 }
 
 function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: ParsedStep): any {
-  const codeName = nextName('var_turns');
+  const codeName = nextName(ctx, 'var_turns');
   const code = codeStep(
     codeName,
     'Voltas do repeat',
@@ -9263,7 +9350,7 @@ function buildConditionalRepeat(step: ParsedStep, ctx: Ctx, name: string, exit: 
       ctx,
     );
     const router = {
-      name: nextName('router'),
+      name: nextName(ctx, 'router'),
       skip: false,
       type: 'ROUTER',
       valid: !built.review && !hasTodoMarker(groups),

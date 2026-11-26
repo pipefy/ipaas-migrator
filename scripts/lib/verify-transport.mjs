@@ -4,6 +4,7 @@ import { NO_AUTH_PIECES } from './bind-connections.mjs';
 import { PIPEFY_PIECE_VERSION } from '../../engine/lib/pipefy-piece.ts';
 import { SUBFLOW_PIECE_VERSION } from '../../engine/lib/subflow.ts';
 import { indexVariables, isEmptyListDeclare } from '../../engine/lib/variables.ts';
+import { inspectFlowGraph } from './flow-graph-guard.mjs';
 
 const CONNECTOR_SUFFIX = /_connector_\d+(?:_\d+)?$/;
 
@@ -368,17 +369,19 @@ export function collectWorkatoActions(recipe) {
   return collectWorkatoTree(recipe).actions;
 }
 
-export function walkFlowSteps(node, acc = []) {
+export function walkFlowSteps(node, acc = [], seen = new Set()) {
   if (!node || typeof node !== 'object') return acc;
+  if (seen.has(node)) return acc;
+  seen.add(node);
   if (node.type) acc.push(node);
-  for (const key of CHILD_KEYS) if (node[key]) walkFlowSteps(node[key], acc);
+  for (const key of CHILD_KEYS) if (node[key]) walkFlowSteps(node[key], acc, seen);
   const branches = node.continueOnFailureBranches;
   if (branches) {
-    walkFlowSteps(branches.onSuccess, acc);
-    walkFlowSteps(branches.onFailure, acc);
+    walkFlowSteps(branches.onSuccess, acc, seen);
+    walkFlowSteps(branches.onFailure, acc, seen);
   }
   if (Array.isArray(node.children)) {
-    for (const child of node.children) walkFlowSteps(child, acc);
+    for (const child of node.children) walkFlowSteps(child, acc, seen);
   }
   return acc;
 }
@@ -1410,6 +1413,21 @@ function codeUsesNpm(step) {
   return /\brequire\s*\(\s*['"][^.['"]/.test(code) || /\bfrom\s+['"][^.['"]/.test(code);
 }
 
+function flowSource(flow) {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(flow ?? {}, (_key, value) => {
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return undefined;
+        seen.add(value);
+      }
+      return value;
+    });
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Regras da Rafa (Invenergy, 2026-09-23): o que o flow gerado faz de diferente
  * do gabarito que ela testou. Não chama o destino.
@@ -1658,7 +1676,7 @@ export function collectRafaGaps(recipe, flow, steps) {
     ));
   }
 
-  if (siblingIfRun(recipeCode(recipe)) && !JSON.stringify(flow ?? {}).includes('EXECUTE_ALL_MATCH')) {
+  if (siblingIfRun(recipeCode(recipe)) && !flowSource(flow).includes('EXECUTE_ALL_MATCH')) {
     gaps.push(finding(
       'revisar',
       'ifs irmaos',
@@ -1666,12 +1684,35 @@ export function collectRafaGaps(recipe, flow, steps) {
     ));
   }
 
-  const names = steps.map((step) => step.name).filter(Boolean);
-  const duplicated = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))];
-  if (duplicated.length) {
-    gaps.push(finding('bloqueia', 'nome repetido', `steps com o mesmo nome: ${duplicated.join(', ')}`));
+  const graph = inspectFlowGraph(flow);
+  if (graph.duplicateNames.length) {
+    gaps.push(finding(
+      'bloqueia',
+      'nome repetido',
+      `steps com o mesmo nome: ${graph.duplicateNames.map((item) => `${item.name} (${item.count}x)`).join(', ')}`,
+    ));
   }
-  const source = JSON.stringify(flow ?? {});
+  if (graph.missingNames.length) {
+    gaps.push(finding('bloqueia', 'passo sem nome', `${graph.missingNames.length} passo(s) sem nome`));
+  }
+  if (graph.cycles.length) {
+    gaps.push(finding('bloqueia', 'ciclo no grafo', `ciclo em: ${graph.cycles.join(', ')}`));
+  }
+  if (graph.aliasing) {
+    gaps.push(finding('bloqueia', 'ciclo no grafo', 'o mesmo passo aparece em dois pais'));
+  }
+  if (graph.routerMismatches.length) {
+    gaps.push(finding('bloqueia', 'router desalinhado', `router sem um filho por ramo: ${graph.routerMismatches.join(', ')}`));
+  }
+  const workatoSteps = actions.length + tree.controls.length;
+  if (graph.totalSteps >= 80 && graph.totalSteps > Math.max(workatoSteps, 1) * 4) {
+    gaps.push(finding(
+      'revisar',
+      'explosão de passos',
+      `${graph.totalSteps} passos no flow para ${workatoSteps} passos Workato`,
+    ));
+  }
+  const source = flowSource(flow);
   if (/\brequire\s*\(|\bimport\s+|Buffer\.|zlib\.|\bfetch\s*\(/.test(source)) {
     gaps.push(finding(
       'revisar',
@@ -1680,7 +1721,7 @@ export function collectRafaGaps(recipe, flow, steps) {
     ));
   }
 
-  if (/ap-formula-v1::\{(?:replace|remove)\(/.test(JSON.stringify(flow ?? {}))) {
+  if (/ap-formula-v1::\{(?:replace|remove)\(/.test(flowSource(flow))) {
     gaps.push(finding(
       'revisar',
       'formula ap',
@@ -2235,6 +2276,8 @@ export function verifyTransport({
   const bloqueia = deduped.filter((f) => f.severity === 'bloqueia');
   const revisar = deduped.filter((f) => f.severity === 'revisar');
   const info = deduped.filter((f) => f.severity === 'info');
+  const structuralKinds = new Set(['nome repetido', 'passo sem nome', 'ciclo no grafo', 'router desalinhado']);
+  const structuralErrors = bloqueia.filter((item) => structuralKinds.has(item.kind));
   const ok = bloqueia.length === 0;
   const limpo = ok && revisar.length === 0 && todos.length === 0;
 
@@ -2267,6 +2310,7 @@ export function verifyTransport({
     bloqueia,
     revisar,
     info,
+    structuralErrors,
     routing: routing
       ? {
           destination: routing.destination ?? null,

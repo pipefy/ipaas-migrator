@@ -5,7 +5,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { downloadsDir, isFlowJson } from './lib/cliente-copiar-flow.mjs';
+import { downloadsDir, flowFileIssue, isFlowJson } from './lib/cliente-copiar-flow.mjs';
+import { syncNamedFlowCopy } from './lib/flow-graph-guard.mjs';
 
 function arg(name) {
   const i = process.argv.indexOf(name);
@@ -25,6 +26,13 @@ if (!file || !isFlowJson(file) || !existsSync(file)) {
   console.log(JSON.stringify({ ok: false, reason: 'nao_e_flow', file: file ?? null }));
   process.exit(2);
 }
+
+const issue = flowFileIssue(file);
+if (issue) {
+  console.log(JSON.stringify({ ok: false, reason: issue, file }));
+  process.exit(3);
+}
+if (basename(file) === 'flow.json') syncNamedFlowCopy(file);
 
 const destDir = downloadsDir({
   home: homedir(),

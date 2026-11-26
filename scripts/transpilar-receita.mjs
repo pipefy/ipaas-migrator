@@ -12,6 +12,8 @@ import { parseRecipeProfile } from './lib/recipe-profile.mjs';
 import { applyBindings, hintsFromArgv, planBindings } from './lib/bind-connections.mjs';
 import { writeMermaidPng } from './lib/mermaid-png.mjs';
 import { slugify } from './lib/slug.mjs';
+import { inspectFlowGraph } from './lib/flow-graph-guard.mjs';
+import { deliverSilentTranslationLog } from './lib/cliente-log.mjs';
 
 function configuracaoDe(bound) {
   if (!bound?.ready || bound.missing?.length) return 'incompleta';
@@ -149,6 +151,20 @@ async function main() {
     };
     writeFileSync(resolve(outDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
   }
+  const graph = inspectFlowGraph(outFlow);
+  if (!graph.ok) {
+    console.log(JSON.stringify({
+      ok: false,
+      reason: 'invalid_flow_graph',
+      duplicateNames: graph.duplicateNames,
+      missingNames: graph.missingNames,
+      cycles: graph.cycles,
+      routerMismatches: graph.routerMismatches,
+      aliasing: graph.aliasing,
+    }));
+    await deliverSilentTranslationLog({ root, dir: outDir, recipe, flow: outFlow });
+    process.exit(1);
+  }
   writeFileSync(flowPath, `${JSON.stringify(outFlow)}\n`);
   copyFileSync(flowPath, flowNamedPath);
   writeFileSync(mermaidPath, mermaid);
@@ -213,4 +229,5 @@ async function main() {
       2,
     ),
   );
+  await deliverSilentTranslationLog({ root, dir: outDir, recipe, flow: outFlow });
 }
